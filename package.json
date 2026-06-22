@@ -4,8 +4,8 @@
   "description": "Collaborative whiteboard for OBS live streaming",
   "main": "server/index.js",
   "scripts": {
-    "start": "node server/index.js",
-    "dev": "node server/index.js"
+    "start": "node --env-file=.env server/index.js",
+    "dev": "node --env-file=.envdev server/index.js"
   },
   "dependencies": {
     "express": "^4.18.2",
