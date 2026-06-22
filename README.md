@@ -46,6 +46,7 @@ BOARD_PASSWORD=minhasenha npm start
 | E | Borracha |
 | R | Retângulo |
 | C | Elipse/círculo |
+| SHIFT+T | Triângulo |
 | L | Linha |
 | A | Seta |
 | T | Texto |
@@ -66,10 +67,3 @@ BOARD_PASSWORD=minhasenha npm start
 - ✅ Fundo transparente na view do OBS
 - ✅ Login com senha única
 - ✅ Suporte a múltiplos editores simultâneos
-
-## Rede local (LAN)
-
-Para acesso de outros dispositivos na mesma rede, use o IP da máquina:
-```
-http://192.168.x.x:3000
-```
