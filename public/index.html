@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LiveBoard - Login</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { min-height: 100vh; background: #0f0f13; display: flex; align-items: center; justify-content: center; font-family: 'Segoe UI', system-ui, sans-serif; color: #e8e8f0; }
+    .card { background: #1a1a24; border: 1px solid #2d2d40; border-radius: 16px; padding: 48px 40px; width: 360px; box-shadow: 0 24px 48px rgba(0,0,0,.5); }
+    .logo { display: flex; align-items: center; gap: 10px; margin-bottom: 32px; justify-content: center; }
+    .logo span { font-size: 24px; font-weight: 700; background: linear-gradient(135deg, #7c5cff, #c95cff); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .subtitle { text-align: center; color: #6b6b80; font-size: 13px; margin-bottom: 32px; }
+    label { display: block; font-size: 12px; font-weight: 600; color: #9090aa; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 8px; }
+    input[type="password"] { width: 100%; background: #0f0f13; border: 1px solid #2d2d40; border-radius: 10px; padding: 12px 16px; font-size: 15px; color: #e8e8f0; outline: none; transition: border-color .2s; letter-spacing: 3px; }
+    input[type="password"]:focus { border-color: #7c5cff; }
+    input[type="password"].shake { animation: shake .3s; border-color: #ff6060; }
+    @keyframes shake { 0%,100%{transform:translateX(0)} 25%{transform:translateX(-6px)} 75%{transform:translateX(6px)} }
+    .btn { width: 100%; margin-top: 20px; background: linear-gradient(135deg, #7c5cff, #c95cff); border: none; border-radius: 10px; padding: 13px; font-size: 15px; font-weight: 600; color: white; cursor: pointer; transition: opacity .15s; }
+    .btn:hover { opacity: .9; }
+    .btn:disabled { opacity: .5; cursor: not-allowed; }
+    .error { margin-top: 12px; color: #ff6060; font-size: 13px; text-align: center; min-height: 18px; }
+    hr { margin: 24px 0 14px; border: none; border-top: 1px solid #2d2d40; }
+    .obs-link { text-align: center; font-size: 12px; color: #555568; }
+    .obs-link a { color: #7c5cff; text-decoration: none; }
+  </style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">
+    <svg width="28" height="28" fill="none" viewBox="0 0 24 24" stroke="#7c5cff" stroke-width="2">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+    </svg>
+    <span>LiveBoard</span>
+  </div>
+  <p class="subtitle">Quadro colaborativo para streams ao vivo</p>
+  <label for="pw">Senha de acesso</label>
+  <input type="password" id="pw" placeholder="••••••••" autofocus>
+  <button class="btn" id="btn" onclick="login()">Entrar no Board</button>
+  <p class="error" id="err"></p>
+  <hr>
+  <p class="obs-link">OBS Source → <a href="/view" target="_blank">localhost:3000/view</a></p>
+</div>
+<script>
+  async function login() {
+    const pw = document.getElementById('pw').value.trim();
+    const inp = document.getElementById('pw');
+    const err = document.getElementById('err');
+    const btn = document.getElementById('btn');
+
+    if (!pw) return;
+
+    btn.disabled = true;
+    btn.textContent = 'Verificando...';
+    err.textContent = '';
+
+    try {
+      const res = await fetch('/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: pw })
+      });
+
+      if (res.ok) {
+        window.location.href = '/board.html';
+      } else {
+        err.textContent = 'Senha incorreta.';
+        inp.classList.remove('shake');
+        void inp.offsetWidth;
+        inp.classList.add('shake');
+        inp.value = '';
+        inp.focus();
+      }
+    } catch {
+      err.textContent = 'Erro de conexão com o servidor.';
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Entrar no Board';
+    }
+  }
+
+  document.getElementById('pw').addEventListener('keydown', e => {
+    if (e.key === 'Enter') login();
+  });
+</script>
+</body>
+</html>
