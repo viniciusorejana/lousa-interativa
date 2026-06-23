@@ -1,49 +1,95 @@
-const express = require('express');
-const http = require('http');
+const express  = require('express');
+const http     = require('http');
 const { Server } = require('socket.io');
-const path = require('path');
+const path     = require('path');
+const fs       = require('fs');
+const multer   = require('multer');
 const { v4: uuidv4 } = require('uuid');
 
-const app = express();
+const app    = express();
 const server = http.createServer(app);
 
+// ─── Config ───────────────────────────────────────────────────────────────────
+const PORT     = process.env.PORT || 3000;
+const PASSWORD = process.env.BOARD_PASSWORD || 'live123';
+const UPLOADS  = path.join(__dirname, '../uploads');
+if (!fs.existsSync(UPLOADS)) fs.mkdirSync(UPLOADS, { recursive: true });
+
+// ─── Socket.IO ────────────────────────────────────────────────────────────────
 const io = new Server(server, {
   cors: { origin: '*' },
   pingTimeout: 60000,
   pingInterval: 25000,
   transports: ['websocket', 'polling'],
-  maxHttpBufferSize: 50e6,
+  // Sem imagens base64 no WebSocket — payload pequeno agora
+  maxHttpBufferSize: 2e6,
 });
 
-// ─── Config ───────────────────────────────────────────────────────────────────
-const PORT = process.env.PORT || 3000;
-const PASSWORD = process.env.BOARD_PASSWORD || 'live123';
+// ─── Multer: salva imagens em disco com nome único ────────────────────────────
+const storage = multer.diskStorage({
+  destination: (_, __, cb) => cb(null, UPLOADS),
+  filename:    (_, file, cb) => {
+    const ext = path.extname(file.originalname) || '.png';
+    cb(null, uuidv4() + ext);
+  },
+});
+const upload = multer({
+  storage,
+  limits: { fileSize: 20 * 1024 * 1024 }, // 20MB por arquivo
+  fileFilter: (_, file, cb) => {
+    if (file.mimetype.startsWith('image/')) cb(null, true);
+    else cb(new Error('Apenas imagens são permitidas'));
+  },
+});
 
-// Sessões válidas: Set de tokens gerados no login
+// ─── Auth ─────────────────────────────────────────────────────────────────────
 const sessions = new Set();
 
-// ─── Board state em memória ───────────────────────────────────────────────────
-let boardState = { objects: {} };
+function getToken(req) {
+  const c = req.headers.cookie || '';
+  const m = c.match(/lb_session=([^;]+)/);
+  return m ? m[1] : null;
+}
+function isAuth(req) { return sessions.has(getToken(req)); }
+
+// ─── Board state ──────────────────────────────────────────────────────────────
+// Objetos nunca carregam src base64 — apenas a URL /uploads/<filename>
+let boardState    = { objects: {} };
 let connectedUsers = {};
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
-app.use(express.json({ limit: '50mb' }));
+app.use(express.json({ limit: '1mb' })); // pequeno — sem base64
 
-// Lê o cookie de sessão da requisição
-function getSessionToken(req) {
-  const cookie = req.headers.cookie || '';
-  const match = cookie.match(/lb_session=([^;]+)/);
-  return match ? match[1] : null;
+// Serve uploads estaticamente
+app.use('/uploads', express.static(UPLOADS));
+
+
+// Extrai o filename de uma URL de imagem (aceita URL absoluta ou relativa)
+function imgFilename(src) {
+  if (!src) return null;
+  try {
+    // URL absoluta: http://host/uploads/abc.png -> abc.png
+    const u = new URL(src);
+    const base = path.basename(u.pathname);
+    if (base) return base;
+  } catch (_) {
+    // URL relativa: /uploads/abc.png -> abc.png
+    if (src.includes('/uploads/')) return path.basename(src);
+  }
+  return null;
 }
 
-function isAuthenticated(req) {
-  return sessions.has(getSessionToken(req));
+function deleteImgFile(src) {
+  const filename = imgFilename(src);
+  if (!filename) return;
+  const filepath = path.join(UPLOADS, filename);
+  fs.unlink(filepath, (err) => {
+    if (err && err.code !== 'ENOENT') console.warn('[delete]', err.message);
+    else if (!err) console.log('[delete] removido:', filename);
+  });
 }
-
-// ─── Rotas de autenticação ────────────────────────────────────────────────────
-
-// Login: recebe senha, devolve cookie de sessão
-app.post('/login', (req, res) => {
+// ─── Auth routes ──────────────────────────────────────────────────────────────
+app.post('/auth', (req, res) => {
   const { password } = req.body || {};
   if (password === PASSWORD) {
     const token = uuidv4();
@@ -55,37 +101,42 @@ app.post('/login', (req, res) => {
   }
 });
 
-// Check: verifica se a sessão ainda é válida
 app.get('/check', (req, res) => {
-  if (isAuthenticated(req)) res.json({ ok: true });
-  else res.status(401).json({ ok: false });
+  isAuth(req) ? res.json({ ok: true }) : res.status(401).json({ ok: false });
 });
 
-// ─── Rotas de páginas ────────────────────────────────────────────────────────
+// ─── Upload de imagem: POST /upload ──────────────────────────────────────────
+// Recebe o arquivo binário, salva em disco, retorna só a URL
+app.post('/upload', upload.single('image'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo' });
+  // URL relativa — funciona em LAN e internet
+  const url = '/uploads/' + req.file.filename;
+  console.log(`[upload] ${req.file.originalname} → ${url} (${(req.file.size/1024).toFixed(1)}KB)`);
+  res.json({ url });
+});
+
+// ─── Páginas ──────────────────────────────────────────────────────────────────
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, '../public/index.html'));
 });
-
 app.get('/board.html', (req, res) => {
-  if (!isAuthenticated(req)) return res.redirect('/');
+  if (!isAuth(req)) return res.redirect('/');
   res.sendFile(path.join(__dirname, '../public/board.html'));
 });
-
 app.get('/view', (req, res) => {
   res.sendFile(path.join(__dirname, '../public/view.html'));
 });
-
-// Arquivos estáticos (socket.io client, fabric, etc.) — sem checar auth
 app.use(express.static(path.join(__dirname, '../public')));
 
-// ─── Socket.IO ────────────────────────────────────────────────────────────────
+// ─── Socket.IO handlers ───────────────────────────────────────────────────────
 io.on('connection', (socket) => {
   const clientType = socket.handshake.query.type || 'editor';
-  const userId = uuidv4().slice(0, 8);
-  const userColor = `hsl(${Math.floor(Math.random() * 360)}, 70%, 60%)`;
+  const userId     = uuidv4().slice(0, 8);
+  const userColor  = `hsl(${Math.floor(Math.random() * 360)}, 70%, 60%)`;
 
   console.log(`[${new Date().toLocaleTimeString()}] ${clientType} conectado: ${userId}`);
 
+  // Estado inicial — objetos leves (só URLs, sem base64)
   socket.emit('board:init', { state: boardState, userId, userColor });
 
   if (clientType === 'editor') {
@@ -94,38 +145,34 @@ io.on('connection', (socket) => {
   }
 
   socket.on('object:add', (obj) => {
-    boardState.objects[obj.id] = { ...obj, lastModified: Date.now() };
+    boardState.objects[obj.id] = { ...obj, ts: Date.now() };
     socket.broadcast.emit('object:add', obj);
   });
 
   socket.on('object:modify', (data) => {
-    // Substitui completamente para não corromper o estado
-    boardState.objects[data.id] = { ...data, lastModified: Date.now() };
+    boardState.objects[data.id] = { ...data, ts: Date.now() };
     socket.broadcast.emit('object:modify', data);
   });
 
   socket.on('object:remove', (ids) => {
     const list = Array.isArray(ids) ? ids : [ids];
-    list.forEach(id => delete boardState.objects[id]);
+    list.forEach(id => {
+      // Remove o arquivo de disco se for imagem
+      const obj = boardState.objects[id];
+      if (obj && obj.type === 'image') deleteImgFile(obj.src);
+      delete boardState.objects[id];
+    });
     socket.broadcast.emit('object:remove', list);
   });
 
   socket.on('objects:batch', (objects) => {
-    objects.forEach(obj => {
-      boardState.objects[obj.id] = { ...obj, lastModified: Date.now() };
-    });
+    objects.forEach(obj => { boardState.objects[obj.id] = { ...obj, ts: Date.now() }; });
     socket.broadcast.emit('objects:batch', objects);
   });
 
-  socket.on('draw:start', (data) => {
-    socket.broadcast.emit('draw:start', { ...data, userId });
-  });
-
-  socket.on('draw:move', (data) => {
-    socket.broadcast.volatile.emit('draw:move', { ...data, userId });
-  });
-
-  socket.on('draw:end', (data) => {
+  socket.on('draw:start', (data) => socket.broadcast.emit('draw:start', { ...data, userId }));
+  socket.on('draw:move',  (data) => socket.broadcast.volatile.emit('draw:move', { ...data, userId }));
+  socket.on('draw:end',   (data) => {
     if (data.object) boardState.objects[data.object.id] = data.object;
     socket.broadcast.emit('draw:end', { ...data, userId });
   });
@@ -135,6 +182,10 @@ io.on('connection', (socket) => {
   });
 
   socket.on('board:clear', () => {
+    // Remove arquivos de imagem do disco
+    Object.values(boardState.objects).forEach(obj => {
+      if (obj.type === 'image') deleteImgFile(obj.src);
+    });
     boardState.objects = {};
     socket.broadcast.emit('board:clear');
   });
