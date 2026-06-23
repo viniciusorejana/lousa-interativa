@@ -734,6 +734,9 @@ window.addEventListener('keydown', e => {
     else if (e.key === 'a') { e.preventDefault(); canvas.setActiveObject(new fabric.ActiveSelection(canvas.getObjects(), { canvas })); canvas.renderAll(); }
     return;
   }
+
+  if (canvas.getActiveObject() && canvas.getActiveObject().isEditing) return;
+
   switch (e.key) {
     case 'v': setTool('select'); break; case 'p': setTool('pen'); break;
     case 'e': setTool('eraser'); break; case 'r': setTool('rect'); break;

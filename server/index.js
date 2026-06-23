@@ -10,8 +10,8 @@ const app    = express();
 const server = http.createServer(app);
 
 // ─── Config ───────────────────────────────────────────────────────────────────
-const PORT     = process.env.PORT || 3000;
-const PASSWORD = process.env.BOARD_PASSWORD || 'live123';
+const PORT     = process.env.PORT;
+const PASSWORD = process.env.BOARD_PASSWORD;
 const UPLOADS  = path.join(__dirname, '../uploads');
 if (!fs.existsSync(UPLOADS)) fs.mkdirSync(UPLOADS, { recursive: true });
 
@@ -117,6 +117,7 @@ app.post('/upload', upload.single('image'), (req, res) => {
 
 // ─── Páginas ──────────────────────────────────────────────────────────────────
 app.get('/', (req, res) => {
+  if (isAuth(req)) return res.redirect('/board.html');
   res.sendFile(path.join(__dirname, '../public/index.html'));
 });
 app.get('/board.html', (req, res) => {
@@ -208,8 +209,7 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`\n╔══════════════════════════════════════════╗`);
   console.log(`║         LiveBoard rodando!               ║`);
   console.log(`╠══════════════════════════════════════════╣`);
-  console.log(`║  Editor:   http://localhost:${PORT}           ║`);
-  console.log(`║  OBS/View: http://localhost:${PORT}/view     ║`);
-  console.log(`║  Senha:    ${PASSWORD.padEnd(31)}║`);
+  console.log(`║  Editor:   http://localhost:${PORT}         ║`);
+  console.log(`║  OBS/View: http://localhost:${PORT}/view    ║`);
   console.log(`╚══════════════════════════════════════════╝\n`);
 });
