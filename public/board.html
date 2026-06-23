@@ -184,11 +184,45 @@ const remoteStrokes = {}, remoteCursors = {};
 
 // Throttle para sync em tempo real durante transformações (16ms ≈ 60fps)
 let lastLiveSyncAt = 0;
-function throttledSync(obj) {
+function throttledSync(target) {
   const now = Date.now();
   if (now - lastLiveSyncAt < 16) return;
   lastLiveSyncAt = now;
-  if (obj && obj.id) socket.volatile.emit('object:modify', ser(obj));
+  syncObjectsAbsolute(target);
+}
+
+// Serializa objetos com coordenadas absolutas no canvas.
+// Quando target é um ActiveSelection, os filhos têm coords relativas ao
+// centro do grupo — precisamos converter para absolutas antes de emitir.
+function syncObjectsAbsolute(target) {
+  if (!target) return;
+  const isMulti = target.type === 'activeSelection' || target.type === 'group';
+
+  if (!isMulti) {
+    // Objeto único: coordenadas já são absolutas
+    if (target.id) socket.volatile.emit('object:modify', ser(target));
+    return;
+  }
+
+  // Grupo: calcula posição absoluta de cada filho usando a matrix do grupo
+  const groupMatrix = target.calcTransformMatrix();
+  const groupDecomp = fabric.util.qrDecompose(groupMatrix);
+
+  target.getObjects().forEach(obj => {
+    if (!obj.id) return;
+    // Converte o centro do objeto (relativo ao grupo) para canvas absoluto
+    const absCenter = fabric.util.transformPoint(
+      { x: obj.left || 0, y: obj.top || 0 },
+      groupMatrix
+    );
+    const data    = ser(obj);
+    data.left     = absCenter.x;
+    data.top      = absCenter.y;
+    data.scaleX   = (obj.scaleX || 1) * groupDecomp.scaleX;
+    data.scaleY   = (obj.scaleY || 1) * groupDecomp.scaleY;
+    data.angle    = (obj.angle  || 0) + groupDecomp.angle;
+    socket.volatile.emit('object:modify', data);
+  });
 }
 
 // ── Socket ────────────────────────────────────────────────────────────────────
@@ -477,9 +511,38 @@ canvas.on('path:created', opt => {
 canvas.on('object:modified', opt => {
   if (!opt.target) return;
   pushH();
-  const objs = canvas.getActiveObjects().length > 1 ? canvas.getActiveObjects() : [opt.target];
-  syncMod(objs);
+  // Usa syncObjectsAbsolute para garantir coords corretas mesmo em seleção múltipla
+  syncObjectsAbsoluteFinal(opt.target);
 });
+
+// Versão "final" (emit garantido, sem throttle) para quando o usuário solta o mouse
+function syncObjectsAbsoluteFinal(target) {
+  if (!target) return;
+  const isMulti = target.type === 'activeSelection' || target.type === 'group';
+
+  if (!isMulti) {
+    if (target.id) socket.emit('object:modify', ser(target));
+    return;
+  }
+
+  const groupMatrix = target.calcTransformMatrix();
+  const groupDecomp = fabric.util.qrDecompose(groupMatrix);
+
+  target.getObjects().forEach(obj => {
+    if (!obj.id) return;
+    const absCenter = fabric.util.transformPoint(
+      { x: obj.left || 0, y: obj.top || 0 },
+      groupMatrix
+    );
+    const data  = ser(obj);
+    data.left   = absCenter.x;
+    data.top    = absCenter.y;
+    data.scaleX = (obj.scaleX || 1) * groupDecomp.scaleX;
+    data.scaleY = (obj.scaleY || 1) * groupDecomp.scaleY;
+    data.angle  = (obj.angle  || 0) + groupDecomp.angle;
+    socket.emit('object:modify', data);
+  });
+}
 
 canvas.on('selection:created', updCtx);
 canvas.on('selection:updated', updCtx);
@@ -620,7 +683,16 @@ function ser(obj) {
   return j;
 }
 function emitAdd(obj) { if (!obj.id) obj.id = genId(); socket.emit('object:add', ser(obj)); }
-function syncMod(objs) { objs.forEach(o => { if (o.id) socket.emit('object:modify', ser(o)); }); }
+function syncMod(objs) {
+  // Se há uma ActiveSelection ativa, usa ela para calcular coords absolutas
+  const sel = canvas.getActiveObject();
+  const isMulti = sel && (sel.type === 'activeSelection' || sel.type === 'group') && objs.length > 1;
+  if (isMulti) {
+    syncObjectsAbsoluteFinal(sel);
+  } else {
+    objs.forEach(o => { if (o.id) socket.emit('object:modify', ser(o)); });
+  }
+}
 
 // ── Deserialização ────────────────────────────────────────────────────────────
 function getFabricType(type) {
