@@ -33,6 +33,11 @@ const socket = io({ query: { type: 'view' }, transports: ['websocket'] });
 socket.on('board:init',    ({ state }) => loadState(state));
 socket.on('object:add',    d           => addOrUpd(d));
 socket.on('object:modify', d           => addOrUpd(d));
+socket.on('objects:transform', updates => { updates.forEach(d => { if (findById(d.id)) applyTransform(d); }); canvas.renderAll(); });
+socket.on('zorder:sync', order => {
+  order.forEach((id, idx) => { const o = findById(id); if (o) canvas.moveTo(o, idx); });
+  canvas.renderAll();
+});
 socket.on('object:remove', ids         => { ids.forEach(id => { const o = findById(id); if (o) canvas.remove(o); }); canvas.renderAll(); });
 socket.on('objects:batch', objs        => { objs.forEach(d => addOrUpd(d, false)); canvas.renderAll(); });
 socket.on('board:clear',   ()          => { canvas.clear(); mkTransp(); canvas.renderAll(); });
@@ -61,9 +66,43 @@ socket.on('draw:end', ({ userId, object }) => {
 
 function findById(id) { return canvas.getObjects().find(o => o.id === id); }
 
+function applyTransform(data) {
+  const obj = findById(data.id); if (!obj) return;
+  const { left, top, scaleX, scaleY, angle, opacity } = data;
+  obj.set({ scaleX, scaleY, angle, opacity });
+  if (obj.originX !== 'left' || obj.originY !== 'top') obj.set({ originX: 'left', originY: 'top' });
+  obj.set({ left, top });
+  if (data.type === 'i-text' || data.type === 'text') {
+    if (data.text     !== undefined) obj.set({ text:     data.text });
+    if (data.fill     !== undefined) obj.set({ fill:     data.fill });
+    if (data.fontSize !== undefined) obj.set({ fontSize: data.fontSize });
+  }
+  obj.setCoords();
+}
+
 function addOrUpd(data, render = true) {
-  const ex = findById(data.id); if (ex) canvas.remove(ex);
-  deser(data, o => { o.selectable = false; o.evented = false; canvas.add(o); if (render) canvas.renderAll(); });
+  const ex = findById(data.id);
+  if (ex && ex.type === data.type) {
+    applyTransform(data);
+    const visualProps = ['fill','stroke','strokeWidth','opacity','rx','ry','width','height','x1','y1','x2','y2','path'];
+    const update = {};
+    visualProps.forEach(k => { if (data[k] !== undefined) update[k] = data[k]; });
+    if (Object.keys(update).length) ex.set(update);
+    ex.setCoords();
+    if (render) canvas.renderAll();
+  }
+  if (ex) canvas.remove(ex);
+  deser(data, o => {
+    o.selectable = false; o.evented = false;
+    canvas.add(o);
+    if (data.zIndex !== undefined) {
+      const objs = canvas.getObjects();
+      const cur  = objs.indexOf(o);
+      const tgt  = Math.min(data.zIndex, objs.length - 1);
+      if (cur !== tgt) canvas.moveTo(o, tgt);
+    }
+    if (render) canvas.renderAll();
+  });
 }
 
 function loadState(state) {

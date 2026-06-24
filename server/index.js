@@ -139,6 +139,10 @@ io.on('connection', (socket) => {
 
   // Estado inicial — objetos leves (só URLs, sem base64)
   socket.emit('board:init', { state: boardState, userId, userColor });
+  // Envia a ordem dos objetos logo após o estado inicial
+  if (boardState.zorder && boardState.zorder.length) {
+    socket.emit('zorder:sync', boardState.zorder);
+  }
 
   if (clientType === 'editor') {
     connectedUsers[userId] = { id: userId, color: userColor };
@@ -169,6 +173,17 @@ io.on('connection', (socket) => {
   socket.on('objects:batch', (objects) => {
     objects.forEach(obj => { boardState.objects[obj.id] = { ...obj, ts: Date.now() }; });
     socket.broadcast.emit('objects:batch', objects);
+  });
+
+  // Batch de transforms (seleção múltipla) — relay volatile, não salva no boardState
+  socket.on('objects:transform', (updates) => {
+    socket.broadcast.volatile.emit('objects:transform', updates);
+  });
+
+  // Z-order: salva e repassa a ordem dos objetos
+  socket.on('zorder:sync', (order) => {
+    boardState.zorder = order;
+    socket.broadcast.emit('zorder:sync', order);
   });
 
   socket.on('draw:start', (data) => socket.broadcast.emit('draw:start', { ...data, userId }));
@@ -209,7 +224,8 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`\n╔══════════════════════════════════════════╗`);
   console.log(`║         LiveBoard rodando!               ║`);
   console.log(`╠══════════════════════════════════════════╣`);
-  console.log(`║  Editor:   http://localhost:${PORT}         ║`);
-  console.log(`║  OBS/View: http://localhost:${PORT}/view    ║`);
+  console.log(`║  Editor:   http://localhost:${PORT}           ║`);
+  console.log(`║  OBS/View: http://localhost:${PORT}/view     ║`);
+  console.log(`║  Senha:    ${PASSWORD.padEnd(31)}║`);
   console.log(`╚══════════════════════════════════════════╝\n`);
 });

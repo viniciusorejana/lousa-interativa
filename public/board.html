@@ -148,8 +148,8 @@
   <div class="cr"><span class="cl">Largura</span><input type="number" class="ci" id="cw" min="1" oninput="resizeSel('w',this.value)"></div>
   <div class="cr"><span class="cl">Altura</span><input type="number" class="ci" id="ch" min="1" oninput="resizeSel('h',this.value)"></div>
   <div class="cr"><span class="cl">Opacidade</span><input type="number" class="ci" id="cop" min="0" max="100" oninput="setSelOp(this.value)"></div>
-  <button class="cb" onclick="canvas.getActiveObjects().forEach(o=>canvas.sendToBack(o));canvas.renderAll();syncMod(canvas.getActiveObjects())">Para trás</button>
-  <button class="cb" onclick="canvas.getActiveObjects().forEach(o=>canvas.bringToFront(o));canvas.renderAll();syncMod(canvas.getActiveObjects())">Para frente</button>
+  <button class="cb" onclick="canvas.getActiveObjects().forEach(o=>canvas.sendToBack(o));canvas.renderAll();emitZOrder()">Para trás</button>
+  <button class="cb" onclick="canvas.getActiveObjects().forEach(o=>canvas.bringToFront(o));canvas.renderAll();emitZOrder()">Para frente</button>
   <button class="cb d" onclick="delSel()">Excluir</button>
 </div>
 
@@ -188,41 +188,75 @@ function throttledSync(target) {
   const now = Date.now();
   if (now - lastLiveSyncAt < 16) return;
   lastLiveSyncAt = now;
-  syncObjectsAbsolute(target);
+  emitObjectsFromTarget(target, true);
 }
 
-// Serializa objetos com coordenadas absolutas no canvas.
-// Quando target é um ActiveSelection, os filhos têm coords relativas ao
-// centro do grupo — precisamos converter para absolutas antes de emitir.
-function syncObjectsAbsolute(target) {
+// Extrai a transformação ABSOLUTA de um objeto no canvas.
+// Funciona tanto para objetos isolados quanto para filhos de ActiveSelection.
+// O Fabric guarda coords relativas ao grupo durante a seleção múltipla —
+// obj.calcTransformMatrix() resolve isso sozinho, pois multiplica
+// a matrix do pai pela do filho, dando a transformação final no canvas.
+function getAbsoluteTransform(obj) {
+  // Usa a matrix absoluta do objeto (já inclui transformação do grupo pai).
+  // Emitimos apenas left/top/scaleX/scaleY/angle/flipX/flipY — tudo em
+  // coordenadas absolutas do canvas, com origin left/top.
+  const m = obj.calcTransformMatrix();
+  const d = fabric.util.qrDecompose(m);
+
+  // Centro absoluto
+  const cx = d.translateX;
+  const cy = d.translateY;
+
+  // scaleX/Y já incluem sinais de flip na decomposição
+  const sx = d.scaleX;
+  const sy = d.scaleY;
+
+  // Dimensão real (absoluta), usando o tamanho base do objeto × escala
+  const w = (obj.width  || 0) * Math.abs(sx);
+  const h = (obj.height || 0) * Math.abs(sy);
+
+  const rad = (d.angle || 0) * Math.PI / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+
+  // Canto superior esquerdo = centro deslocado por (-w/2, -h/2) rotacionado
+  const left = cx - (cos * w / 2 - sin * h / 2);
+  const top  = cy - (sin * w / 2 + cos * h / 2);
+
+  return { left, top, scaleX: sx, scaleY: sy, angle: d.angle, originX: 'left', originY: 'top' };
+}
+
+// Emite updates de transformação para todos os objetos num único evento batch.
+// Isso garante que o receptor aplique TODOS de uma vez antes de renderizar.
+// volatile=true para drag (descartável se engarrafar), false para sync final.
+function emitObjectsFromTarget(target, isVolatile) {
   if (!target) return;
+
   const isMulti = target.type === 'activeSelection' || target.type === 'group';
+  const objs = isMulti ? target.getObjects() : [target];
 
-  if (!isMulti) {
-    // Objeto único: coordenadas já são absolutas
-    if (target.id) socket.volatile.emit('object:modify', ser(target));
-    return;
-  }
-
-  // Grupo: calcula posição absoluta de cada filho usando a matrix do grupo
-  const groupMatrix = target.calcTransformMatrix();
-  const groupDecomp = fabric.util.qrDecompose(groupMatrix);
-
-  target.getObjects().forEach(obj => {
+  // Coleta todos os dados com transformação absoluta
+  const updates = [];
+  objs.forEach(obj => {
     if (!obj.id) return;
-    // Converte o centro do objeto (relativo ao grupo) para canvas absoluto
-    const absCenter = fabric.util.transformPoint(
-      { x: obj.left || 0, y: obj.top || 0 },
-      groupMatrix
-    );
-    const data    = ser(obj);
-    data.left     = absCenter.x;
-    data.top      = absCenter.y;
-    data.scaleX   = (obj.scaleX || 1) * groupDecomp.scaleX;
-    data.scaleY   = (obj.scaleY || 1) * groupDecomp.scaleY;
-    data.angle    = (obj.angle  || 0) + groupDecomp.angle;
-    socket.volatile.emit('object:modify', data);
+    const data = ser(obj);
+    Object.assign(data, getAbsoluteTransform(obj));
+    updates.push(data);
   });
+
+  if (!updates.length) return;
+
+  if (updates.length === 1) {
+    // Objeto único: usa object:modify normal
+    isVolatile
+      ? socket.volatile.emit('object:modify', updates[0])
+      : socket.emit('object:modify', updates[0]);
+  } else {
+    // Múltiplos: envia tudo num único evento para aplicar junto
+    isVolatile
+      ? socket.volatile.emit('objects:transform', updates)
+      : socket.emit('objects:transform', updates);
+  }
 }
 
 // ── Socket ────────────────────────────────────────────────────────────────────
@@ -246,7 +280,23 @@ socket.on('users:update', (users) => {
     users.length + ' editor' + (users.length !== 1 ? 'es' : '') + ' online';
 });
 socket.on('object:add',    d    => addOrUpd(d));
+socket.on('zorder:sync', order => {
+  order.forEach((id, idx) => {
+    const o = findById(id); if (o) canvas.moveTo(o, idx);
+  });
+  canvas.renderAll();
+});
 socket.on('object:modify', d    => addOrUpd(d));
+// Batch de transforms: aplica todos sem renderAll intermediário, depois renderiza uma vez
+socket.on('objects:transform', updates => {
+  updates.forEach(d => {
+    // Se o objeto existe: atualiza in-place
+    // Se não existe ainda (lag na chegada do object:add): ignora silenciosamente
+    // — o state completo chegará via board:sync ou no próximo object:modify
+    if (findById(d.id)) applyTransform(d);
+  });
+  canvas.renderAll();
+});
 socket.on('object:remove', ids  => { ids.forEach(id => { const o = findById(id); if (o) canvas.remove(o); }); canvas.renderAll(); });
 socket.on('objects:batch', objs => { objs.forEach(d => addOrUpd(d, false)); canvas.renderAll(); });
 socket.on('board:clear',   ()   => { canvas.clear(); canvas.backgroundColor = '#1e1e2a'; canvas.renderAll(); });
@@ -511,38 +561,9 @@ canvas.on('path:created', opt => {
 canvas.on('object:modified', opt => {
   if (!opt.target) return;
   pushH();
-  // Usa syncObjectsAbsolute para garantir coords corretas mesmo em seleção múltipla
-  syncObjectsAbsoluteFinal(opt.target);
+  // Emit final garantido (não volatile) com coords absolutas corretas
+  emitObjectsFromTarget(opt.target, false);
 });
-
-// Versão "final" (emit garantido, sem throttle) para quando o usuário solta o mouse
-function syncObjectsAbsoluteFinal(target) {
-  if (!target) return;
-  const isMulti = target.type === 'activeSelection' || target.type === 'group';
-
-  if (!isMulti) {
-    if (target.id) socket.emit('object:modify', ser(target));
-    return;
-  }
-
-  const groupMatrix = target.calcTransformMatrix();
-  const groupDecomp = fabric.util.qrDecompose(groupMatrix);
-
-  target.getObjects().forEach(obj => {
-    if (!obj.id) return;
-    const absCenter = fabric.util.transformPoint(
-      { x: obj.left || 0, y: obj.top || 0 },
-      groupMatrix
-    );
-    const data  = ser(obj);
-    data.left   = absCenter.x;
-    data.top    = absCenter.y;
-    data.scaleX = (obj.scaleX || 1) * groupDecomp.scaleX;
-    data.scaleY = (obj.scaleY || 1) * groupDecomp.scaleY;
-    data.angle  = (obj.angle  || 0) + groupDecomp.angle;
-    socket.emit('object:modify', data);
-  });
-}
 
 canvas.on('selection:created', updCtx);
 canvas.on('selection:updated', updCtx);
@@ -573,27 +594,46 @@ function delSel() {
 }
 
 // ── Criação de formas ────────────────────────────────────────────────────────
-// id opcional: reutiliza o mesmo id para atualizar em vez de criar novo
+// Linhas e setas usam fabric.Path — serializa/deserializa perfeitamente
+// sem o problema de x1/y1/x2/y2 relativos ao bounding box interno.
 function mkShape(t, s, e, id) {
+  const oid = id || genId();
   const base = {
     stroke: color, strokeWidth: sz,
-    fill: fillShape ? color : 'transparent',
-    opacity: op, selectable: true, evented: true, strokeUniform: true,
-    id: id || genId()
+    fill: 'transparent',
+    opacity: op, selectable: true, evented: true,
+    strokeLineCap: 'round', strokeLineJoin: 'round',
+    id: oid
   };
-  if (t === 'rect')   return new fabric.Rect({ ...base, left: Math.min(s.x,e.x), top: Math.min(s.y,e.y), width: Math.abs(e.x-s.x)||1, height: Math.abs(e.y-s.y)||1 });
-  if (t === 'circle') return new fabric.Ellipse({ ...base, left: Math.min(s.x,e.x), top: Math.min(s.y,e.y), rx: Math.abs(e.x-s.x)/2||1, ry: Math.abs(e.y-s.y)/2||1 });
-  if (t === 'line')   return new fabric.Line([s.x, s.y, e.x, e.y], { ...base, fill: null });
+  if (t === 'rect') return new fabric.Rect({
+    ...base, fill: fillShape ? color : 'transparent',
+    left: Math.min(s.x,e.x), top: Math.min(s.y,e.y),
+    width: Math.abs(e.x-s.x)||1, height: Math.abs(e.y-s.y)||1
+  });
+  if (t === 'circle') return new fabric.Ellipse({
+    ...base, fill: fillShape ? color : 'transparent',
+    left: Math.min(s.x,e.x), top: Math.min(s.y,e.y),
+    rx: Math.abs(e.x-s.x)/2||1, ry: Math.abs(e.y-s.y)/2||1
+  });
+  if (t === 'line') {
+    // Path M x1 y1 L x2 y2 — posição absoluta preservada no JSON
+    return new fabric.Path('M ' + s.x + ' ' + s.y + ' L ' + e.x + ' ' + e.y, {
+      ...base, fill: null
+    });
+  }
   if (t === 'arrow') {
-    const ang = Math.atan2(e.y-s.y, e.x-s.x), hl = Math.max(12, sz*3);
-    return new fabric.Group([
-      new fabric.Line([s.x,s.y,e.x,e.y], { ...base, fill: null }),
-      new fabric.Polygon([
-        {x:e.x, y:e.y},
-        {x:e.x+Math.cos(ang+Math.PI*.8)*hl, y:e.y+Math.sin(ang+Math.PI*.8)*hl},
-        {x:e.x+Math.cos(ang-Math.PI*.8)*hl, y:e.y+Math.sin(ang-Math.PI*.8)*hl}
-      ], { ...base, fill: color })
-    ], { id: base.id, selectable: true });
+    const ang = Math.atan2(e.y-s.y, e.x-s.x);
+    const hl  = Math.max(14, sz * 3);
+    const a1  = ang + Math.PI * 0.8;
+    const a2  = ang - Math.PI * 0.8;
+    const hx1 = e.x + Math.cos(a1) * hl, hy1 = e.y + Math.sin(a1) * hl;
+    const hx2 = e.x + Math.cos(a2) * hl, hy2 = e.y + Math.sin(a2) * hl;
+    // Tudo num único Path: linha + cabeça da seta
+    const d = [
+      'M', s.x, s.y, 'L', e.x, e.y,          // haste
+      'M', hx1, hy1, 'L', e.x, e.y, 'L', hx2, hy2  // cabeça
+    ].join(' ');
+    return new fabric.Path(d, { ...base, fill: null, stroke: color });
   }
 }
 
@@ -680,15 +720,25 @@ function ser(obj) {
     j.src = el ? el.src : (j.src || '');
     if (j.src.startsWith('blob:')) j.src = '';
   }
+  // Inclui zIndex para que receptores possam restaurar a ordem correta
+  j.zIndex = canvas.getObjects().indexOf(obj);
   return j;
 }
-function emitAdd(obj) { if (!obj.id) obj.id = genId(); socket.emit('object:add', ser(obj)); }
+function emitAdd(obj) {
+  if (!obj.id) obj.id = genId();
+  socket.emit('object:add', ser(obj));
+}
+function emitZOrder() {
+  // Emite a ordem completa de todos os objetos para sync de z-index
+  const order = canvas.getObjects().map(o => o.id).filter(Boolean);
+  socket.emit('zorder:sync', order);
+}
 function syncMod(objs) {
-  // Se há uma ActiveSelection ativa, usa ela para calcular coords absolutas
+  // Usa a ActiveSelection ativa (se existir) para ter coords absolutas corretas
   const sel = canvas.getActiveObject();
-  const isMulti = sel && (sel.type === 'activeSelection' || sel.type === 'group') && objs.length > 1;
+  const isMulti = sel && (sel.type === 'activeSelection') && objs.length > 1;
   if (isMulti) {
-    syncObjectsAbsoluteFinal(sel);
+    emitObjectsFromTarget(sel, false);
   } else {
     objs.forEach(o => { if (o.id) socket.emit('object:modify', ser(o)); });
   }
@@ -709,9 +759,64 @@ function deser(data, cb) {
   FT.fromObject(data, o => { o.id = data.id; cb(o); });
 }
 function findById(id) { return canvas.getObjects().find(o => o.id === id); }
+// applyTransform: atualiza objeto existente IN-PLACE sem remover/recriar.
+// Evita o flash/duplicação de imagens durante drag com latência alta.
+function applyTransform(data) {
+  const obj = findById(data.id);
+  if (!obj) return;
+
+  const { left, top, scaleX, scaleY, angle, opacity } = data;
+
+  // Aplica escala ANTES de posição para que setCoords calcule corretamente
+  obj.set({ scaleX, scaleY, angle, opacity });
+
+  // Garante que o objeto usa origin left/top (padrão Fabric)
+  if (obj.originX !== 'left' || obj.originY !== 'top') {
+    obj.set({ originX: 'left', originY: 'top' });
+  }
+  obj.set({ left, top });
+
+  // Texto: atualiza conteúdo em tempo real
+  if (data.type === 'i-text' || data.type === 'text') {
+    if (data.text     !== undefined) obj.set({ text:     data.text });
+    if (data.fill     !== undefined) obj.set({ fill:     data.fill });
+    if (data.fontSize !== undefined) obj.set({ fontSize: data.fontSize });
+  }
+
+  obj.setCoords();
+}
+
+// addOrUpd: tenta atualizar in-place; recria só se o objeto não existir ainda
+// ou se o tipo mudou (o que nunca deveria acontecer, mas é seguro checar)
 function addOrUpd(data, render = true) {
-  const ex = findById(data.id); if (ex) canvas.remove(ex);
-  deser(data, o => { canvas.add(o); if (render) canvas.renderAll(); });
+  const ex = findById(data.id);
+
+  // Se já existe e é do mesmo tipo: atualiza in-place (sem remover/recriar)
+  if (ex && ex.type === data.type) {
+    applyTransform(data);
+    // Para tipos que têm mais propriedades visuais (cores, stroke etc)
+    const visualProps = ['fill','stroke','strokeWidth','opacity','rx','ry','width','height','x1','y1','x2','y2','path'];
+    const update = {};
+    visualProps.forEach(k => { if (data[k] !== undefined) update[k] = data[k]; });
+    if (Object.keys(update).length) ex.set(update);
+    ex.setCoords();
+    if (render) canvas.renderAll();
+    return;
+  }
+
+  // Não existe ou tipo diferente: recria
+  if (ex) canvas.remove(ex);
+  deser(data, o => {
+    canvas.add(o);
+    // Restaura z-order se disponível
+    if (data.zIndex !== undefined) {
+      const objs = canvas.getObjects();
+      const cur  = objs.indexOf(o);
+      const tgt  = Math.min(data.zIndex, objs.length - 1);
+      if (cur !== tgt) canvas.moveTo(o, tgt);
+    }
+    if (render) canvas.renderAll();
+  });
 }
 function loadState(state) {
   canvas.clear(); canvas.backgroundColor = '#1e1e2a';
