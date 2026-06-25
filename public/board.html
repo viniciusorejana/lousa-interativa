@@ -8,65 +8,24 @@
     :root { --bg:#0f0f13; --surface:#1a1a24; --surface2:#22222e; --border:#2d2d40; --accent:#7c5cff; --text:#e8e8f0; --muted:#6b6b80; }
     * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
     body { background:#1e1e2a; overflow:hidden; font-family:'Segoe UI',system-ui,sans-serif; color:var(--text); user-select:none; touch-action:none; }
-
-    /* ── Toolbar ── */
-    #toolbar {
-      position:fixed; top:12px; left:50%; transform:translateX(-50%);
-      z-index:1000; display:flex; align-items:center; gap:4px;
-      background:var(--surface); border:1px solid var(--border);
-      border-radius:14px; padding:6px 10px; box-shadow:0 8px 32px rgba(0,0,0,.5);
-      /* mobile: scroll horizontal se não couber */
-      max-width:calc(100vw - 24px); overflow-x:auto; overflow-y:visible;
-      scrollbar-width:none;
-    }
+    #toolbar { position:fixed; top:12px; left:50%; transform:translateX(-50%); z-index:1000; display:flex; align-items:center; gap:4px; background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:6px 10px; box-shadow:0 8px 32px rgba(0,0,0,.5); max-width:calc(100vw - 24px); overflow-x:auto; scrollbar-width:none; }
     #toolbar::-webkit-scrollbar { display:none; }
     .tb-sep { width:1px; height:28px; background:var(--border); margin:0 4px; flex-shrink:0; }
-    .tb-btn {
-      display:flex; align-items:center; justify-content:center;
-      width:42px; height:42px; /* maior para touch */
-      border-radius:8px; border:none; background:transparent;
-      color:var(--muted); cursor:pointer; transition:all .15s;
-      position:relative; flex-shrink:0;
-    }
+    .tb-btn { display:flex; align-items:center; justify-content:center; width:42px; height:42px; border-radius:8px; border:none; background:transparent; color:var(--muted); cursor:pointer; transition:all .15s; position:relative; flex-shrink:0; }
     .tb-btn:hover { background:var(--surface2); color:var(--text); }
     .tb-btn.active { background:rgba(124,92,255,.2); color:var(--accent); }
-    /* Tooltip: só no desktop */
-    .tb-tip {
-      position:absolute; top:calc(100% + 8px); left:50%; transform:translateX(-50%);
-      background:#111; color:#eee; font-size:11px; padding:4px 8px;
-      border-radius:6px; white-space:nowrap; pointer-events:none;
-      opacity:0; transition:opacity .15s; z-index:100;
-    }
+    .tb-tip { position:absolute; top:calc(100% + 8px); left:50%; transform:translateX(-50%); background:#111; color:#eee; font-size:11px; padding:4px 8px; border-radius:6px; white-space:nowrap; pointer-events:none; opacity:0; transition:opacity .15s; z-index:100; }
     @media (hover:hover) { .tb-btn:hover .tb-tip { opacity:1; } }
-
-    /* ── Painel de opções ── */
-    #opts {
-      position:fixed; top:70px; left:50%; transform:translateX(-50%);
-      z-index:999; display:flex; align-items:center; gap:8px; flex-wrap:nowrap;
-      background:var(--surface); border:1px solid var(--border);
-      border-radius:12px; padding:8px 12px; box-shadow:0 4px 16px rgba(0,0,0,.4);
-      max-width:calc(100vw - 24px); overflow-x:auto; scrollbar-width:none;
-    }
+    #opts { position:fixed; top:70px; left:50%; transform:translateX(-50%); z-index:999; display:flex; align-items:center; gap:8px; background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:8px 12px; box-shadow:0 4px 16px rgba(0,0,0,.4); max-width:calc(100vw - 24px); overflow-x:auto; scrollbar-width:none; }
     #opts::-webkit-scrollbar { display:none; }
     #opts.hidden { display:none; }
-    .swatch {
-      width:28px; height:28px; /* maior para touch */
-      border-radius:50%; border:2px solid transparent;
-      cursor:pointer; transition:transform .1s; flex-shrink:0;
-    }
+    .swatch { width:28px; height:28px; border-radius:50%; border:2px solid transparent; cursor:pointer; transition:transform .1s; flex-shrink:0; }
     .swatch:hover { transform:scale(1.15); }
     .swatch.sel { border-color:white; }
     input[type="range"] { width:70px; height:4px; accent-color:var(--accent); cursor:pointer; flex-shrink:0; }
     input[type="color"] { width:28px; height:28px; border:1px solid var(--border); border-radius:6px; cursor:pointer; padding:1px; background:var(--surface2); flex-shrink:0; }
     .ol { font-size:11px; color:var(--muted); white-space:nowrap; }
-
-    /* ── Painel contextual ── */
-    #ctx {
-      position:fixed; top:70px; right:8px; z-index:1000;
-      background:var(--surface); border:1px solid var(--border);
-      border-radius:12px; padding:12px; width:180px; display:none;
-      box-shadow:0 8px 24px rgba(0,0,0,.4);
-    }
+    #ctx { position:fixed; top:70px; right:8px; z-index:1000; background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:12px; width:180px; display:none; box-shadow:0 8px 24px rgba(0,0,0,.4); }
     #ctx h4 { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.7px; margin-bottom:10px; }
     .cr { display:flex; align-items:center; justify-content:space-between; gap:6px; margin-bottom:7px; }
     .cl { font-size:12px; color:var(--muted); }
@@ -75,8 +34,6 @@
     .cb { width:100%; padding:8px; border-radius:7px; border:1px solid var(--border); background:var(--surface2); color:var(--text); font-size:12px; cursor:pointer; margin-top:4px; }
     .cb:hover, .cb:active { background:var(--border); }
     .cb.d:hover, .cb.d:active { background:rgba(255,80,80,.15); color:#ff6060; border-color:rgba(255,80,80,.3); }
-
-    /* ── Status ── */
     #users { position:fixed; bottom:14px; left:14px; z-index:1000; display:flex; align-items:center; gap:6px; background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:6px 10px; font-size:12px; }
     .udot { width:8px; height:8px; border-radius:50%; }
     #status { position:fixed; bottom:14px; right:14px; z-index:1000; font-size:11px; color:var(--muted); display:flex; align-items:center; gap:6px; }
@@ -84,12 +41,8 @@
     .sdot.on { background:#4ade80; }
     .sdot.blink { background:#fbbf24; animation:pulse 1s infinite; }
     @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
-
-    /* ── Cursores remotos ── */
     .rcursor { position:fixed; pointer-events:none; z-index:9000; }
     .rcname { position:absolute; left:16px; top:0; font-size:11px; padding:2px 6px; border-radius:4px; white-space:nowrap; color:#000; }
-
-    /* ── Toast ── */
     #toast { position:fixed; bottom:60px; left:50%; transform:translateX(-50%); background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:10px 18px; font-size:13px; color:var(--muted); display:none; z-index:2000; gap:10px; align-items:center; }
     #toast.show { display:flex; }
     .spinner { width:14px; height:14px; border:2px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin .6s linear infinite; }
@@ -97,8 +50,6 @@
   </style>
 </head>
 <body>
-
-<!-- ── Toolbar ── -->
 <div id="toolbar">
   <button class="tb-btn active" id="t-select" onclick="setTool('select')"><svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M5 3l14 9-7 1-3 7z" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="tb-tip">Selecionar (V)</span></button>
   <div class="tb-sep"></div>
@@ -120,7 +71,6 @@
   <button class="tb-btn" onclick="clearAll()" style="color:#ff6060"><svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6M14 11v6"/></svg><span class="tb-tip">Limpar</span></button>
 </div>
 
-<!-- ── Opções ── -->
 <div id="opts" class="hidden">
   <span class="ol">Cor:</span>
   <div style="display:flex;gap:5px;align-items:center;flex-shrink:0">
@@ -142,14 +92,13 @@
   <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--muted);cursor:pointer;flex-shrink:0"><input type="checkbox" id="fill" onchange="fillShape=this.checked">Preen.</label>
 </div>
 
-<!-- ── Painel contextual ── -->
 <div id="ctx">
   <h4>Objeto</h4>
   <div class="cr"><span class="cl">Largura</span><input type="number" class="ci" id="cw" min="1" oninput="resizeSel('w',this.value)"></div>
   <div class="cr"><span class="cl">Altura</span><input type="number" class="ci" id="ch" min="1" oninput="resizeSel('h',this.value)"></div>
   <div class="cr"><span class="cl">Opacidade</span><input type="number" class="ci" id="cop" min="0" max="100" oninput="setSelOp(this.value)"></div>
-  <button class="cb" onclick="canvas.getActiveObjects().forEach(o=>canvas.sendToBack(o));canvas.renderAll();emitZOrder()">Para trás</button>
-  <button class="cb" onclick="canvas.getActiveObjects().forEach(o=>canvas.bringToFront(o));canvas.renderAll();emitZOrder()">Para frente</button>
+  <button class="cb" onclick="sendBackFront('back')">Para trás</button>
+  <button class="cb" onclick="sendBackFront('front')">Para frente</button>
   <button class="cb d" onclick="delSel()">Excluir</button>
 </div>
 
@@ -161,12 +110,14 @@
 <script src="/socket.io/socket.io.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.1/fabric.min.js"></script>
 <script>
-// ── Canvas setup ─────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// CANVAS
+// ═══════════════════════════════════════════════════════════════════════════════
 const canvas = new fabric.Canvas('board', {
   width: window.innerWidth, height: window.innerHeight,
   selection: true, renderOnAddRemove: false,
   enableRetinaScaling: true, backgroundColor: '#1e1e2a',
-  allowTouchScrolling: false,   // sem scroll — usamos pan manual
+  allowTouchScrolling: false,
 });
 window.addEventListener('resize', () => {
   canvas.setWidth(window.innerWidth);
@@ -174,92 +125,96 @@ window.addEventListener('resize', () => {
   canvas.renderAll();
 });
 
-// ── Estado ────────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// ESTADO
+// ═══════════════════════════════════════════════════════════════════════════════
 let tool = 'select', color = '#ffffff', sz = 4, op = 1, fillShape = false;
 let myId = null;
-let isDrawing = false, drawStart = null, tmpShape = null;
+let isDrawing = false, drawStart = null, tmpShapeId = null;
 let penActive = false;
 const undoStack = [], redoStack = [], MAX_H = 50;
 const remoteStrokes = {}, remoteCursors = {};
 
-// Throttle para sync em tempo real durante transformações (16ms ≈ 60fps)
-let lastLiveSyncAt = 0;
-function throttledSync(target) {
-  const now = Date.now();
-  if (now - lastLiveSyncAt < 16) return;
-  lastLiveSyncAt = now;
-  emitObjectsFromTarget(target, true);
-}
+// ═══════════════════════════════════════════════════════════════════════════════
+// SERIALIZAÇÃO — ESTRATÉGIA DEFINITIVA
+//
+// PRINCÍPIO: O Fabric normaliza internamente qualquer objeto ao adicioná-lo
+// ao canvas (ajusta left/top, reposiciona pontos de path, etc.).
+// Portanto: sempre serializar DEPOIS que o objeto está no canvas,
+// nunca antes. O JSON resultante é a fonte da verdade.
+//
+// Para imagens: src é a URL /uploads/... (nunca base64)
+// Para transforms em tempo real: enviar apenas left/top/scaleX/scaleY/angle/flipX/flipY
+// ═══════════════════════════════════════════════════════════════════════════════
 
-// Extrai a transformação ABSOLUTA de um objeto no canvas.
-// Funciona tanto para objetos isolados quanto para filhos de ActiveSelection.
-// O Fabric guarda coords relativas ao grupo durante a seleção múltipla —
-// obj.calcTransformMatrix() resolve isso sozinho, pois multiplica
-// a matrix do pai pela do filho, dando a transformação final no canvas.
-function getAbsoluteTransform(obj) {
-  // Usa a matrix absoluta do objeto (já inclui transformação do grupo pai).
-  // Emitimos apenas left/top/scaleX/scaleY/angle/flipX/flipY — tudo em
-  // coordenadas absolutas do canvas, com origin left/top.
-  const m = obj.calcTransformMatrix();
-  const d = fabric.util.qrDecompose(m);
-
-  // Centro absoluto
-  const cx = d.translateX;
-  const cy = d.translateY;
-
-  // scaleX/Y já incluem sinais de flip na decomposição
-  const sx = d.scaleX;
-  const sy = d.scaleY;
-
-  // Dimensão real (absoluta), usando o tamanho base do objeto × escala
-  const w = (obj.width  || 0) * Math.abs(sx);
-  const h = (obj.height || 0) * Math.abs(sy);
-
-  const rad = (d.angle || 0) * Math.PI / 180;
-  const cos = Math.cos(rad);
-  const sin = Math.sin(rad);
-
-  // Canto superior esquerdo = centro deslocado por (-w/2, -h/2) rotacionado
-  const left = cx - (cos * w / 2 - sin * h / 2);
-  const top  = cy - (sin * w / 2 + cos * h / 2);
-
-  return { left, top, scaleX: sx, scaleY: sy, angle: d.angle, originX: 'left', originY: 'top' };
-}
-
-// Emite updates de transformação para todos os objetos num único evento batch.
-// Isso garante que o receptor aplique TODOS de uma vez antes de renderizar.
-// volatile=true para drag (descartável se engarrafar), false para sync final.
-function emitObjectsFromTarget(target, isVolatile) {
-  if (!target) return;
-
-  const isMulti = target.type === 'activeSelection' || target.type === 'group';
-  const objs = isMulti ? target.getObjects() : [target];
-
-  // Coleta todos os dados com transformação absoluta
-  const updates = [];
-  objs.forEach(obj => {
-    if (!obj.id) return;
-    const data = ser(obj);
-    Object.assign(data, getAbsoluteTransform(obj));
-    updates.push(data);
-  });
-
-  if (!updates.length) return;
-
-  if (updates.length === 1) {
-    // Objeto único: usa object:modify normal
-    isVolatile
-      ? socket.volatile.emit('object:modify', updates[0])
-      : socket.emit('object:modify', updates[0]);
-  } else {
-    // Múltiplos: envia tudo num único evento para aplicar junto
-    isVolatile
-      ? socket.volatile.emit('objects:transform', updates)
-      : socket.emit('objects:transform', updates);
+function ser(obj) {
+  const j = obj.toJSON(['id']);
+  if (obj.type === 'image') {
+    const el = obj.getElement();
+    j.src = el ? el.src : (j.src || '');
+    if (j.src.startsWith('blob:')) j.src = '';
   }
+  // Normaliza scale negativo → flipX/Y (forma canônica do Fabric)
+  if (j.scaleX < 0) { j.flipX = !j.flipX; j.scaleX = Math.abs(j.scaleX); }
+  if (j.scaleY < 0) { j.flipY = !j.flipY; j.scaleY = Math.abs(j.scaleY); }
+  j.zIndex = canvas.getObjects().indexOf(obj);
+  return j;
 }
 
-// ── Socket ────────────────────────────────────────────────────────────────────
+// Extrai apenas as propriedades de transformação de um objeto já no canvas.
+// Usado para sync em tempo real durante drag/scale/rotate.
+// NÃO tenta recalcular matrizes — usa os valores que o Fabric já mantém.
+function serTransform(obj) {
+  return {
+    id:     obj.id,
+    type:   obj.type,
+    left:   obj.left,
+    top:    obj.top,
+    scaleX: Math.abs(obj.scaleX || 1),
+    scaleY: Math.abs(obj.scaleY || 1),
+    angle:  obj.angle || 0,
+    flipX:  obj.flipX || false,
+    flipY:  obj.flipY || false,
+    opacity: obj.opacity,
+    zIndex: canvas.getObjects().indexOf(obj),
+  };
+}
+
+// Para objetos dentro de ActiveSelection: calcula a transformação absoluta
+// multiplicando as matrizes do grupo e do objeto filho.
+// Retorna o mesmo formato que serTransform para uso uniforme.
+function serTransformAbsolute(obj, groupMatrix) {
+  // Matrix combinada: grupo × local
+  const localMatrix = obj.calcOwnMatrix();
+  const absMatrix   = fabric.util.multiplyTransformMatrices(groupMatrix, localMatrix);
+  const d           = fabric.util.qrDecompose(absMatrix);
+
+  // d.translateX/Y = centro do objeto no canvas (origin = center)
+  // Converte para left/top (origin = left/top)
+  const w   = (obj.width  || 0) * Math.abs(d.scaleX);
+  const h   = (obj.height || 0) * Math.abs(d.scaleY);
+  const rad = d.angle * Math.PI / 180;
+  const left = d.translateX - (Math.cos(rad) * w / 2 - Math.sin(rad) * h / 2);
+  const top  = d.translateY - (Math.sin(rad) * w / 2 + Math.cos(rad) * h / 2);
+
+  return {
+    id:     obj.id,
+    type:   obj.type,
+    left,
+    top,
+    scaleX: Math.abs(d.scaleX),
+    scaleY: Math.abs(d.scaleY),
+    angle:  d.angle,
+    flipX:  d.scaleX < 0,
+    flipY:  d.scaleY < 0,
+    opacity: obj.opacity,
+    zIndex: canvas.getObjects().indexOf(obj),
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SOCKET
+// ═══════════════════════════════════════════════════════════════════════════════
 const socket = io({ query: { type: 'editor' }, transports: ['websocket'] });
 
 socket.on('connect', () => {
@@ -275,32 +230,34 @@ socket.on('board:init', ({ state, userId, userColor }) => {
   document.getElementById('mydot').style.background = userColor;
   loadState(state);
 });
-socket.on('users:update', (users) => {
+socket.on('users:update', users => {
   document.getElementById('ucnt').textContent =
     users.length + ' editor' + (users.length !== 1 ? 'es' : '') + ' online';
 });
-socket.on('object:add',    d    => addOrUpd(d));
-socket.on('zorder:sync', order => {
-  order.forEach((id, idx) => {
-    const o = findById(id); if (o) canvas.moveTo(o, idx);
-  });
-  canvas.renderAll();
-});
-socket.on('object:modify', d    => addOrUpd(d));
-// Batch de transforms: aplica todos sem renderAll intermediário, depois renderiza uma vez
+
+// Recebe objeto completo (add ou recriação)
+socket.on('object:add', d => applyFull(d));
+// Recebe objeto completo após modificação final
+socket.on('object:modify', d => applyFull(d));
+// Recebe apenas transform (drag em tempo real) — atualiza in-place
+socket.on('object:transform', d => applyTransformOnly(d));
+// Batch de transforms (seleção múltipla)
 socket.on('objects:transform', updates => {
-  updates.forEach(d => {
-    // Se o objeto existe: atualiza in-place
-    // Se não existe ainda (lag na chegada do object:add): ignora silenciosamente
-    // — o state completo chegará via board:sync ou no próximo object:modify
-    if (findById(d.id)) applyTransform(d);
-  });
+  updates.forEach(d => applyTransformOnly(d));
   canvas.renderAll();
 });
-socket.on('object:remove', ids  => { ids.forEach(id => { const o = findById(id); if (o) canvas.remove(o); }); canvas.renderAll(); });
-socket.on('objects:batch', objs => { objs.forEach(d => addOrUpd(d, false)); canvas.renderAll(); });
-socket.on('board:clear',   ()   => { canvas.clear(); canvas.backgroundColor = '#1e1e2a'; canvas.renderAll(); });
-socket.on('board:sync',    st   => { canvas.clear(); canvas.backgroundColor = '#1e1e2a'; loadState(st); });
+
+socket.on('object:remove', ids => {
+  ids.forEach(id => { const o = findById(id); if (o) canvas.remove(o); });
+  canvas.renderAll();
+});
+socket.on('objects:batch', objs => { objs.forEach(d => applyFull(d, false)); canvas.renderAll(); });
+socket.on('board:clear', () => { canvas.clear(); canvas.backgroundColor = '#1e1e2a'; canvas.renderAll(); });
+socket.on('board:sync', st => { canvas.clear(); canvas.backgroundColor = '#1e1e2a'; loadState(st); });
+socket.on('zorder:sync', order => {
+  order.forEach((id, idx) => { const o = findById(id); if (o) canvas.moveTo(o, idx); });
+  canvas.renderAll();
+});
 
 // Stroke streaming
 socket.on('draw:start', ({ userId, x, y, color: c, width: w, opacity: opa }) => {
@@ -323,7 +280,7 @@ socket.on('draw:end', ({ userId, object }) => {
   if (userId === myId) return;
   const s = remoteStrokes[userId];
   if (s) { canvas.remove(s.path); delete remoteStrokes[userId]; }
-  if (object) addOrUpd(object); else canvas.renderAll();
+  if (object) applyFull(object); else canvas.renderAll();
 });
 
 // Cursores remotos
@@ -343,80 +300,140 @@ socket.on('cursor:remove', uid => {
   if (remoteCursors[uid]) { remoteCursors[uid].remove(); delete remoteCursors[uid]; }
 });
 
-// ── Sync em tempo real durante transformações ─────────────────────────────────
-// Qualquer objeto sendo movido/escalado/rotacionado emite a posição frame a frame
-canvas.on('object:moving',   opt => { if (opt.target) throttledSync(opt.target); });
-canvas.on('object:scaling',  opt => { if (opt.target) throttledSync(opt.target); });
-canvas.on('object:rotating', opt => { if (opt.target) throttledSync(opt.target); });
-canvas.on('object:skewing',  opt => { if (opt.target) throttledSync(opt.target); });
+// ═══════════════════════════════════════════════════════════════════════════════
+// APLICAÇÃO DE DADOS RECEBIDOS
+// ═══════════════════════════════════════════════════════════════════════════════
 
-// Formas geométricas em preview: emite o tmpShape durante o drag
-// (usando socket.volatile para não travar se a rede engarrafar)
-let tmpShapeId = null;
-function emitTmpShape(sh) {
-  if (!sh || !sh.id) return;
-  socket.volatile.emit('object:modify', ser(sh));
+// applyFull: reconstrói o objeto completo a partir do JSON serializado.
+// Usado em object:add, object:modify final, draw:end.
+function applyFull(data, render = true) {
+  const ex = findById(data.id);
+  if (ex) canvas.remove(ex);
+  deser(data, o => {
+    canvas.add(o);
+    // Restaura z-order
+    if (data.zIndex !== undefined) {
+      const tgt = Math.min(data.zIndex, canvas.getObjects().length - 1);
+      canvas.moveTo(o, tgt);
+    }
+    if (render) canvas.renderAll();
+  });
 }
 
-// ── Ferramentas ───────────────────────────────────────────────────────────────
-function setTool(t) {
-  tool = t;
-  document.querySelectorAll('.tb-btn').forEach(b => b.classList.remove('active'));
-  const btn = document.getElementById('t-' + t); if (btn) btn.classList.add('active');
-  const opts = document.getElementById('opts');
-  isDrawing = false; drawStart = null;
-  if (tmpShape) {
-    socket.emit('object:remove', [tmpShape.id]);
-    canvas.remove(tmpShape); canvas.renderAll(); tmpShape = null;
+// applyTransformOnly: atualiza APENAS a transformação de um objeto existente.
+// NÃO remove/recria — zero flicker, máxima performance.
+// Usado em object:transform (tempo real durante drag).
+function applyTransformOnly(data) {
+  const obj = findById(data.id);
+  if (!obj) return; // objeto ainda não chegou — será sincronizado no applyFull final
+
+  obj.set({
+    left:    data.left,
+    top:     data.top,
+    scaleX:  Math.abs(data.scaleX || 1),
+    scaleY:  Math.abs(data.scaleY || 1),
+    angle:   data.angle   || 0,
+    flipX:   data.flipX   || false,
+    flipY:   data.flipY   || false,
+    opacity: data.opacity !== undefined ? data.opacity : obj.opacity,
+  });
+  obj.setCoords();
+  // Texto: sync do conteúdo em tempo real
+  if ((data.type === 'i-text' || data.type === 'text') && data.text !== undefined) {
+    obj.set({ text: data.text, fill: data.fill || obj.fill });
   }
-  if (t === 'select') {
-    canvas.isDrawingMode = false; canvas.selection = true;
-    canvas.defaultCursor = 'default'; opts.classList.add('hidden');
-  } else if (t === 'pen') {
-    canvas.isDrawingMode = true; canvas.selection = false;
-    canvas.freeDrawingBrush = new fabric.PencilBrush(canvas);
-    canvas.freeDrawingBrush.color = color;
-    canvas.freeDrawingBrush.width = sz;
-    opts.classList.remove('hidden');
-  } else {
-    canvas.isDrawingMode = false; canvas.selection = false;
-    canvas.defaultCursor = t === 'eraser' ? 'cell' : 'crosshair';
-    opts.classList.remove('hidden');
-  }
 }
 
-function setColor(c, el) {
-  color = c;
-  document.querySelectorAll('.swatch').forEach(s => s.classList.remove('sel'));
-  if (el) el.classList.add('sel');
-  if (canvas.freeDrawingBrush) canvas.freeDrawingBrush.color = c;
-}
-function setSz(v) { sz = parseInt(v); document.getElementById('szv').textContent = v; if (canvas.freeDrawingBrush) canvas.freeDrawingBrush.width = sz; }
-function setOp(v) { op = parseInt(v) / 100; document.getElementById('opv').textContent = v + '%'; if (canvas.freeDrawingBrush) canvas.freeDrawingBrush.opacity = op; }
+// ═══════════════════════════════════════════════════════════════════════════════
+// EMIT — SYNC PARA OUTROS CLIENTES
+// ═══════════════════════════════════════════════════════════════════════════════
 
-// ── Pointer helpers (unifica mouse + touch) ───────────────────────────────────
-// Converte qualquer evento (MouseEvent ou TouchEvent) para coordenadas do canvas
-function getCanvasPoint(e) {
-  const rect = canvas.upperCanvasEl.getBoundingClientRect();
-  let clientX, clientY;
-  if (e.touches && e.touches.length > 0) {
-    clientX = e.touches[0].clientX;
-    clientY = e.touches[0].clientY;
-  } else if (e.changedTouches && e.changedTouches.length > 0) {
-    clientX = e.changedTouches[0].clientX;
-    clientY = e.changedTouches[0].clientY;
-  } else {
-    clientX = e.clientX;
-    clientY = e.clientY;
-  }
-  return {
-    x: (clientX - rect.left) / canvas.getZoom(),
-    y: (clientY - rect.top)  / canvas.getZoom(),
-    clientX, clientY
-  };
+// Throttle: max 60fps para updates em tempo real
+let lastSyncMs = 0;
+function throttle60(fn) {
+  const now = Date.now();
+  if (now - lastSyncMs < 16) return;
+  lastSyncMs = now;
+  fn();
 }
 
-// ── Eventos do canvas: mouse ──────────────────────────────────────────────────
+// Emite transformação em tempo real de um ou vários objetos.
+// Para objeto único: object:transform
+// Para seleção múltipla: objects:transform (batch)
+function emitLiveTransform(target) {
+  if (!target) return;
+  throttle60(() => {
+    const isMulti = target.type === 'activeSelection';
+    if (!isMulti) {
+      if (target.id) socket.volatile.emit('object:transform', serTransform(target));
+      return;
+    }
+    // Seleção múltipla: calcula posição absoluta de cada filho
+    const gm = target.calcTransformMatrix(); // matrix do grupo no canvas
+    const updates = target.getObjects()
+      .filter(o => o.id)
+      .map(o => serTransformAbsolute(o, gm));
+    if (updates.length) socket.volatile.emit('objects:transform', updates);
+  });
+}
+
+// Emite o objeto completo (JSON serializado) após finalizar uma ação.
+function emitFull(obj) {
+  if (!obj.id) obj.id = genId();
+  socket.emit('object:add', ser(obj));
+}
+
+// Emite modify completo (após mouse:up, finalização de redimensionamento, etc.)
+function emitModify(obj) {
+  if (!obj.id) return;
+  socket.emit('object:modify', ser(obj));
+}
+
+// Para seleção múltipla: emite modify completo de cada objeto com coords absolutas.
+// Chamado no object:modified (mouse:up) para sincronização final garantida.
+function emitModifyGroup(target) {
+  if (!target) return;
+  const isMulti = target.type === 'activeSelection';
+  if (!isMulti) { emitModify(target); return; }
+  const gm = target.calcTransformMatrix();
+  target.getObjects().filter(o => o.id).forEach(o => {
+    // Para sync final, precisamos do JSON completo mas com coords absolutas.
+    // Estratégia: desgrupar temporariamente é arriscado.
+    // Em vez disso: pega o JSON do objeto e sobrescreve as propriedades de transform.
+    const abs  = serTransformAbsolute(o, gm);
+    const data = ser(o);
+    Object.assign(data, abs);
+    socket.emit('object:modify', data);
+  });
+}
+
+// Z-order
+function sendBackFront(dir) {
+  canvas.getActiveObjects().forEach(o =>
+    dir === 'back' ? canvas.sendToBack(o) : canvas.bringToFront(o)
+  );
+  canvas.renderAll();
+  const order = canvas.getObjects().map(o => o.id).filter(Boolean);
+  socket.emit('zorder:sync', order);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// EVENTOS DO CANVAS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Sync em tempo real durante transformações
+canvas.on('object:moving',   opt => emitLiveTransform(opt.target));
+canvas.on('object:scaling',  opt => emitLiveTransform(opt.target));
+canvas.on('object:rotating', opt => emitLiveTransform(opt.target));
+canvas.on('object:skewing',  opt => emitLiveTransform(opt.target));
+
+// Sync final após mouse:up — envia o JSON completo
+canvas.on('object:modified', opt => {
+  if (!opt.target) return;
+  pushH();
+  emitModifyGroup(opt.target);
+});
+
 canvas.on('mouse:move', opt => {
   socket.volatile.emit('cursor:move', { x: opt.e.clientX, y: opt.e.clientY });
   if (penActive && tool === 'pen') {
@@ -440,11 +457,9 @@ canvas.on('mouse:up', opt => {
   handlePointerUp(canvas.getPointer(opt.e));
 });
 
-// ── Eventos touch: para formas, eraser, text (caneta já é nativa no Fabric) ──
+// Touch
 const canvasEl = canvas.upperCanvasEl;
-
 canvasEl.addEventListener('touchstart', e => {
-  // Se a caneta está ativa, deixa o Fabric lidar (freeDrawingMode)
   if (tool === 'pen') {
     penActive = true;
     const p = getCanvasPoint(e);
@@ -454,9 +469,7 @@ canvasEl.addEventListener('touchstart', e => {
   e.preventDefault();
   if (e.touches.length !== 1) return;
   const p = getCanvasPoint(e);
-  // Envia posição do cursor
   socket.volatile.emit('cursor:move', { x: p.clientX, y: p.clientY });
-  // Verifica se tocou em objeto existente
   const target = canvas.findTarget(e.touches[0]);
   if (canvas.getActiveObjects().length > 0 && tool !== 'eraser') return;
   if (target && ['rect','circle','line','arrow'].includes(tool)) return;
@@ -477,16 +490,34 @@ canvasEl.addEventListener('touchmove', e => {
 }, { passive: false });
 
 canvasEl.addEventListener('touchend', e => {
-  if (tool === 'pen') {
-    penActive = false;
-    return;
-  }
+  if (tool === 'pen') { penActive = false; return; }
   e.preventDefault();
   const p = getCanvasPoint(e);
   handlePointerUp({ x: p.x, y: p.y });
 }, { passive: false });
 
-// ── Lógica compartilhada de pointer ──────────────────────────────────────────
+canvas.on('path:created', opt => {
+  const path = opt.path; path.id = genId();
+  pushH(); emitFull(path);
+  socket.emit('draw:end', { object: ser(path) });
+});
+
+canvas.on('selection:created', updCtx);
+canvas.on('selection:updated', updCtx);
+canvas.on('selection:cleared', () => { document.getElementById('ctx').style.display = 'none'; });
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// POINTER LOGIC
+// ═══════════════════════════════════════════════════════════════════════════════
+function getCanvasPoint(e) {
+  const rect = canvas.upperCanvasEl.getBoundingClientRect();
+  let clientX, clientY;
+  if (e.touches && e.touches.length > 0) { clientX = e.touches[0].clientX; clientY = e.touches[0].clientY; }
+  else if (e.changedTouches && e.changedTouches.length > 0) { clientX = e.changedTouches[0].clientX; clientY = e.changedTouches[0].clientY; }
+  else { clientX = e.clientX; clientY = e.clientY; }
+  return { x: (clientX - rect.left) / canvas.getZoom(), y: (clientY - rect.top) / canvas.getZoom(), clientX, clientY };
+}
+
 function handlePointerDown(p, target) {
   if (tool === 'eraser') {
     if (target && target.id) {
@@ -504,27 +535,25 @@ function handlePointerDown(p, target) {
   if (['rect','circle','line','arrow'].includes(tool)) {
     isDrawing = true;
     drawStart = { x: p.x, y: p.y };
-    // Cria a forma temporária já com ID para poder enviá-la ao vivo
-    tmpShape = mkShape(tool, drawStart, drawStart);
-    if (tmpShape) {
-      tmpShapeId = tmpShape.id;
-      canvas.add(tmpShape);
-      // Notifica outros que a forma começou
-      socket.emit('object:add', ser(tmpShape));
-    }
+    tmpShapeId = genId();
   }
 }
 
 function updateTmpShape(p) {
-  if (!tmpShape || !drawStart) return;
-  const updated = mkShape(tool, drawStart, p, tmpShape.id);
-  if (!updated) return;
-  canvas.remove(tmpShape);
-  tmpShape = updated;
-  canvas.add(tmpShape);
+  if (!isDrawing || !drawStart) return;
+  // Remove preview anterior
+  const prev = findById(tmpShapeId);
+  if (prev) canvas.remove(prev);
+  // Cria preview atualizado
+  const sh = mkShape(tool, drawStart, p, tmpShapeId);
+  if (!sh) return;
+  canvas.add(sh);
   canvas.requestRenderAll();
-  // Envia atualização frame a frame (throttled)
-  throttledSync(tmpShape);
+  // Emite preview em tempo real (throttled, volatile)
+  throttle60(() => {
+    const prev2 = findById(tmpShapeId);
+    if (prev2) socket.volatile.emit('object:transform', serTransform(prev2));
+  });
 }
 
 function handlePointerUp(p) {
@@ -532,44 +561,62 @@ function handlePointerUp(p) {
   if (!isDrawing) return;
   isDrawing = false;
 
-  // Remove a forma temporária
-  if (tmpShape) { canvas.remove(tmpShape); tmpShape = null; }
+  // Remove preview
+  const prev = findById(tmpShapeId);
+  if (prev) canvas.remove(prev);
 
   const dx = Math.abs(p.x - drawStart.x), dy = Math.abs(p.y - drawStart.y);
   if (dx > 3 || dy > 3) {
     const sh = mkShape(tool, drawStart, p, tmpShapeId);
     if (sh) {
-      pushH(); canvas.add(sh); canvas.renderAll();
-      // Substitui a forma temporária pela final
-      socket.emit('object:modify', ser(sh));
+      canvas.add(sh);
+      canvas.renderAll();
+      pushH();
+      // Emite o JSON completo (após canvas.add, o Fabric já normalizou o objeto)
+      emitFull(sh);
     }
   } else {
-    // Drag muito pequeno: remove a temporária dos outros clientes
-    if (tmpShapeId) socket.emit('object:remove', [tmpShapeId]);
+    socket.emit('object:remove', [tmpShapeId]);
   }
   drawStart = null; tmpShapeId = null;
 }
 
-// ── Caneta: evento de path finalizado ────────────────────────────────────────
-canvas.on('path:created', opt => {
-  const path = opt.path; path.id = genId();
-  pushH(); emitAdd(path);
-  socket.emit('draw:end', { object: ser(path) });
-});
+// ═══════════════════════════════════════════════════════════════════════════════
+// FERRAMENTAS
+// ═══════════════════════════════════════════════════════════════════════════════
+function setTool(t) {
+  tool = t;
+  document.querySelectorAll('.tb-btn').forEach(b => b.classList.remove('active'));
+  const btn = document.getElementById('t-' + t); if (btn) btn.classList.add('active');
+  const opts = document.getElementById('opts');
+  isDrawing = false; drawStart = null;
+  const prev = findById(tmpShapeId);
+  if (prev) { canvas.remove(prev); canvas.renderAll(); socket.emit('object:remove', [tmpShapeId]); }
+  tmpShapeId = null;
+  if (t === 'select') {
+    canvas.isDrawingMode = false; canvas.selection = true;
+    canvas.defaultCursor = 'default'; opts.classList.add('hidden');
+  } else if (t === 'pen') {
+    canvas.isDrawingMode = true; canvas.selection = false;
+    canvas.freeDrawingBrush = new fabric.PencilBrush(canvas);
+    canvas.freeDrawingBrush.color = color; canvas.freeDrawingBrush.width = sz;
+    opts.classList.remove('hidden');
+  } else {
+    canvas.isDrawingMode = false; canvas.selection = false;
+    canvas.defaultCursor = t === 'eraser' ? 'cell' : 'crosshair';
+    opts.classList.remove('hidden');
+  }
+}
 
-// ── Objeto modificado (finalizado): pushH e sync definitivo ──────────────────
-canvas.on('object:modified', opt => {
-  if (!opt.target) return;
-  pushH();
-  // Emit final garantido (não volatile) com coords absolutas corretas
-  emitObjectsFromTarget(opt.target, false);
-});
+function setColor(c, el) {
+  color = c;
+  document.querySelectorAll('.swatch').forEach(s => s.classList.remove('sel'));
+  if (el) el.classList.add('sel');
+  if (canvas.freeDrawingBrush) canvas.freeDrawingBrush.color = c;
+}
+function setSz(v) { sz = parseInt(v); document.getElementById('szv').textContent = v; if (canvas.freeDrawingBrush) canvas.freeDrawingBrush.width = sz; }
+function setOp(v) { op = parseInt(v) / 100; document.getElementById('opv').textContent = v + '%'; if (canvas.freeDrawingBrush) canvas.freeDrawingBrush.opacity = op; }
 
-canvas.on('selection:created', updCtx);
-canvas.on('selection:updated', updCtx);
-canvas.on('selection:cleared', () => { document.getElementById('ctx').style.display = 'none'; });
-
-// ── Painel contextual ────────────────────────────────────────────────────────
 function updCtx() {
   const o = canvas.getActiveObject(); if (!o) return;
   document.getElementById('ctx').style.display = 'block';
@@ -580,11 +627,11 @@ function updCtx() {
 function resizeSel(d, v) {
   const o = canvas.getActiveObject(); if (!o || !v) return;
   d === 'w' ? o.scaleToWidth(parseFloat(v)) : o.scaleToHeight(parseFloat(v));
-  o.setCoords(); canvas.renderAll(); syncMod([o]);
+  o.setCoords(); canvas.renderAll(); emitModify(o);
 }
 function setSelOp(v) {
   const o = canvas.getActiveObject(); if (!o) return;
-  o.set({ opacity: parseInt(v) / 100 }); canvas.renderAll(); syncMod([o]);
+  o.set({ opacity: parseInt(v) / 100 }); canvas.renderAll(); emitModify(o);
 }
 function delSel() {
   const ids = canvas.getActiveObjects().map(o => o.id).filter(Boolean);
@@ -593,51 +640,47 @@ function delSel() {
   socket.emit('object:remove', ids);
 }
 
-// ── Criação de formas ────────────────────────────────────────────────────────
-// Linhas e setas usam fabric.Path — serializa/deserializa perfeitamente
-// sem o problema de x1/y1/x2/y2 relativos ao bounding box interno.
+// ═══════════════════════════════════════════════════════════════════════════════
+// CRIAÇÃO DE FORMAS
+// ═══════════════════════════════════════════════════════════════════════════════
 function mkShape(t, s, e, id) {
-  const oid = id || genId();
+  const oid  = id || genId();
   const base = {
-    stroke: color, strokeWidth: sz,
-    fill: 'transparent',
+    stroke: color, strokeWidth: sz, fill: 'transparent',
     opacity: op, selectable: true, evented: true,
-    strokeLineCap: 'round', strokeLineJoin: 'round',
-    id: oid
+    strokeLineCap: 'round', strokeLineJoin: 'round', id: oid
   };
-  if (t === 'rect') return new fabric.Rect({
-    ...base, fill: fillShape ? color : 'transparent',
-    left: Math.min(s.x,e.x), top: Math.min(s.y,e.y),
-    width: Math.abs(e.x-s.x)||1, height: Math.abs(e.y-s.y)||1
-  });
-  if (t === 'circle') return new fabric.Ellipse({
-    ...base, fill: fillShape ? color : 'transparent',
-    left: Math.min(s.x,e.x), top: Math.min(s.y,e.y),
-    rx: Math.abs(e.x-s.x)/2||1, ry: Math.abs(e.y-s.y)/2||1
-  });
+  if (t === 'rect')   return new fabric.Rect({ ...base, fill: fillShape ? color : 'transparent', left: Math.min(s.x,e.x), top: Math.min(s.y,e.y), width: Math.abs(e.x-s.x)||1, height: Math.abs(e.y-s.y)||1 });
+  if (t === 'circle') return new fabric.Ellipse({ ...base, fill: fillShape ? color : 'transparent', left: Math.min(s.x,e.x), top: Math.min(s.y,e.y), rx: Math.abs(e.x-s.x)/2||1, ry: Math.abs(e.y-s.y)/2||1 });
   if (t === 'line') {
-    // Path M x1 y1 L x2 y2 — posição absoluta preservada no JSON
-    return new fabric.Path('M ' + s.x + ' ' + s.y + ' L ' + e.x + ' ' + e.y, {
-      ...base, fill: null
-    });
+    // Linha como fabric.Line — serializa x1/y1/x2/y2 absolutos + left/top corretos
+    return new fabric.Line([s.x, s.y, e.x, e.y], { ...base, fill: null });
   }
   if (t === 'arrow') {
-    const ang = Math.atan2(e.y-s.y, e.x-s.x);
-    const hl  = Math.max(14, sz * 3);
-    const a1  = ang + Math.PI * 0.8;
-    const a2  = ang - Math.PI * 0.8;
-    const hx1 = e.x + Math.cos(a1) * hl, hy1 = e.y + Math.sin(a1) * hl;
-    const hx2 = e.x + Math.cos(a2) * hl, hy2 = e.y + Math.sin(a2) * hl;
-    // Tudo num único Path: linha + cabeça da seta
-    const d = [
-      'M', s.x, s.y, 'L', e.x, e.y,          // haste
-      'M', hx1, hy1, 'L', e.x, e.y, 'L', hx2, hy2  // cabeça
-    ].join(' ');
-    return new fabric.Path(d, { ...base, fill: null, stroke: color });
+    // Seta como fabric.Line + fabric.Triangle agrupados
+    // Usamos Group com posição explícita para serialização correta
+    const ang  = Math.atan2(e.y - s.y, e.x - s.x);
+    const hl   = Math.max(14, sz * 3);
+    const line = new fabric.Line([s.x, s.y, e.x, e.y], {
+      stroke: color, strokeWidth: sz, fill: null, strokeLineCap: 'round'
+    });
+    const head = new fabric.Triangle({
+      width: hl, height: hl,
+      fill: color, stroke: color, strokeWidth: 1,
+      left: e.x, top: e.y,
+      originX: 'center', originY: 'center',
+      angle: (ang * 180 / Math.PI) + 90,
+    });
+    const grp = new fabric.Group([line, head], {
+      id: oid, selectable: true, evented: true, opacity: op
+    });
+    return grp;
   }
 }
 
-// ── Texto ────────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// TEXTO
+// ═══════════════════════════════════════════════════════════════════════════════
 function addText(pos) {
   const t = new fabric.IText('Texto', {
     left: pos.x, top: pos.y, id: genId(),
@@ -646,20 +689,24 @@ function addText(pos) {
     selectable: true, editable: true
   });
   pushH(); canvas.add(t); canvas.setActiveObject(t); t.enterEditing(); canvas.renderAll();
-  t.on('editing:exited', () => emitAdd(t));
-  // Sync letra a letra em tempo real
-  t.on('changed', () => socket.volatile.emit('object:modify', ser(t)));
+  t.on('editing:exited', () => emitFull(t));
+  t.on('changed', () => socket.volatile.emit('object:transform', {
+    id: t.id, type: t.type, text: t.text, fill: t.fill,
+    left: t.left, top: t.top, scaleX: t.scaleX, scaleY: t.scaleY,
+    angle: t.angle, flipX: t.flipX, flipY: t.flipY, opacity: t.opacity
+  }));
   setTool('select');
 }
 
-// ── Upload de imagem ──────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// IMAGENS
+// ═══════════════════════════════════════════════════════════════════════════════
 function showToast(msg) { document.getElementById('toast-msg').textContent = msg; document.getElementById('toast').classList.add('show'); }
 function hideToast() { document.getElementById('toast').classList.remove('show'); }
 
 async function uploadFile(file) {
   showToast('Enviando imagem...');
-  const fd = new FormData();
-  fd.append('image', file);
+  const fd = new FormData(); fd.append('image', file);
   const res = await fetch('/upload', { method: 'POST', body: fd });
   if (!res.ok) throw new Error('Falha no upload');
   return (await res.json()).url;
@@ -678,8 +725,8 @@ async function placeImageFromUrl(url) {
 
 async function insertImg(inp) {
   const file = inp.files[0]; if (!file) return; inp.value = '';
-  try { const url = await uploadFile(file); const img = await placeImageFromUrl(url); pushH(); canvas.add(img); canvas.setActiveObject(img); canvas.renderAll(); emitAdd(img); hideToast(); }
-  catch (e) { hideToast(); alert('Erro ao enviar imagem: ' + e.message); }
+  try { const url = await uploadFile(file); const img = await placeImageFromUrl(url); pushH(); canvas.add(img); canvas.setActiveObject(img); canvas.renderAll(); emitFull(img); hideToast(); }
+  catch (e) { hideToast(); alert('Erro: ' + e.message); }
 }
 
 window.addEventListener('paste', async e => {
@@ -687,14 +734,16 @@ window.addEventListener('paste', async e => {
   for (const item of items) {
     if (item.type.startsWith('image/')) {
       e.preventDefault();
-      try { const url = await uploadFile(item.getAsFile()); const img = await placeImageFromUrl(url); pushH(); canvas.add(img); canvas.setActiveObject(img); canvas.renderAll(); emitAdd(img); hideToast(); }
-      catch (err) { hideToast(); alert('Erro ao colar imagem: ' + err.message); }
+      try { const url = await uploadFile(item.getAsFile()); const img = await placeImageFromUrl(url); pushH(); canvas.add(img); canvas.setActiveObject(img); canvas.renderAll(); emitFull(img); hideToast(); }
+      catch (err) { hideToast(); alert('Erro: ' + err.message); }
       break;
     }
   }
 });
 
-// ── Histórico ────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// HISTÓRICO
+// ═══════════════════════════════════════════════════════════════════════════════
 function snap() { return canvas.getObjects().reduce((acc, o) => { if (o.id) acc[o.id] = ser(o); return acc; }, {}); }
 function pushH() { undoStack.push(JSON.parse(JSON.stringify(snap()))); if (undoStack.length > MAX_H) undoStack.shift(); redoStack.length = 0; }
 function undo() { if (!undoStack.length) return; redoStack.push(snap()); applySnap(undoStack.pop()); }
@@ -708,116 +757,41 @@ function applySnap(map) {
 }
 function clearAll() {
   if (!confirm('Limpar todo o quadro?')) return;
-  pushH(); canvas.clear(); canvas.backgroundColor = '#1e1e2a'; canvas.renderAll();
-  socket.emit('board:clear');
+  pushH(); canvas.clear(); canvas.backgroundColor = '#1e1e2a'; canvas.renderAll(); socket.emit('board:clear');
 }
 
-// ── Serialização ──────────────────────────────────────────────────────────────
-function ser(obj) {
-  const j = obj.toJSON(['id']);
-  if (obj.type === 'image') {
-    const el = obj.getElement();
-    j.src = el ? el.src : (j.src || '');
-    if (j.src.startsWith('blob:')) j.src = '';
-  }
-  // Inclui zIndex para que receptores possam restaurar a ordem correta
-  j.zIndex = canvas.getObjects().indexOf(obj);
-  return j;
-}
-function emitAdd(obj) {
-  if (!obj.id) obj.id = genId();
-  socket.emit('object:add', ser(obj));
-}
-function emitZOrder() {
-  // Emite a ordem completa de todos os objetos para sync de z-index
-  const order = canvas.getObjects().map(o => o.id).filter(Boolean);
-  socket.emit('zorder:sync', order);
-}
-function syncMod(objs) {
-  // Usa a ActiveSelection ativa (se existir) para ter coords absolutas corretas
-  const sel = canvas.getActiveObject();
-  const isMulti = sel && (sel.type === 'activeSelection') && objs.length > 1;
-  if (isMulti) {
-    emitObjectsFromTarget(sel, false);
-  } else {
-    objs.forEach(o => { if (o.id) socket.emit('object:modify', ser(o)); });
-  }
-}
-
-// ── Deserialização ────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// DESERIALIZAÇÃO
+// ═══════════════════════════════════════════════════════════════════════════════
 function getFabricType(type) {
-  const map = { 'i-text': fabric.IText, 'text': fabric.Text, 'textbox': fabric.Textbox, 'rect': fabric.Rect, 'circle': fabric.Circle, 'ellipse': fabric.Ellipse, 'triangle': fabric.Triangle, 'line': fabric.Line, 'polyline': fabric.Polyline, 'polygon': fabric.Polygon };
+  const map = {
+    'i-text': fabric.IText, 'text': fabric.Text, 'textbox': fabric.Textbox,
+    'rect': fabric.Rect, 'circle': fabric.Circle, 'ellipse': fabric.Ellipse,
+    'triangle': fabric.Triangle, 'line': fabric.Line,
+    'polyline': fabric.Polyline, 'polygon': fabric.Polygon,
+  };
   return type in map ? map[type] : fabric[type.charAt(0).toUpperCase() + type.slice(1)];
 }
+
 function deser(data, cb) {
   if (!data || !data.type) return;
-  if (data.type === 'image') { fabric.Image.fromURL(data.src || '', img => { img.set(data); img.id = data.id; cb(img); }, { crossOrigin: 'anonymous' }); return; }
+  if (data.type === 'image') {
+    fabric.Image.fromURL(data.src || '', img => { img.set(data); img.id = data.id; cb(img); }, { crossOrigin: 'anonymous' });
+    return;
+  }
   if (data.type === 'path') { const o = new fabric.Path(data.path, data); o.id = data.id; cb(o); return; }
+  if (data.type === 'line') {
+    const o = new fabric.Line([data.x1, data.y1, data.x2, data.y2], data);
+    o.id = data.id; cb(o); return;
+  }
   if (data.type === 'group') { fabric.Group.fromObject(data, o => { o.id = data.id; cb(o); }); return; }
   const FT = getFabricType(data.type);
   if (!FT) { console.warn('Tipo desconhecido:', data.type); return; }
   FT.fromObject(data, o => { o.id = data.id; cb(o); });
 }
+
 function findById(id) { return canvas.getObjects().find(o => o.id === id); }
-// applyTransform: atualiza objeto existente IN-PLACE sem remover/recriar.
-// Evita o flash/duplicação de imagens durante drag com latência alta.
-function applyTransform(data) {
-  const obj = findById(data.id);
-  if (!obj) return;
 
-  const { left, top, scaleX, scaleY, angle, opacity } = data;
-
-  // Aplica escala ANTES de posição para que setCoords calcule corretamente
-  obj.set({ scaleX, scaleY, angle, opacity });
-
-  // Garante que o objeto usa origin left/top (padrão Fabric)
-  if (obj.originX !== 'left' || obj.originY !== 'top') {
-    obj.set({ originX: 'left', originY: 'top' });
-  }
-  obj.set({ left, top });
-
-  // Texto: atualiza conteúdo em tempo real
-  if (data.type === 'i-text' || data.type === 'text') {
-    if (data.text     !== undefined) obj.set({ text:     data.text });
-    if (data.fill     !== undefined) obj.set({ fill:     data.fill });
-    if (data.fontSize !== undefined) obj.set({ fontSize: data.fontSize });
-  }
-
-  obj.setCoords();
-}
-
-// addOrUpd: tenta atualizar in-place; recria só se o objeto não existir ainda
-// ou se o tipo mudou (o que nunca deveria acontecer, mas é seguro checar)
-function addOrUpd(data, render = true) {
-  const ex = findById(data.id);
-
-  // Se já existe e é do mesmo tipo: atualiza in-place (sem remover/recriar)
-  if (ex && ex.type === data.type) {
-    applyTransform(data);
-    // Para tipos que têm mais propriedades visuais (cores, stroke etc)
-    const visualProps = ['fill','stroke','strokeWidth','opacity','rx','ry','width','height','x1','y1','x2','y2','path'];
-    const update = {};
-    visualProps.forEach(k => { if (data[k] !== undefined) update[k] = data[k]; });
-    if (Object.keys(update).length) ex.set(update);
-    ex.setCoords();
-    if (render) canvas.renderAll();
-    return;
-  }
-
-  // Não existe ou tipo diferente: recria
-  if (ex) canvas.remove(ex);
-  deser(data, o => {
-    canvas.add(o);
-    // Restaura z-order se disponível
-    if (data.zIndex !== undefined) {
-      const objs = canvas.getObjects();
-      const cur  = objs.indexOf(o);
-      const tgt  = Math.min(data.zIndex, objs.length - 1);
-      if (cur !== tgt) canvas.moveTo(o, tgt);
-    }
-    if (render) canvas.renderAll();
-  });
-}
 function loadState(state) {
   canvas.clear(); canvas.backgroundColor = '#1e1e2a';
   if (!state || !state.objects) { canvas.renderAll(); return; }
@@ -826,12 +800,19 @@ function loadState(state) {
   let done = 0;
   objs.forEach(d => deser(d, o => { canvas.add(o); if (++done === objs.length) canvas.renderAll(); }));
 }
+
 function pts2path(pts) { return pts.reduce((a, p, i) => i === 0 ? 'M ' + p.x + ' ' + p.y : a + ' L ' + p.x + ' ' + p.y, ''); }
 function genId() { return Math.random().toString(36).slice(2, 10) + Date.now().toString(36); }
 
-// ── Atalhos de teclado (desktop) ─────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// ATALHOS DE TECLADO
+// ═══════════════════════════════════════════════════════════════════════════════
 window.addEventListener('keydown', e => {
-  if (e.target.tagName === 'INPUT' || e.target.isContentEditable) return;
+  // Bloqueia atalhos quando editando texto (Fabric IText) ou campos HTML
+  const activeObj = canvas.getActiveObject();
+  if (activeObj && activeObj.isEditing) return;
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return;
+
   if (e.ctrlKey || e.metaKey) {
     if (e.key === 'z') { e.preventDefault(); undo(); }
     else if (e.key === 'y') { e.preventDefault(); redo(); }
@@ -839,9 +820,6 @@ window.addEventListener('keydown', e => {
     else if (e.key === 'a') { e.preventDefault(); canvas.setActiveObject(new fabric.ActiveSelection(canvas.getObjects(), { canvas })); canvas.renderAll(); }
     return;
   }
-
-  if (canvas.getActiveObject() && canvas.getActiveObject().isEditing) return;
-
   switch (e.key) {
     case 'v': setTool('select'); break; case 'p': setTool('pen'); break;
     case 'e': setTool('eraser'); break; case 'r': setTool('rect'); break;

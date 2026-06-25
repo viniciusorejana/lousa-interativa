@@ -117,7 +117,6 @@ app.post('/upload', upload.single('image'), (req, res) => {
 
 // ─── Páginas ──────────────────────────────────────────────────────────────────
 app.get('/', (req, res) => {
-  if (isAuth(req)) return res.redirect('/board.html');
   res.sendFile(path.join(__dirname, '../public/index.html'));
 });
 app.get('/board.html', (req, res) => {
@@ -175,7 +174,12 @@ io.on('connection', (socket) => {
     socket.broadcast.emit('objects:batch', objects);
   });
 
-  // Batch de transforms (seleção múltipla) — relay volatile, não salva no boardState
+  // Transform em tempo real (objeto único) — relay volatile
+  socket.on('object:transform', (data) => {
+    socket.broadcast.volatile.emit('object:transform', data);
+  });
+
+  // Batch de transforms (seleção múltipla) — relay volatile
   socket.on('objects:transform', (updates) => {
     socket.broadcast.volatile.emit('objects:transform', updates);
   });
@@ -224,8 +228,7 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`\n╔══════════════════════════════════════════╗`);
   console.log(`║         LiveBoard rodando!               ║`);
   console.log(`╠══════════════════════════════════════════╣`);
-  console.log(`║  Editor:   http://localhost:${PORT}           ║`);
-  console.log(`║  OBS/View: http://localhost:${PORT}/view     ║`);
-  console.log(`║  Senha:    ${PASSWORD.padEnd(31)}║`);
+  console.log(`║  Editor:   http://localhost:${PORT}         ║`);
+  console.log(`║  OBS/View: http://localhost:${PORT}/view    ║`)
   console.log(`╚══════════════════════════════════════════╝\n`);
 });
