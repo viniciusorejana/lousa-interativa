@@ -14,80 +14,81 @@
 <script src="/socket.io/socket.io.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.1/fabric.min.js"></script>
 <script>
+// ── Canvas ────────────────────────────────────────────────────────────────────
+// O canvas da view é sempre do tamanho da janela (configurado no OBS como 1920x1080).
+// O viewport transform mapeia a região do board definida pelo editor para preencher
+// exatamente este canvas, sem distorção e sem offset.
+const RENDER_W = window.innerWidth;
+const RENDER_H = window.innerHeight;
+
 const canvas = new fabric.Canvas('board', {
-  width: window.innerWidth, height: window.innerHeight,
-  selection: false, renderOnAddRemove: false,
-  enableRetinaScaling: true, backgroundColor: null
+  width:  RENDER_W,
+  height: RENDER_H,
+  selection: false,
+  renderOnAddRemove: false,
+  enableRetinaScaling: true,
+  backgroundColor: null,
 });
 
-function makeTransparent() {
-  canvas.wrapperEl.style.background = 'transparent';
+function mkTransp() {
+  canvas.wrapperEl.style.background    = 'transparent';
   canvas.lowerCanvasEl.style.background = 'transparent';
   canvas.upperCanvasEl.style.background = 'transparent';
   document.body.style.background = 'transparent';
 }
-makeTransparent();
+mkTransp();
 
-window.addEventListener('resize', () => {
-  canvas.setWidth(window.innerWidth);
-  canvas.setHeight(window.innerHeight);
+// ── Viewport state ────────────────────────────────────────────────────────────
+// vpX/vpY = canto superior esquerdo do retângulo de viewport no espaço do board
+// vpW/vpH = tamanho do retângulo (definido pelo editor, default 1920x1080)
+// A view mapeia esse retângulo para preencher RENDER_W x RENDER_H exatamente.
+let vpX = 0, vpY = 0, vpW = 1920, vpH = 1080;
+
+function applyViewportTransform() {
+  // Escala independente em X e Y para preencher o canvas inteiro sem barras pretas.
+  // Como o editor força a mesma proporção (1920x1080 por padrão), na prática
+  // scaleX ≈ scaleY. Se o usuário mudar a proporção, o conteúdo estica — igual ao OBS.
+  const scaleX = RENDER_W / vpW;
+  const scaleY = RENDER_H / vpH;
+  // Translação: o ponto (vpX, vpY) do board vai para (0, 0) da tela
+  const tx = -vpX * scaleX;
+  const ty = -vpY * scaleY;
+  canvas.setViewportTransform([scaleX, 0, 0, scaleY, tx, ty]);
   canvas.renderAll();
-  makeTransparent();
-});
-
-// src original de imagens, igual ao board
-const imageStore = {};
+}
 
 // ── Socket ────────────────────────────────────────────────────────────────────
 const socket = io({ query: { type: 'view' }, transports: ['websocket'] });
 
 socket.on('board:init', ({ state }) => {
-  loadState(state);
-});
-
-socket.on('object:add', data => {
-  if (data.type === 'image' && data.src) imageStore[data.id] = data.src;
-  addOrUpd(data);
-});
-
-// modify: reconstrói completamente, igual ao board
-socket.on('object:modify', data => {
-  if (data.type === 'image') {
-    data = { ...data, src: imageStore[data.id] || data.src };
+  if (state && state.viewport) {
+    vpX = state.viewport.x || 0; vpY = state.viewport.y || 0;
+    vpW = state.viewport.w || 1920; vpH = state.viewport.h || 1080;
   }
-  addOrUpd(data);
-});
-
-socket.on('object:remove', ids => {
-  ids.forEach(id => {
-    delete imageStore[id];
-    const o = findById(id); if (o) canvas.remove(o);
-  });
-  canvas.renderAll();
-});
-
-socket.on('objects:batch', objs => {
-  objs.forEach(d => {
-    if (d.type === 'image' && d.src) imageStore[d.id] = d.src;
-    addOrUpd(d, false);
-  });
-  canvas.renderAll();
-});
-
-socket.on('board:clear', () => {
-  Object.keys(imageStore).forEach(k => delete imageStore[k]);
-  canvas.clear(); makeTransparent(); canvas.renderAll();
-});
-
-socket.on('board:sync', state => {
-  Object.keys(imageStore).forEach(k => delete imageStore[k]);
-  canvas.clear(); makeTransparent();
   loadState(state);
+  applyViewportTransform();
 });
 
-// ── Stroke streaming ──────────────────────────────────────────────────────────
-const liveStrokes = {};
+socket.on('viewport:sync', vp => {
+  vpX = vp.x; vpY = vp.y; vpW = vp.w; vpH = vp.h;
+  applyViewportTransform();
+});
 
+socket.on('object:add',       d           => applyFull(d));
+socket.on('object:modify',    d           => applyFull(d));
+socket.on('object:transform', d           => { applyTransformOnly(d); canvas.renderAll(); });
+socket.on('objects:transform', updates    => { updates.forEach(d => applyTransformOnly(d)); canvas.renderAll(); });
+socket.on('object:remove',    ids         => { ids.forEach(id => { const o = findById(id); if (o) canvas.remove(o); }); canvas.renderAll(); });
+socket.on('objects:batch',    objs        => { objs.forEach(d => applyFull(d, false)); canvas.renderAll(); });
+socket.on('board:clear',      ()          => { canvas.clear(); mkTransp(); canvas.renderAll(); });
+socket.on('board:sync',       state       => { canvas.clear(); mkTransp(); loadState(state); applyViewportTransform(); });
+socket.on('zorder:sync',      order       => {
+  order.forEach((id, idx) => { const o = findById(id); if (o) canvas.moveTo(o, idx); });
+  canvas.renderAll();
+});
+
+// Stroke streaming
+const liveStrokes = {};
 socket.on('draw:start', ({ userId, x, y, color, width, opacity }) => {
   const p = new fabric.Path('M ' + x + ' ' + y, {
     stroke: color, strokeWidth: width, fill: null, opacity: opacity || 1,
@@ -96,102 +97,109 @@ socket.on('draw:start', ({ userId, x, y, color, width, opacity }) => {
   liveStrokes[userId] = { path: p, pts: [{ x, y }] };
   canvas.add(p); canvas.renderAll();
 });
-
 socket.on('draw:move', ({ userId, x, y }) => {
   const s = liveStrokes[userId]; if (!s) return;
   s.pts.push({ x, y });
   s.path.set({ path: fabric.util.parsePath(pts2path(s.pts)) });
   canvas.requestRenderAll();
 });
-
 socket.on('draw:end', ({ userId, object }) => {
   const s = liveStrokes[userId];
   if (s) { canvas.remove(s.path); delete liveStrokes[userId]; }
-  if (object) addOrUpd(object);
-  else canvas.renderAll();
+  if (object) applyFull(object); else canvas.renderAll();
 });
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-function findById(id) {
-  return canvas.getObjects().find(o => o.id === id);
-}
-
-function addOrUpd(data, render = true) {
+// ── applyFull ─────────────────────────────────────────────────────────────────
+function applyFull(data, render = true) {
   const ex = findById(data.id);
   if (ex) canvas.remove(ex);
   deser(data, o => {
-    o.selectable = false;
-    o.evented = false;
+    o.selectable = false; o.evented = false;
     canvas.add(o);
+    if (data.zIndex !== undefined) {
+      const tgt = Math.min(data.zIndex, canvas.getObjects().length - 1);
+      canvas.moveTo(o, tgt);
+    }
     if (render) canvas.renderAll();
   });
 }
 
-function loadState(state) {
-  canvas.clear(); makeTransparent();
-  if (!state || !state.objects) { canvas.renderAll(); return; }
-  const objs = Object.values(state.objects);
-  if (!objs.length) { canvas.renderAll(); return; }
-  objs.forEach(d => { if (d.type === 'image' && d.src) imageStore[d.id] = d.src; });
-  let done = 0;
-  objs.forEach(d => deser(d, o => {
-    o.selectable = false;
-    o.evented = false;
-    canvas.add(o);
-    if (++done === objs.length) canvas.renderAll();
-  }));
+// ── applyTransformOnly ────────────────────────────────────────────────────────
+function applyTransformOnly(data) {
+  const obj = findById(data.id); if (!obj) return;
+  obj.set({
+    left:    data.left,  top:     data.top,
+    scaleX:  Math.abs(data.scaleX || 1), scaleY: Math.abs(data.scaleY || 1),
+    angle:   data.angle  || 0,
+    flipX:   data.flipX  || false, flipY: data.flipY || false,
+    opacity: data.opacity !== undefined ? data.opacity : obj.opacity,
+  });
+  if ((data.type === 'i-text' || data.type === 'text') && data.text !== undefined) {
+    obj.set({ text: data.text, fill: data.fill || obj.fill });
+  }
+  obj.setCoords();
 }
 
-// Mesmo mapeamento de tipos do board.html — crítico para i-text
+// ── Deserialização ────────────────────────────────────────────────────────────
 function getFabricType(type) {
   const map = {
-    'i-text':   fabric.IText,
-    'text':     fabric.Text,
-    'textbox':  fabric.Textbox,
-    'rect':     fabric.Rect,
-    'circle':   fabric.Circle,
-    'ellipse':  fabric.Ellipse,
-    'triangle': fabric.Triangle,
-    'line':     fabric.Line,
-    'polyline': fabric.Polyline,
-    'polygon':  fabric.Polygon,
+    'i-text': fabric.IText, 'text': fabric.Text, 'textbox': fabric.Textbox,
+    'rect': fabric.Rect, 'circle': fabric.Circle, 'ellipse': fabric.Ellipse,
+    'triangle': fabric.Triangle, 'line': fabric.Line,
+    'polyline': fabric.Polyline, 'polygon': fabric.Polygon,
   };
   return type in map ? map[type] : fabric[type.charAt(0).toUpperCase() + type.slice(1)];
 }
 
 function deser(data, cb) {
   if (!data || !data.type) return;
-
   if (data.type === 'image') {
-    const src = imageStore[data.id] || data.src || '';
-    fabric.Image.fromURL(src, img => {
-      const { src: _src, ...rest } = data;
-      img.set(rest);
-      img.id = data.id;
-      if (data.src) imageStore[data.id] = data.src;
-      cb(img);
-    }, { crossOrigin: 'anonymous' });
+    fabric.Image.fromURL(absoluteImgUrl(data.src), img => { img.set(data); img.id = data.id; cb(img); }, { crossOrigin: 'anonymous' });
     return;
   }
-
-  if (data.type === 'path') {
-    const o = new fabric.Path(data.path, data);
-    o.id = data.id; cb(o);
-    return;
-  }
-
-  if (data.type === 'group') {
-    fabric.Group.fromObject(data, o => { o.id = data.id; cb(o); });
-    return;
-  }
-
+  if (data.type === 'path') { const o = new fabric.Path(data.path, data); o.id = data.id; cb(o); return; }
+  if (data.type === 'line') { const o = new fabric.Line([data.x1, data.y1, data.x2, data.y2], data); o.id = data.id; cb(o); return; }
+  if (data.type === 'group') { fabric.Group.fromObject(data, o => { o.id = data.id; cb(o); }); return; }
   const FT = getFabricType(data.type);
   if (!FT) { console.warn('Tipo desconhecido:', data.type); return; }
   FT.fromObject(data, o => { o.id = data.id; cb(o); });
 }
 
-function pts2path(pts) {
-  return pts.reduce((a, p, i) => i === 0 ? 'M ' + p.x + ' ' + p.y : a + ' L ' + p.x + ' ' + p.y, '');
+function findById(id) { return canvas.getObjects().find(o => o.id === id); }
+
+function loadState(state) {
+  canvas.clear(); mkTransp();
+  if (!state || !state.objects) { canvas.renderAll(); return; }
+  const objs = Object.values(state.objects);
+  if (!objs.length) { canvas.renderAll(); return; }
+  let done = 0;
+  objs.forEach(d => deser(d, o => {
+    o.selectable = false; o.evented = false;
+    canvas.add(o);
+    if (++done === objs.length) canvas.renderAll();
+  }));
+}
+
+function pts2path(pts) { return pts.reduce((a, p, i) => i === 0 ? 'M ' + p.x + ' ' + p.y : a + ' L ' + p.x + ' ' + p.y, ''); }
+
+// Converte qualquer src de imagem para URL absoluta usando a origem ATUAL do cliente.
+// Isso garante que localhost e IP público sempre usem seu próprio servidor,
+// independente de qual host estava ativo quando a imagem foi enviada.
+function absoluteImgUrl(src) {
+  if (!src) return '';
+  if (src.startsWith('blob:')) return '';
+  if (src.startsWith('http://') || src.startsWith('https://')) {
+    // Absoluto com host diferente → reescreve com origem atual
+    try {
+      const u = new URL(src);
+      if (u.pathname.startsWith('/uploads/')) {
+        return window.location.origin + u.pathname;
+      }
+    } catch (_) {}
+    return src;
+  }
+  // Relativo → absoluto com origem atual
+  return window.location.origin + (src.startsWith('/') ? src : '/' + src);
 }
 </script>
 </body>
