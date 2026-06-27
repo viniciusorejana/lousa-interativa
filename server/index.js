@@ -113,15 +113,16 @@ app.use(express.static(path.join(__dirname,'../public')));
 // ─── Socket.IO ────────────────────────────────────────────────────────────────
 io.on('connection', socket => {
   const clientType = socket.handshake.query.type || 'editor';
-  const userId     = uuidv4().slice(0, 8);
+  const userId     = uuidv4().slice(0, 8);  // ID interno único para o socket
+  const userName   = (socket.handshake.query.userName || '').trim().slice(0, 24) || `Usuário ${userId.slice(0,4)}`;
   const userColor  = `hsl(${Math.floor(Math.random()*360)},70%,60%)`;
-  console.log(`[${new Date().toLocaleTimeString()}] ${clientType} +${userId}`);
+  console.log(`[${new Date().toLocaleTimeString()}] ${clientType} +${userName} (${userId})`);
 
-  socket.emit('board:init', { state: boardState, userId, userColor,
+  socket.emit('board:init', { state: boardState, userId, userName, userColor,
     canUndo: undoStack.length > 0, canRedo: redoStack.length > 0 });
 
   if (clientType === 'editor') {
-    connectedUsers[userId] = { id: userId, color: userColor };
+    connectedUsers[userId] = { id: userId, name: userName, color: userColor };
     io.emit('users:update', Object.values(connectedUsers));
   }
 
@@ -245,7 +246,7 @@ io.on('connection', socket => {
 
   // ── Cursor (board coordinates) ────────────────────────────────────────────
   socket.on('cursor:move', pos => {
-    socket.broadcast.volatile.emit('cursor:move', { userId, color: userColor, ...pos });
+    socket.broadcast.volatile.emit('cursor:move', { userId, userName, color: userColor, ...pos });
   });
 
   // ── Viewport ──────────────────────────────────────────────────────────────
@@ -267,7 +268,7 @@ io.on('connection', socket => {
     delete connectedUsers[userId];
     io.emit('users:update', Object.values(connectedUsers));
     socket.broadcast.emit('cursor:remove', userId);
-    console.log(`[${new Date().toLocaleTimeString()}] ${clientType} -${userId}`);
+    console.log(`[${new Date().toLocaleTimeString()}] ${clientType} -${userName} (${userId})`);
   });
 });
 

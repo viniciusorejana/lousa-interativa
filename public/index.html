@@ -3,26 +3,53 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>LiveBoard - Login</title>
+  <title>LiveBoard - Entrar</title>
   <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { min-height: 100vh; background: #0f0f13; display: flex; align-items: center; justify-content: center; font-family: 'Segoe UI', system-ui, sans-serif; color: #e8e8f0; }
-    .card { background: #1a1a24; border: 1px solid #2d2d40; border-radius: 16px; padding: 48px 40px; width: 360px; box-shadow: 0 24px 48px rgba(0,0,0,.5); }
-    .logo { display: flex; align-items: center; gap: 10px; margin-bottom: 32px; justify-content: center; }
-    .logo span { font-size: 24px; font-weight: 700; background: linear-gradient(135deg, #7c5cff, #c95cff); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-    .subtitle { text-align: center; color: #6b6b80; font-size: 13px; margin-bottom: 32px; }
-    label { display: block; font-size: 12px; font-weight: 600; color: #9090aa; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 8px; }
-    input[type="password"] { width: 100%; background: #0f0f13; border: 1px solid #2d2d40; border-radius: 10px; padding: 12px 16px; font-size: 15px; color: #e8e8f0; outline: none; transition: border-color .2s; letter-spacing: 3px; }
-    input[type="password"]:focus { border-color: #7c5cff; }
-    input[type="password"].shake { animation: shake .3s; border-color: #ff6060; }
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { min-height:100vh; background:#0f0f13; display:flex; align-items:center; justify-content:center; font-family:'Segoe UI',system-ui,sans-serif; color:#e8e8f0; }
+    .card { background:#1a1a24; border:1px solid #2d2d40; border-radius:16px; padding:48px 40px; width:360px; box-shadow:0 24px 48px rgba(0,0,0,.5); }
+
+    .logo { display:flex; align-items:center; gap:10px; margin-bottom:8px; justify-content:center; }
+    .logo span { font-size:24px; font-weight:700; background:linear-gradient(135deg,#7c5cff,#c95cff); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+    .subtitle { text-align:center; color:#6b6b80; font-size:13px; margin-bottom:36px; }
+
+    .field { margin-bottom:18px; }
+    label { display:block; font-size:11px; font-weight:600; color:#9090aa; text-transform:uppercase; letter-spacing:.8px; margin-bottom:8px; }
+
+    input[type="text"],
+    input[type="password"] {
+      width:100%; background:#0f0f13; border:1px solid #2d2d40; border-radius:10px;
+      padding:12px 16px; font-size:15px; color:#e8e8f0; outline:none; transition:border-color .2s;
+    }
+    input[type="password"] { letter-spacing:3px; }
+    input:focus { border-color:#7c5cff; }
+    input.shake { animation:shake .3s; border-color:#ff6060; }
+    input.valid { border-color:#4ade80; }
     @keyframes shake { 0%,100%{transform:translateX(0)} 25%{transform:translateX(-6px)} 75%{transform:translateX(6px)} }
-    .btn { width: 100%; margin-top: 20px; background: linear-gradient(135deg, #7c5cff, #c95cff); border: none; border-radius: 10px; padding: 13px; font-size: 15px; font-weight: 600; color: white; cursor: pointer; transition: opacity .15s; }
-    .btn:hover { opacity: .9; }
-    .btn:disabled { opacity: .5; cursor: not-allowed; }
-    .error { margin-top: 12px; color: #ff6060; font-size: 13px; text-align: center; min-height: 18px; }
-    hr { margin: 24px 0 14px; border: none; border-top: 1px solid #2d2d40; }
-    .obs-link { text-align: center; font-size: 12px; color: #555568; }
-    .obs-link a { color: #7c5cff; text-decoration: none; }
+
+    .name-hint { font-size:11px; color:#555568; margin-top:5px; }
+
+    .btn {
+      width:100%; margin-top:8px;
+      background:linear-gradient(135deg,#7c5cff,#c95cff);
+      border:none; border-radius:10px; padding:13px;
+      font-size:15px; font-weight:600; color:white; cursor:pointer; transition:opacity .15s;
+    }
+    .btn:hover { opacity:.9; }
+    .btn:disabled { opacity:.5; cursor:not-allowed; }
+
+    .error { margin-top:12px; color:#ff6060; font-size:13px; text-align:center; min-height:18px; }
+
+    hr { margin:24px 0 16px; border:none; border-top:1px solid #2d2d40; }
+    .obs-link { text-align:center; font-size:12px; color:#555568; }
+    .obs-link a { color:#7c5cff; text-decoration:none; }
+    .obs-link a:hover { text-decoration:underline; }
+
+    /* Indicador de passo */
+    .step-indicator { display:flex; gap:6px; justify-content:center; margin-bottom:28px; }
+    .step-dot { width:6px; height:6px; border-radius:50%; background:#2d2d40; transition:background .2s; }
+    .step-dot.active { background:#7c5cff; }
+    .step-dot.done { background:#4ade80; }
   </style>
 </head>
 <body>
@@ -33,21 +60,53 @@
     </svg>
     <span>LiveBoard</span>
   </div>
-  <p class="subtitle">Quadro colaborativo para streams ao vivo</p>
-  <label for="pw">Senha de acesso</label>
-  <input type="password" id="pw" placeholder="••••••••" autofocus>
-  <button class="btn" id="btn" onclick="login()">Entrar no Board</button>
-  <p class="error" id="err"></p>
+  <p class="subtitle">Quadro colaborativo para streams</p>
+
+  <div class="step-indicator">
+    <div class="step-dot active" id="dot1"></div>
+    <div class="step-dot" id="dot2"></div>
+  </div>
+
+  <!-- Passo 1: Senha -->
+  <div id="step1">
+    <div class="field">
+      <label for="pw">Senha de acesso</label>
+      <input type="password" id="pw" placeholder="••••••••" autofocus>
+    </div>
+    <button class="btn" id="btn1" onclick="checkPassword()">Continuar</button>
+    <p class="error" id="err1"></p>
+  </div>
+
+  <!-- Passo 2: Nome -->
+  <div id="step2" style="display:none">
+    <div class="field">
+      <label for="uname">Seu nome</label>
+      <input type="text" id="uname" placeholder="Como você quer ser chamado?" maxlength="24" autocomplete="off">
+      <p class="name-hint">Visível para todos no board</p>
+    </div>
+    <button class="btn" id="btn2" onclick="enterBoard()">Entrar no Board</button>
+    <p class="error" id="err2"></p>
+  </div>
+
   <hr>
   <p class="obs-link">OBS Source → <a href="/view" target="_blank">localhost:3000/view</a></p>
 </div>
-<script>
-  async function login() {
-    const pw = document.getElementById('pw').value.trim();
-    const inp = document.getElementById('pw');
-    const err = document.getElementById('err');
-    const btn = document.getElementById('btn');
 
+<script>
+  // ── Restaura nome salvo (persiste entre sessões do mesmo browser) ──────────
+  // Usa localStorage para o nome (persiste mesmo fechando o browser)
+  // Usa sessionStorage para a senha (limpa ao fechar)
+  const savedName = localStorage.getItem('lb_username');
+  if (savedName) {
+    document.getElementById('uname').value = savedName;
+  }
+
+  // ── Passo 1: verificar senha ──────────────────────────────────────────────
+  async function checkPassword() {
+    const pw    = document.getElementById('pw').value.trim();
+    const inp   = document.getElementById('pw');
+    const err   = document.getElementById('err1');
+    const btn   = document.getElementById('btn1');
     if (!pw) return;
 
     btn.disabled = true;
@@ -60,9 +119,15 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ password: pw })
       });
-
       if (res.ok) {
-        window.location.href = '/board.html';
+        // Senha OK — avança para o passo 2
+        document.getElementById('step1').style.display = 'none';
+        document.getElementById('step2').style.display = 'block';
+        document.getElementById('dot1').className = 'step-dot done';
+        document.getElementById('dot2').className = 'step-dot active';
+        const nameInp = document.getElementById('uname');
+        nameInp.focus();
+        if (nameInp.value) nameInp.select();
       } else {
         err.textContent = 'Senha incorreta.';
         inp.classList.remove('shake');
@@ -75,12 +140,45 @@
       err.textContent = 'Erro de conexão com o servidor.';
     } finally {
       btn.disabled = false;
-      btn.textContent = 'Entrar no Board';
+      btn.textContent = 'Continuar';
     }
   }
 
+  // ── Passo 2: salvar nome e entrar ─────────────────────────────────────────
+  function enterBoard() {
+    const nameInp = document.getElementById('uname');
+    const err     = document.getElementById('err2');
+    const name    = nameInp.value.trim();
+
+    if (!name) {
+      err.textContent = 'Digite um nome para continuar.';
+      nameInp.classList.remove('shake');
+      void nameInp.offsetWidth;
+      nameInp.classList.add('shake');
+      nameInp.focus();
+      return;
+    }
+
+    // Persiste o nome — sobrevive a F5 e futuras visitas
+    localStorage.setItem('lb_username', name);
+    // Guarda na sessão atual para o board.html ler
+    sessionStorage.setItem('lb_username', name);
+    window.location.href = '/board.html';
+  }
+
+  // ── Atalhos de teclado ────────────────────────────────────────────────────
   document.getElementById('pw').addEventListener('keydown', e => {
-    if (e.key === 'Enter') login();
+    if (e.key === 'Enter') checkPassword();
+  });
+  document.getElementById('uname').addEventListener('keydown', e => {
+    if (e.key === 'Enter') enterBoard();
+  });
+
+  // Marca campo de nome como válido enquanto digita
+  document.getElementById('uname').addEventListener('input', e => {
+    const inp = e.currentTarget;
+    inp.classList.toggle('valid', inp.value.trim().length > 0);
+    document.getElementById('err2').textContent = '';
   });
 </script>
 </body>

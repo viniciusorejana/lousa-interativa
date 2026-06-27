@@ -31,10 +31,10 @@
     .ol { font-size:11px; color:var(--muted); white-space:nowrap; }
 
     /* ── Painel contextual (objeto selecionado) ── */
-    #ctx { position:fixed; top:70px; right:8px; z-index:1000; background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:12px; width:180px; display:none; box-shadow:0 8px 24px rgba(0,0,0,.4); }
+    #ctx { position:fixed; top:70px; right:8px; z-index:1000; background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:12px; width:200px; display:none; box-shadow:0 8px 24px rgba(0,0,0,.4); }
     #ctx h4 { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.7px; margin-bottom:10px; }
     .cr { display:flex; align-items:center; justify-content:space-between; gap:6px; margin-bottom:7px; }
-    .cl { font-size:12px; color:var(--muted); }
+    .cl { font-size:12px; color:var(--muted); white-space:nowrap; }
     .ci { background:var(--surface2); border:1px solid var(--border); border-radius:6px; padding:4px 8px; font-size:12px; color:var(--text); width:68px; outline:none; }
     .ci:focus { border-color:var(--accent); }
     .cb { width:100%; padding:8px; border-radius:7px; border:1px solid var(--border); background:var(--surface2); color:var(--text); font-size:12px; cursor:pointer; margin-top:4px; }
@@ -290,7 +290,33 @@
 
 <!-- ═══════════ PAINEL CONTEXTUAL ═══════════ -->
 <div id="ctx">
-  <h4>Objeto</h4>
+  <h4 id="ctx-title">Objeto</h4>
+  <!-- Cor (stroke/fill dependendo do objeto) -->
+  <div class="cr" id="ctx-color-row">
+    <span class="cl">Cor</span>
+    <div style="display:flex;gap:4px;align-items:center">
+      <input type="color" class="ci" id="ctx-color" style="width:32px;height:24px;padding:1px;border-radius:5px;cursor:pointer" oninput="setSelColor(this.value)">
+      <span style="font-size:10px;color:var(--muted)" id="ctx-color-lbl">stroke</span>
+    </div>
+  </div>
+  <!-- Cor de preenchimento -->
+  <div class="cr" id="ctx-fill-row">
+    <span class="cl">Preen.</span>
+    <div style="display:flex;gap:6px;align-items:center">
+      <input type="color" class="ci" id="ctx-fill" style="width:32px;height:24px;padding:1px;border-radius:5px;cursor:pointer" oninput="setSelFill(this.value)">
+      <label style="display:flex;align-items:center;gap:3px;font-size:10px;color:var(--muted);cursor:pointer">
+        <input type="checkbox" id="ctx-fill-on" onchange="toggleSelFill(this.checked)"> Ativo
+      </label>
+    </div>
+  </div>
+  <!-- Espessura -->
+  <div class="cr" id="ctx-sz-row">
+    <span class="cl">Espess.</span>
+    <div style="display:flex;gap:4px;align-items:center">
+      <input type="range" id="ctx-sz" min="1" max="60" value="4" style="width:60px;accent-color:var(--accent)" oninput="setSelStroke(this.value)">
+      <span class="cl" id="ctx-sz-v">4</span>
+    </div>
+  </div>
   <div class="cr"><span class="cl">Largura</span><input type="number" class="ci" id="cw" min="1" oninput="resizeSel('w',this.value)"></div>
   <div class="cr"><span class="cl">Altura</span><input type="number" class="ci" id="ch" min="1" oninput="resizeSel('h',this.value)"></div>
   <div class="cr"><span class="cl">Opacidade</span><input type="number" class="ci" id="cop" min="0" max="100" oninput="setSelOp(this.value)"></div>
@@ -326,7 +352,7 @@
 <div id="layers-panel">
   <div id="layers-header" onclick="toggleLayersPanel()">
     <span>⬆ Camadas</span>
-    <button id="layers-toggle" title="Recolher" onclick="toggleLayersPanel()">
+    <button id="layers-toggle" title="Recolher">
       <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
     </button>
   </div>
@@ -354,7 +380,7 @@
 
 <!-- ═══════════ STATUS ═══════════ -->
 <div id="toast"><div class="spinner"></div><span id="toast-msg">Enviando imagem...</span></div>
-<div id="users"><div class="udot" id="mydot" style="background:#7c5cff"></div><span id="ucnt">Conectando...</span></div>
+<div id="users"><div class="udot" id="mydot" style="background:#7c5cff"></div><span id="myname" style="font-weight:600;color:var(--text)"></span><span id="ucnt" style="color:var(--muted)"></span></div>
 <div id="status"><div class="sdot blink" id="sdot"></div><span id="stxt">Conectando...</span></div>
 <div id="zoom-info">100%</div>
 
@@ -724,10 +750,10 @@ function scheduleLayersPanel()   { scheduleLayersUpdate(); }
 // ── Nome fixo por objeto ──────────────────────────────────────────────────────
 function assignDefaultName(obj) {
   if (objectNames[obj.id]) return;
-  const typeKey = {
+  const typeKey = obj._isArrow ? 'Seta' : ({
     'path':'Traço','rect':'Retângulo','ellipse':'Elipse','circle':'Elipse',
     'line':'Linha','group':'Grupo','i-text':'Texto','text':'Texto','image':'Imagem',
-  }[obj.type] || 'Objeto';
+  }[obj.type] || 'Objeto');
   typeCounters[typeKey] = (typeCounters[typeKey] || 0) + 1;
   objectNames[obj.id] = `${typeKey} ${typeCounters[typeKey]}`;
 }
@@ -736,11 +762,12 @@ function getDisplayName(obj) {
     const t = (obj.text || '').trim().slice(0, 18);
     return objectNames[obj.id] || (t ? `"${t}"` : 'Texto');
   }
-  return objectNames[obj.id] || obj.type;
+  return objectNames[obj.id] || (obj._isArrow ? 'Seta' : obj.type);
 }
 
 // ── Ícones ────────────────────────────────────────────────────────────────────
-function getLayerIcon(type) {
+function getLayerIcon(type, obj) {
+  if (obj && obj._isArrow) return `<svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><line x1="5" y1="19" x2="19" y2="5"/><polyline points="9 5 19 5 19 15"/></svg>`;
   const icons = {
     'path':   `<svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M3 17c3-3 5-7 9-7s6 4 9 7" stroke-linecap="round"/></svg>`,
     'rect':   `<svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>`,
@@ -903,16 +930,68 @@ function groupSelected() {
 function ungroupSelected() {
   const groupObj = canvas.getActiveObject();
   if (!groupObj || groupObj.type !== 'group') return;
-  const groupId  = groupObj.id;
-  const layId    = groupObj.layerId || activeLayerId;
-  const children = [...(groupObj.getObjects ? groupObj.getObjects() : [])];
-  canvas.discardActiveObject(); canvas.setActiveObject(groupObj);
+  const groupId = groupObj.id;
+  const layId   = groupObj.layerId || activeLayerId;
+
+  // Captura transform absoluto de cada filho ANTES de desagrupar.
+  // qrDecompose retorna translateX/Y = centro do objeto no espaço do canvas.
+  // Fabric usa originX/Y 'center' por padrão em grupos — usamos isso diretamente.
+  const groupMatrix = groupObj.calcTransformMatrix();
+  const childSnapshots = (groupObj.getObjects ? groupObj.getObjects() : []).map(ch => {
+    const localMatrix = ch.calcOwnMatrix();
+    const absMatrix   = fabric.util.multiplyTransformMatrices(groupMatrix, localMatrix);
+    const decomp      = fabric.util.qrDecompose(absMatrix);
+    return {
+      obj:    ch,
+      left:   decomp.translateX,   // centro X no canvas
+      top:    decomp.translateY,   // centro Y no canvas
+      scaleX: Math.abs(decomp.scaleX),
+      scaleY: Math.abs(decomp.scaleY),
+      angle:  decomp.angle,
+      flipX:  decomp.scaleX < 0,
+      flipY:  decomp.scaleY < 0,
+    };
+  });
+
+  // Desagrupa via Fabric
+  canvas.discardActiveObject();
+  canvas.setActiveObject(groupObj);
   groupObj.toActiveSelection();
-  children.forEach(ch => {
+  canvas.discardActiveObject();
+
+  // Restaura posições usando originX/Y: 'left' (padrão de serialização do Fabric).
+  // qrDecompose retorna translateX/Y = CENTRO do objeto.
+  // Para converter centro → canto superior esquerdo com origem 'left':
+  //   left = centerX - cos(angle)*scaledW/2 + sin(angle)*scaledH/2
+  //   top  = centerY - sin(angle)*scaledW/2 - cos(angle)*scaledH/2
+  childSnapshots.forEach(snap => {
+    const ch = snap.obj;
     if (!ch.id) ch.id = genId();
     ch.layerId = layId;
-    assignDefaultName(ch); emitFull(ch);
+
+    // Calcula canto superior esquerdo a partir do centro
+    const rad    = (snap.angle || 0) * Math.PI / 180;
+    const sw     = (ch.width  || 0) * snap.scaleX;
+    const sh     = (ch.height || 0) * snap.scaleY;
+    const leftTL = snap.left - (Math.cos(rad) * sw / 2 - Math.sin(rad) * sh / 2);
+    const topTL  = snap.top  - (Math.sin(rad) * sw / 2 + Math.cos(rad) * sh / 2);
+
+    ch.set({
+      originX: 'left',
+      originY: 'top',
+      left:    leftTL,
+      top:     topTL,
+      scaleX:  snap.scaleX,
+      scaleY:  snap.scaleY,
+      angle:   snap.angle,
+      flipX:   snap.flipX,
+      flipY:   snap.flipY,
+    });
+    ch.setCoords();
+    assignDefaultName(ch);
+    emitFull(ch);
   });
+
   if (vpRect) canvas.bringToFront(vpRect);
   canvas.renderAll();
   socket.emit('object:remove', [groupId]);
@@ -1063,7 +1142,7 @@ function updateLayersPanel() {
         item.innerHTML = `
           <div class="layer-drag-handle" title="Arrastar para reordenar ou mover de camada">⋮⋮</div>
           ${expandHtml}
-          <div class="layer-icon" style="color:${accent}">${getLayerIcon(obj.type)}</div>
+          <div class="layer-icon" style="color:${accent}">${getLayerIcon(obj.type, obj)}</div>
           <span class="layer-name" data-rename="${obj.id}" title="Duplo clique = renomear">${getDisplayName(obj)}</span>
           <div class="layer-actions">
             <button class="layer-action-btn ${isHid ? 'hidden-obj' : ''}" onclick="toggleObjVisibility('${obj.id}')" title="${isHid ? 'Mostrar' : 'Ocultar'}">${eyeSvg}</button>
@@ -1077,8 +1156,7 @@ function updateLayersPanel() {
         });
         item.addEventListener('click', e => {
           if (e.target.closest('.layer-action-btn,.layer-drag-handle,.layer-expand-btn,[data-rename]')) return;
-          if (obj.type !== 'path') { canvas.setActiveObject(obj); canvas.renderAll(); }
-          scheduleLayersUpdate();
+          canvas.setActiveObject(obj); canvas.renderAll(); scheduleLayersUpdate();
         });
 
         // Drag: reorder dentro da camada OU mover para outra camada (drop no header)
@@ -1111,65 +1189,47 @@ function updateLayersPanel() {
 
         parentDiv.appendChild(item);
 
-        // Filhos do grupo — com drag reorder entre si
+        // Filhos do grupo — apenas exibição (sem drag nem visibilidade individual)
         if (isGroup && !isCollG) {
           const children = obj.getObjects ? obj.getObjects() : [];
           [...children].reverse().forEach(ch => {
             if (!ch.id) ch.id = genId(); assignDefaultName(ch);
-            const isChHid = hiddenObjects.has(ch.id);
-            const chEye   = isChHid
-              ? `<svg width="11" height="11" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`
-              : `<svg width="11" height="11" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
             const ci = document.createElement('div');
             ci.className = 'layer-item is-group-child';
             ci.style.paddingLeft = (indent + 14) + 'px';
-            ci.draggable = true;
-            ci.dataset.id = ch.id;
             ci.innerHTML = `
-              <div class="layer-drag-handle">⋮⋮</div>
-              <div class="layer-icon" style="color:var(--muted);opacity:.7">${getLayerIcon(ch.type)}</div>
-              <span class="layer-name" style="font-size:10px" data-rename-ch="${ch.id}">${getDisplayName(ch)}</span>
-              <div class="layer-actions">
-                <button class="layer-action-btn ${isChHid ? 'hidden-obj' : ''}" onclick="toggleObjVisibility('${ch.id}')">${chEye}</button>
-              </div>`;
-            ci.querySelector('[data-rename-ch]').addEventListener('dblclick', e => { e.stopPropagation(); startRename(ch.id, e.currentTarget); });
-            // Drag reorder within group children
-            ci.addEventListener('dragstart', e => { layerDragSrcId = ch.id; ci.style.opacity='.5'; e.dataTransfer.effectAllowed='move'; e.dataTransfer.setData('text/plain', ch.id); });
-            ci.addEventListener('dragend',   () => { ci.style.opacity=''; document.querySelectorAll('.drag-over').forEach(el=>el.classList.remove('drag-over')); });
-            ci.addEventListener('dragover',  e => { e.preventDefault(); document.querySelectorAll('.drag-over').forEach(el=>el.classList.remove('drag-over')); ci.classList.add('drag-over'); });
-            ci.addEventListener('drop', e => {
-              e.preventDefault(); e.stopPropagation(); ci.classList.remove('drag-over');
-              if (!layerDragSrcId || layerDragSrcId === ch.id) return;
-              // Reorder within group: toObject and rebuild — Fabric groups are immutable in child order
-              // For now: just reorder in allObjs
-              const srcObj2 = findById(layerDragSrcId); if (!srcObj2) return;
-              canvas.moveTo(srcObj2, allObjs.indexOf(ch));
-              canvas.renderAll();
-              socket.emit('zorder:sync', canvas.getObjects().map(o=>o.id).filter(Boolean));
-              scheduleLayersUpdate(); layerDragSrcId = null;
-            });
+              <div class="layer-icon" style="color:var(--muted);opacity:.6">${getLayerIcon(ch.type, ch)}</div>
+              <span class="layer-name" style="font-size:10px;color:var(--muted)">${getDisplayName(ch)}</span>`;
             parentDiv.appendChild(ci);
           });
         }
       }
 
       // ── Renderiza em ordem real do canvas (topo → fundo) ──────────────────
-      // Agrupa traços CONSECUTIVOS em um único item "N traços".
-      // Objetos não-traço aparecem individualmente na posição correta.
+      // Agrupa traços CONSECUTIVOS DA MESMA COR em um único item "N traços [cor]".
+      // Traços de cores diferentes ou intercalados com objetos aparecem separados.
       const orderedDesc = [...layerObjs].reverse(); // topo do canvas primeiro
       let i = 0;
       while (i < orderedDesc.length) {
         const obj = orderedDesc[i];
-        if (obj.type === 'path') {
-          // Coleta todos os traços consecutivos a partir deste
-          const pathGroup = [];
-          while (i < orderedDesc.length && orderedDesc[i].type === 'path') {
+        // Setas são paths mas tratadas como objetos individuais
+        if (obj.type === 'path' && !obj._isArrow) {
+          // Coleta traços consecutivos da mesma cor (excluindo setas)
+          const groupColor = obj.stroke || '#ffffff';
+          const pathGroup  = [];
+          while (i < orderedDesc.length &&
+                 orderedDesc[i].type === 'path' &&
+                 !orderedDesc[i]._isArrow &&
+                 (orderedDesc[i].stroke || '#ffffff') === groupColor) {
             pathGroup.push(orderedDesc[i]); i++;
           }
-          // Renderiza como um item agrupado de traços
-          const pathsHidden = pathGroup.every(p => hiddenObjects.has(p.id));
+          const pathsHidden  = pathGroup.every(p => hiddenObjects.has(p.id));
           const pathsPartial = !pathsHidden && pathGroup.some(p => hiddenObjects.has(p.id));
-          const eyeStyle = pathsHidden ? 'opacity:.3' : (pathsPartial ? 'opacity:.6' : '');
+          const eyeOpacity   = pathsHidden ? '0.3' : (pathsPartial ? '0.6' : '1');
+          const eyeSvg = pathsHidden
+            ? `<svg width="11" height="11" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`
+            : `<svg width="11" height="11" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
+
           const pathItem = document.createElement('div');
           pathItem.className = 'layer-item';
           pathItem.style.paddingLeft = '18px';
@@ -1179,20 +1239,38 @@ function updateLayersPanel() {
           pathItem.innerHTML = `
             <div class="layer-drag-handle" title="Arrastar para mover traços para outra camada">⋮⋮</div>
             <span style="width:14px;flex-shrink:0;display:inline-block"></span>
-            <div class="layer-icon" style="color:#aaa">${getLayerIcon('path')}</div>
-            <span class="layer-name" style="color:var(--muted)">${pathGroup.length} traço${pathGroup.length > 1 ? 's' : ''}</span>
+            <div class="layer-icon">
+              <svg width="12" height="12" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="${groupColor}" stroke="none"/></svg>
+            </div>
+            <span class="layer-name" style="color:var(--muted)">
+              ${pathGroup.length} traço${pathGroup.length > 1 ? 's' : ''}
+            </span>
             <div class="layer-actions">
-              <button class="layer-action-btn" style="${eyeStyle}" title="${pathsHidden ? 'Mostrar traços' : 'Ocultar traços'}"
-                onclick="togglePathGroup([${pathGroup.map(p=>`'${p.id}'`).join(',')}])">
-                ${pathsHidden
-                  ? `<svg width="11" height="11" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`
-                  : `<svg width="11" height="11" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`
-                }
+              <button class="layer-action-btn" style="opacity:${eyeOpacity}" title="${pathsHidden ? 'Mostrar' : 'Ocultar'}"
+                onclick="togglePathGroup([${pathGroup.map(p => `'${p.id}'`).join(',')}])">
+                ${eyeSvg}
+              </button>
+              <button class="layer-action-btn" style="color:#ff6060" title="Excluir traços"
+                onclick="deletePathGroup([${pathGroup.map(p => `'${p.id}'`).join(',')}])">
+                <svg width="11" height="11" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/></svg>
               </button>
             </div>`;
-          // Drag do grupo de traços para outra camada
+
+          pathItem.addEventListener('click', e => {
+            if (e.target.closest('.layer-action-btn,.layer-drag-handle')) return;
+            // Seleciona todos os traços do grupo no canvas
+            const pathObjs = pathGroup.map(p => findById(p.id)).filter(Boolean);
+            if (pathObjs.length === 1) {
+              canvas.setActiveObject(pathObjs[0]);
+            } else if (pathObjs.length > 1) {
+              const sel = new fabric.ActiveSelection(pathObjs, { canvas });
+              canvas.setActiveObject(sel);
+            }
+            canvas.renderAll();
+            scheduleLayersUpdate();
+          });
           pathItem.addEventListener('dragstart', e => {
-            layerDragSrcId = pathGroup[0].id; // usa o primeiro como referência
+            layerDragSrcId = pathGroup[0].id;
             pathItem.style.opacity = '.5';
             e.dataTransfer.effectAllowed = 'move';
             e.dataTransfer.setData('text/plain', '__pathgroup__' + pathGroup.map(p => p.id).join(','));
@@ -1200,6 +1278,35 @@ function updateLayersPanel() {
           pathItem.addEventListener('dragend', () => {
             pathItem.style.opacity = '';
             document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+          });
+          // dragover + drop: permite reordenar entre grupos de traços E entre traços e outros objetos
+          pathItem.addEventListener('dragover', e => {
+            e.preventDefault();
+            document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+            pathItem.classList.add('drag-over');
+          });
+          pathItem.addEventListener('drop', e => {
+            e.preventDefault(); e.stopPropagation();
+            pathItem.classList.remove('drag-over');
+            const dragData = e.dataTransfer.getData('text/plain');
+            // Move o(s) objeto(s) arrastado(s) para a posição do primeiro traço deste grupo
+            const targetObj = pathGroup[pathGroup.length - 1]; // mais fundo do grupo = referência
+            const targetIdx = allObjs.indexOf(targetObj);
+            if (dragData.startsWith('__pathgroup__')) {
+              // Outro grupo de traços sendo reordenado
+              const srcIds = dragData.replace('__pathgroup__', '').split(',').filter(Boolean);
+              srcIds.forEach((id, k) => {
+                const src = findById(id); if (!src) return;
+                canvas.moveTo(src, Math.max(0, targetIdx - k));
+              });
+            } else if (layerDragSrcId) {
+              // Objeto individual
+              const src = findById(layerDragSrcId); if (src) canvas.moveTo(src, targetIdx);
+            }
+            canvas.renderAll();
+            socket.emit('zorder:sync', canvas.getObjects().map(o => o.id).filter(Boolean));
+            scheduleLayersUpdate();
+            layerDragSrcId = null;
           });
           objsDiv.appendChild(pathItem);
         } else {
@@ -1257,6 +1364,17 @@ function togglePathGroup(ids) {
   canvas.renderAll(); scheduleLayersUpdate();
 }
 
+// Exclui todos os traços de um grupo de uma vez
+function deletePathGroup(ids) {
+  const objs = ids.map(id => findById(id)).filter(Boolean);
+  if (!objs.length) return;
+  objs.forEach(o => canvas.remove(o));
+  canvas.discardActiveObject();
+  canvas.renderAll();
+  socket.emit('object:remove', ids);
+  scheduleLayersUpdate();
+}
+
 function deleteObjById(id) {
   const obj = findById(id); if (!obj) return;
   canvas.remove(obj); canvas.discardActiveObject(); canvas.renderAll();
@@ -1312,7 +1430,7 @@ function absoluteImgUrl(src) {
 
 function ser(obj) {
   if (obj._isViewportRect) return null;
-  const j = obj.toJSON(['id', 'layerId']);
+  const j = obj.toJSON(['id', 'layerId', '_isArrow']);
   if (obj.type === 'image') {
     const el = obj.getElement();
     const raw = el ? el.src : (j.src || '');
@@ -1362,7 +1480,17 @@ function serTransformAbsolute(obj, groupMatrix) {
 // ═══════════════════════════════════════════════════════════════════════════════
 // SOCKET
 // ═══════════════════════════════════════════════════════════════════════════════
-const socket = io({ query: { type: 'editor' }, transports: ['websocket'] });
+// ── Nome do usuário ───────────────────────────────────────────────────────────
+// Lê do sessionStorage (definido no login). Se por algum motivo não existir
+// (ex: acesso direto à URL), tenta o localStorage ou usa fallback.
+const myUserName = sessionStorage.getItem('lb_username')
+  || localStorage.getItem('lb_username')
+  || 'Anônimo';
+
+const socket = io({
+  query: { type: 'editor', userName: myUserName },
+  transports: ['websocket'],
+});
 
 socket.on('connect', () => {
   document.getElementById('sdot').className = 'sdot on';
@@ -1372,13 +1500,14 @@ socket.on('disconnect', () => {
   document.getElementById('sdot').className = 'sdot blink';
   document.getElementById('stxt').textContent = 'Reconectando...';
 });
-socket.on('board:init', ({ state, userId, userColor, canUndo, canRedo }) => {
+socket.on('board:init', ({ state, userId, userName, userColor, canUndo, canRedo }) => {
   myId = userId;
   document.getElementById('mydot').style.background = userColor;
+  document.getElementById('myname').textContent = userName || myUserName;
   if (state && state.layers && state.layers.length) {
     boardLayers = state.layers;
   }
-  ensureActiveLayer(); // garante activeLayerId válido logo no início
+  ensureActiveLayer();
   loadState(state);
   if (state && state.viewport) {
     vpW = state.viewport.w || 1920; vpH = state.viewport.h || 1080;
@@ -1391,8 +1520,11 @@ socket.on('board:init', ({ state, userId, userColor, canUndo, canRedo }) => {
   if (btnR) btnR.style.opacity = canRedo ? '1' : '0.35';
 });
 socket.on('users:update', users => {
-  document.getElementById('ucnt').textContent =
-    users.length + ' editor' + (users.length !== 1 ? 'es' : '') + ' online';
+  const count = users.length;
+  const names = users.map(u => u.name || u.id).join(', ');
+  const el = document.getElementById('ucnt');
+  el.textContent = ' · ' + count + (count === 1 ? ' editor' : ' editores');
+  el.title = 'Online: ' + names;
 });
 
 socket.on('object:add',       d       => applyFull(d));
@@ -1488,12 +1620,13 @@ socket.on('draw:end', ({ userId, object }) => {
 });
 
 // Cursores remotos — recebidos em coordenadas do board, convertidos para tela
-socket.on('cursor:move', ({ userId, color: c, x, y }) => {
+socket.on('cursor:move', ({ userId, userName: uName, color: c, x, y }) => {
   if (userId === myId) return;
   if (!remoteCursors[userId]) {
     const el = document.createElement('div');
     el.className = 'rcursor';
-    el.innerHTML = `<svg width="20" height="20" viewBox="0 0 20 20" fill="${c}"><path d="M5 2l12 7.5-6.5.5-3 6.5z"/></svg><span class="rcname" style="background:${c}">${userId}</span>`;
+    const label = uName || userId; // usa nome se disponível, cai para ID
+    el.innerHTML = `<svg width="20" height="20" viewBox="0 0 20 20" fill="${c}"><path d="M5 2l12 7.5-6.5.5-3 6.5z"/></svg><span class="rcname" style="background:${c}">${label}</span>`;
     document.body.appendChild(el);
     remoteCursors[userId] = el;
   }
@@ -1661,6 +1794,7 @@ canvas.on('path:created', opt => {
 
 canvas.on('selection:created', updCtx);
 canvas.on('selection:updated', updCtx);
+canvas.on('object:modified',   updCtx);
 canvas.on('selection:cleared', () => { document.getElementById('ctx').style.display = 'none'; });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1785,21 +1919,123 @@ function setSz(v) { sz = parseInt(v); document.getElementById('szv').textContent
 function setOp(v) { op = parseInt(v) / 100; document.getElementById('opv').textContent = v + '%'; if (canvas.freeDrawingBrush) canvas.freeDrawingBrush.opacity = op; }
 
 function updCtx() {
-  const o = canvas.getActiveObject();
-  if (!o || o._isViewportRect) return;
-  document.getElementById('ctx').style.display = 'block';
-  document.getElementById('cw').value  = Math.round(o.getScaledWidth());
-  document.getElementById('ch').value  = Math.round(o.getScaledHeight());
+  const objs = canvas.getActiveObjects().filter(o => !o._isViewportRect);
+  if (!objs.length) { document.getElementById('ctx').style.display = 'none'; return; }
+  const ctx = document.getElementById('ctx');
+  ctx.style.display = 'block';
+  // Usa o primeiro objeto como referência para preencher os campos
+  const o = objs[0];
+  const multi = objs.length > 1;
+
+  // Título
+  const typeNames = { 'path':'Traço', 'rect':'Retângulo', 'ellipse':'Elipse', 'circle':'Elipse',
+    'line':'Linha', 'i-text':'Texto', 'text':'Texto', 'image':'Imagem', 'group':'Grupo' };
+  document.getElementById('ctx-title').textContent = multi
+    ? `${objs.length} objetos`
+    : (typeNames[o.type] || 'Objeto');
+
+  // Dimensões (só para seleção única)
+  document.getElementById('cw').value  = multi ? '' : Math.round(o.getScaledWidth());
+  document.getElementById('ch').value  = multi ? '' : Math.round(o.getScaledHeight());
   document.getElementById('cop').value = Math.round((o.opacity || 1) * 100);
+
+  // Cor de stroke/texto
+  const isText = o.type === 'i-text' || o.type === 'text';
+  const strokeColor = isText ? (o.fill || '#ffffff') : (o.stroke || '#ffffff');
+  const colorEl = document.getElementById('ctx-color');
+  colorEl.value = strokeColor.startsWith('#') ? strokeColor : '#ffffff';
+  document.getElementById('ctx-color-lbl').textContent = isText ? 'texto' : 'linha';
+  const hideColor = o.type === 'image' || o.type === 'group';
+  document.getElementById('ctx-color-row').style.display = hideColor ? 'none' : 'flex';
+
+  // Preenchimento
+  const hasFill = !multi &&
+    o.type !== 'i-text' && o.type !== 'text' &&
+    o.type !== 'image' && o.type !== 'line' && o.type !== 'path';
+  document.getElementById('ctx-fill-row').style.display = hasFill ? 'flex' : 'none';
+  if (hasFill) {
+    const fillActive = o.fill && o.fill !== 'transparent' && o.fill !== '';
+    document.getElementById('ctx-fill-on').checked = !!fillActive;
+    const fillEl = document.getElementById('ctx-fill');
+    fillEl.value    = fillActive && o.fill.startsWith('#') ? o.fill : '#ffffff';
+    fillEl.disabled = !fillActive;
+  }
+
+  // Espessura
+  const hasSz = objs.every(x => x.type !== 'image' && x.type !== 'i-text' && x.type !== 'text' && x.type !== 'group');
+  document.getElementById('ctx-sz-row').style.display = hasSz ? 'flex' : 'none';
+  if (hasSz) {
+    const sw = o.strokeWidth || 1;
+    document.getElementById('ctx-sz').value = sw;
+    document.getElementById('ctx-sz-v').textContent = sw;
+  }
 }
+
+// ── Funções de edição ao vivo ─────────────────────────────────────────────────
+// Funcionam tanto em seleção única quanto em multi-seleção.
+// IMPORTANTE: quando há activeSelection, o Fabric converte left/top dos filhos
+// para coordenadas relativas — precisamos serializar com coordenadas absolutas.
+function getSelObjs() {
+  return canvas.getActiveObjects().filter(o => !o._isViewportRect);
+}
+
+// Emite modificação de objeto respeitando se está em activeSelection
+function emitModifyWithAbsPos(o) {
+  if (!o.id || o._isViewportRect) return;
+  const active = canvas.getActiveObject();
+  if (active && active.type === 'activeSelection') {
+    // Objeto dentro de uma seleção múltipla — calcular posição absoluta
+    const gm  = active.calcTransformMatrix();
+    const abs = serTransformAbsolute(o, gm);
+    const data = ser(o);
+    if (!data) return;
+    Object.assign(data, abs);
+    socket.emit('object:modify:commit', data);
+  } else {
+    emitModify(o);
+  }
+}
+
+function setSelColor(val) {
+  getSelObjs().forEach(o => {
+    const isText = o.type === 'i-text' || o.type === 'text';
+    if (isText) o.set({ fill: val });
+    else        o.set({ stroke: val });
+    emitModifyWithAbsPos(o);
+  });
+  canvas.renderAll();
+}
+
+function setSelFill(val) {
+  if (!document.getElementById('ctx-fill-on').checked) return;
+  getSelObjs().forEach(o => { o.set({ fill: val }); emitModifyWithAbsPos(o); });
+  canvas.renderAll();
+}
+
+function toggleSelFill(checked) {
+  const fillInput = document.getElementById('ctx-fill');
+  fillInput.disabled = !checked;
+  const fillVal = checked ? (fillInput.value || '#ffffff') : 'transparent';
+  getSelObjs().forEach(o => { o.set({ fill: fillVal }); emitModifyWithAbsPos(o); });
+  canvas.renderAll();
+}
+
+function setSelStroke(val) {
+  const n = parseInt(val);
+  document.getElementById('ctx-sz-v').textContent = n;
+  getSelObjs().forEach(o => { o.set({ strokeWidth: n }); emitModifyWithAbsPos(o); });
+  canvas.renderAll();
+}
+
 function resizeSel(d, v) {
   const o = canvas.getActiveObject(); if (!o || !v || o._isViewportRect) return;
   d === 'w' ? o.scaleToWidth(parseFloat(v)) : o.scaleToHeight(parseFloat(v));
-  o.setCoords(); canvas.renderAll(); emitModify(o);
+  o.setCoords(); canvas.renderAll(); emitModifyWithAbsPos(o);
 }
+
 function setSelOp(v) {
-  const o = canvas.getActiveObject(); if (!o || o._isViewportRect) return;
-  o.set({ opacity: parseInt(v) / 100 }); canvas.renderAll(); emitModify(o);
+  getSelObjs().forEach(o => { o.set({ opacity: parseInt(v) / 100 }); emitModifyWithAbsPos(o); });
+  canvas.renderAll();
 }
 function delSel() {
   const ids = canvas.getActiveObjects().filter(o => !o._isViewportRect).map(o => o.id).filter(Boolean);
@@ -1823,11 +2059,36 @@ function mkShape(t, s, e, id) {
   if (t === 'circle') return new fabric.Ellipse({ ...base, fill: fillShape ? color : 'transparent', left: Math.min(s.x,e.x), top: Math.min(s.y,e.y), rx: Math.abs(e.x-s.x)/2||1, ry: Math.abs(e.y-s.y)/2||1 });
   if (t === 'line')   return new fabric.Line([s.x, s.y, e.x, e.y], { ...base, fill: null });
   if (t === 'arrow') {
-    const ang  = Math.atan2(e.y - s.y, e.x - s.x);
-    const hl   = Math.max(14, sz * 3);
-    const line = new fabric.Line([s.x, s.y, e.x, e.y], { stroke: color, strokeWidth: sz, fill: null, strokeLineCap: 'round' });
-    const head = new fabric.Triangle({ width: hl, height: hl, fill: color, stroke: color, strokeWidth: 1, left: e.x, top: e.y, originX: 'center', originY: 'center', angle: (ang * 180 / Math.PI) + 90 });
-    return new fabric.Group([line, head], { id: oid, selectable: true, evented: true, opacity: op });
+    const dx  = e.x - s.x, dy = e.y - s.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const ang = Math.atan2(dy, dx);
+    // Tamanho da cabeça proporcional à espessura, mínimo razoável
+    const hl  = Math.max(16, sz * 4);
+    const hw  = Math.max(10, sz * 2.5);
+    // Recua o fim da linha para não passar pela cabeça
+    const ex2 = e.x - Math.cos(ang) * hl * 0.6;
+    const ey2 = e.y - Math.sin(ang) * hl * 0.6;
+    // Pontos da cabeça triangular no espaço local
+    const cos = Math.cos(ang), sin = Math.sin(ang);
+    // Ponta, esquerda, direita
+    const tip = [e.x, e.y];
+    const lx  = e.x - hl * cos + hw * sin;
+    const ly  = e.y - hl * sin - hw * cos;
+    const rx  = e.x - hl * cos - hw * sin;
+    const ry  = e.y - hl * sin + hw * cos;
+    const pathStr = [
+      `M ${s.x} ${s.y} L ${ex2} ${ey2}`,
+      `M ${tip[0]} ${tip[1]} L ${lx} ${ly} L ${rx} ${ry} Z`,
+    ].join(' ');
+    return new fabric.Path(pathStr, {
+      ...base,
+      fill: color,          // cabeça preenchida
+      stroke: color,
+      strokeWidth: sz,
+      strokeLineCap: 'round',
+      strokeLineJoin: 'round',
+      _isArrow: true,       // marcador para saber que é seta
+    });
   }
 }
 
@@ -1951,7 +2212,7 @@ function deser(data, cb) {
     fabric.Image.fromURL(absoluteImgUrl(data.src), img => { img.set(data); img.id = data.id; if (data.layerId) img.layerId = data.layerId; cb(img); }, { crossOrigin: 'anonymous' });
     return;
   }
-  if (data.type === 'path') { const o = new fabric.Path(data.path, data); o.id = data.id; if (data.layerId) o.layerId = data.layerId; cb(o); return; }
+  if (data.type === 'path') { const o = new fabric.Path(data.path, data); o.id = data.id; if (data.layerId) o.layerId = data.layerId; if (data._isArrow) o._isArrow = true; cb(o); return; }
   if (data.type === 'line') {
     const o = new fabric.Line([data.x1, data.y1, data.x2, data.y2], data);
     o.id = data.id; cb(o); return;
