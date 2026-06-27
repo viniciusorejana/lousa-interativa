@@ -79,7 +79,7 @@
     #layers-header {
       display:flex; align-items:center; justify-content:space-between;
       padding:8px 10px; border-bottom:1px solid var(--border);
-      flex-shrink:0;
+      flex-shrink:0; cursor:pointer;
     }
     #layers-header span { font-size:12px; font-weight:600; color:var(--text); letter-spacing:.4px; text-transform:uppercase; cursor:pointer; flex:1; }
     #layers-toggle { background:none; border:none; color:var(--muted); cursor:pointer; padding:2px; border-radius:4px; display:flex; align-items:center; }
@@ -167,6 +167,36 @@
     .layer-action-btn:hover { background:var(--surface); color:var(--text); opacity:1; }
     .layer-action-btn.hidden-obj { color:#555; }
     #layers-empty { padding:20px; text-align:center; font-size:11px; color:var(--muted); }
+
+    /* Faixa de camada (estilo Photoshop) */
+    .layer-section { flex-shrink:0; }
+    .layer-section-header {
+      display:flex; align-items:center; gap:6px;
+      padding:5px 8px; background:var(--surface2);
+      border-bottom:1px solid var(--border);
+      cursor:pointer; user-select:none;
+    }
+    .layer-section-header:hover { background:var(--border); }
+    .layer-section-header.active-layer { background:rgba(124,92,255,.2); }
+    .layer-section-header.drag-over { background:rgba(124,92,255,.35) !important; outline:2px dashed var(--accent); outline-offset:-2px; }
+    .layer-section-name {
+      flex:1; font-size:11px; font-weight:600; color:var(--text);
+      overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+    }
+    .layer-section-name-input {
+      flex:1; font-size:11px; font-weight:600; color:var(--text);
+      background:var(--surface); border:1px solid var(--accent);
+      border-radius:3px; padding:1px 4px; outline:none;
+    }
+    .layer-section-actions { display:flex; gap:2px; flex-shrink:0; }
+    .lsa-btn {
+      width:18px; height:18px; border:none; background:none; color:var(--muted);
+      cursor:pointer; border-radius:3px; display:flex; align-items:center; justify-content:center; padding:0;
+    }
+    .lsa-btn:hover { background:var(--surface); color:var(--text); }
+    .lsa-btn.hidden-layer { opacity:.4; }
+    .layer-section-objects { }
+    .layer-section.collapsed .layer-section-objects { display:none; }
 
     /* ══════════════════════════════════════════
        PAINEL DO VIEWPORT
@@ -294,24 +324,31 @@
 
 <!-- ═══════════ PAINEL DE CAMADAS ═══════════ -->
 <div id="layers-panel">
-  <div id="layers-header">
-    <span onclick="toggleLayersPanel()">⬆ Camadas</span>
+  <div id="layers-header" onclick="toggleLayersPanel()">
+    <span>⬆ Camadas</span>
     <button id="layers-toggle" title="Recolher" onclick="toggleLayersPanel()">
       <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
     </button>
   </div>
+
+  <!-- Toolbar: ações de camada e de objeto -->
   <div id="layers-toolbar">
-    <button class="lt-btn accent" id="lt-group" onclick="groupSelected()" title="Agrupar objetos selecionados no painel" disabled>
-      <svg width="11" height="11" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><rect x="2" y="8" width="8" height="8" rx="1"/><rect x="14" y="8" width="8" height="8" rx="1"/><rect x="8" y="2" width="8" height="8" rx="1"/></svg>
-      Agrupar
+    <button class="lt-btn accent" onclick="addLayer()" title="Nova camada">
+      <svg width="11" height="11" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      Nova
     </button>
-    <button class="lt-btn" id="lt-ungroup" onclick="ungroupSelected()" title="Desagrupar grupo selecionado" disabled>
+    <button class="lt-btn" id="lt-group" onclick="groupSelected()" disabled title="Agrupar seleção">
+      <svg width="11" height="11" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><rect x="2" y="8" width="8" height="8" rx="1"/><rect x="14" y="8" width="8" height="8" rx="1"/><rect x="8" y="2" width="8" height="8" rx="1"/></svg>
+      Grupo
+    </button>
+    <button class="lt-btn" id="lt-ungroup" onclick="ungroupSelected()" disabled title="Desagrupar">
       <svg width="11" height="11" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2v-4M9 21H5a2 2 0 01-2-2v-4m0 0h18" stroke-linecap="round"/></svg>
-      Desagrupar
+      Desgr.
     </button>
   </div>
+
   <div id="layers-list">
-    <div id="layers-empty">Nenhum objeto no board</div>
+    <div id="layers-empty">Nenhuma camada</div>
   </div>
 </div>
 
@@ -349,8 +386,11 @@ let tool = 'select', color = '#ffffff', sz = 4, op = 1, fillShape = false;
 let myId = null;
 let isDrawing = false, drawStart = null, tmpShapeId = null;
 let penActive = false;
-const undoStack = [], redoStack = [], MAX_H = 50;
 const remoteStrokes = {}, remoteCursors = {};
+
+// ── Sistema de camadas ────────────────────────────────────────────────────────
+let boardLayers    = [{ id: 'layer-default', name: 'Camada 1', visible: true }];
+let activeLayerId  = 'layer-default';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ── FUNCIONALIDADE 1: PAN / NAVEGAÇÃO ──────────────────────────────────────────
@@ -469,7 +509,7 @@ canvasEl.addEventListener('touchstart', e => {
   e.preventDefault();
   if (e.touches.length !== 1) return;
   const p = getCanvasPoint(e);
-  socket.volatile.emit('cursor:move', { x: p.clientX, y: p.clientY });
+  socket.volatile.emit('cursor:move', { x: p.x, y: p.y });
   const target = canvas.findTarget(e.touches[0]);
   if (canvas.getActiveObjects().length > 0 && tool !== 'eraser') return;
   if (target && ['rect','circle','line','arrow'].includes(tool)) return;
@@ -527,7 +567,7 @@ canvasEl.addEventListener('touchmove', e => {
   e.preventDefault();
   if (!isDrawing || !drawStart) return;
   const p = getCanvasPoint(e);
-  socket.volatile.emit('cursor:move', { x: p.clientX, y: p.clientY });
+  socket.volatile.emit('cursor:move', { x: p.x, y: p.y });
   updateTmpShape({ x: p.x, y: p.y });
 }, { passive: false });
 
@@ -598,7 +638,8 @@ function drawViewportRect() {
 
 canvas.on('mouse:move', opt => {
   const p = canvas.getPointer(opt.e);
-  socket.volatile.emit('cursor:move', { x: opt.e.clientX, y: opt.e.clientY });
+  // Emite em coordenadas do BOARD (não da tela) para funcionar com zoom/pan
+  socket.volatile.emit('cursor:move', { x: p.x, y: p.y });
 
   if (penActive && tool === 'pen') {
     socket.volatile.emit('draw:move', { x: p.x, y: p.y });
@@ -662,22 +703,25 @@ function toggleLayersPanel() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ── PAINEL DE CAMADAS ──────────────────────────────────────────────────────────
+// ── PAINEL DE CAMADAS (estilo Photoshop) ──────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════════
+// boardLayers = [ { id, name, visible } ]  — cada camada é um "grupo lógico"
+// Traços/paths vão para a camada ativa automaticamente.
+// Objetos (imagens, textos, formas) têm seu próprio item dentro da camada.
+// O z-order real do canvas é: todos os objetos da camada 0 (fundo), depois
+// todos da camada 1, etc.
 
 let layersUpdateTimer = null;
-const hiddenObjects   = new Set();   // IDs ocultos localmente
-const panelSelected   = new Set();   // IDs selecionados NO PAINEL (multi-check)
-const objectNames     = {};          // id → nome customizado
-const collapsedGroups = new Set();   // IDs de grupos recolhidos
-const typeCounters    = {};          // tipo → contador para nomes auto
+const hiddenObjects   = new Set();
+const panelSelected   = new Set();
+const objectNames     = {};
+const collapsedLayers = new Set();
+const typeCounters    = {};
 
-function scheduleLayersUpdate() {
-  clearTimeout(layersUpdateTimer);
-  layersUpdateTimer = setTimeout(updateLayersPanel, 80);
-}
+function scheduleLayersUpdate()  { clearTimeout(layersUpdateTimer); layersUpdateTimer = setTimeout(updateLayersPanel, 80); }
+function scheduleLayersPanel()   { scheduleLayersUpdate(); }
 
-// ── Nome fixo por objeto (não muda com a ordem) ───────────────────────────────
+// ── Nome fixo por objeto ──────────────────────────────────────────────────────
 function assignDefaultName(obj) {
   if (objectNames[obj.id]) return;
   const typeKey = {
@@ -687,7 +731,6 @@ function assignDefaultName(obj) {
   typeCounters[typeKey] = (typeCounters[typeKey] || 0) + 1;
   objectNames[obj.id] = `${typeKey} ${typeCounters[typeKey]}`;
 }
-
 function getDisplayName(obj) {
   if (obj.type === 'i-text' || obj.type === 'text') {
     const t = (obj.text || '').trim().slice(0, 18);
@@ -699,32 +742,37 @@ function getDisplayName(obj) {
 // ── Ícones ────────────────────────────────────────────────────────────────────
 function getLayerIcon(type) {
   const icons = {
-    'path':   `<svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M3 17c3-3 5-7 9-7s6 4 9 7" stroke-linecap="round"/></svg>`,
-    'rect':   `<svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>`,
-    'ellipse':`<svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="12" rx="10" ry="7"/></svg>`,
-    'circle': `<svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/></svg>`,
-    'line':   `<svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><line x1="5" y1="19" x2="19" y2="5" stroke-linecap="round"/></svg>`,
-    'group':  `<svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><rect x="2" y="8" width="8" height="8" rx="1"/><rect x="14" y="8" width="8" height="8" rx="1"/><rect x="8" y="2" width="8" height="8" rx="1"/></svg>`,
-    'i-text': `<svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg>`,
-    'text':   `<svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg>`,
-    'image':  `<svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>`,
+    'path':   `<svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M3 17c3-3 5-7 9-7s6 4 9 7" stroke-linecap="round"/></svg>`,
+    'rect':   `<svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>`,
+    'ellipse':`<svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="12" rx="10" ry="7"/></svg>`,
+    'circle': `<svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/></svg>`,
+    'line':   `<svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><line x1="5" y1="19" x2="19" y2="5" stroke-linecap="round"/></svg>`,
+    'group':  `<svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><rect x="2" y="8" width="8" height="8" rx="1"/><rect x="14" y="8" width="8" height="8" rx="1"/><rect x="8" y="2" width="8" height="8" rx="1"/></svg>`,
+    'i-text': `<svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg>`,
+    'text':   `<svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg>`,
+    'image':  `<svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>`,
   };
   return icons[type] || icons['rect'];
 }
 
-// ── Rename inline (duplo clique) ──────────────────────────────────────────────
+// ── Rename inline ─────────────────────────────────────────────────────────────
 function startRename(id, nameEl) {
   const current = nameEl.textContent;
   const input = document.createElement('input');
-  input.className = 'layer-name-input';
+  input.className = nameEl.className.includes('section') ? 'layer-section-name-input' : 'layer-name-input';
   input.value = current;
   nameEl.replaceWith(input);
   input.focus(); input.select();
-  function commit() {
+  const commit = () => {
     const val = input.value.trim() || current;
-    objectNames[id] = val;
+    if (id.startsWith('layer-')) {
+      const l = boardLayers.find(x => x.id === id);
+      if (l) { l.name = val; socket.emit('layers:update', boardLayers); }
+    } else {
+      objectNames[id] = val;
+    }
     scheduleLayersUpdate();
-  }
+  };
   input.addEventListener('blur', commit);
   input.addEventListener('keydown', e => {
     if (e.key === 'Enter')  { e.preventDefault(); input.blur(); }
@@ -733,182 +781,444 @@ function startRename(id, nameEl) {
   });
 }
 
-// ── Toolbar: habilita/desabilita botões ───────────────────────────────────────
-function updateLayerToolbar() {
-  const btnGroup   = document.getElementById('lt-group');
-  const btnUngroup = document.getElementById('lt-ungroup');
-  if (!btnGroup) return;
-  btnGroup.disabled = panelSelected.size < 2;
-  const selObjs = [...panelSelected].map(id => findById(id)).filter(Boolean);
-  const panelHasGroup = selObjs.length === 1 && selObjs[0].type === 'group';
-  const activeIsGroup = canvas.getActiveObject()?.type === 'group';
-  btnUngroup.disabled = !(panelHasGroup || (panelSelected.size === 0 && activeIsGroup));
+// ── Gerenciar camadas ─────────────────────────────────────────────────────────
+// Garante que activeLayerId aponta para uma camada que existe.
+// Chamado após F5 (board:init), após deleteLayer, e antes de qualquer new object.
+function ensureActiveLayer() {
+  if (!boardLayers.length) {
+    // Caso extremo: não há nenhuma camada — cria uma
+    boardLayers = [{ id: 'layer-default-' + genId(), name: 'Camada 1', visible: true }];
+    socket.emit('layers:update', boardLayers);
+  }
+  const valid = boardLayers.find(l => l.id === activeLayerId);
+  if (!valid) {
+    activeLayerId = boardLayers[0].id;
+  }
 }
 
-// ── Agrupar (via painel ou seleção do canvas) ─────────────────────────────────
+function addLayer() {
+  const n    = boardLayers.length + 1;
+  const newL = { id: 'layer-' + genId(), name: `Camada ${n}`, visible: true };
+  boardLayers.unshift(newL);   // nova camada no topo
+  activeLayerId = newL.id;
+  socket.emit('layers:update', boardLayers);
+  scheduleLayersUpdate();
+}
+
+function deleteLayer(layerId) {
+  if (boardLayers.length <= 1) return; // nunca deletar a última
+  const objs = canvas.getObjects().filter(o => o.layerId === layerId && !o._isViewportRect);
+  if (objs.length && !confirm(`Essa camada tem ${objs.length} objeto(s). Deletar?`)) return;
+  const ids = objs.map(o => o.id).filter(Boolean);
+  objs.forEach(o => canvas.remove(o));
+  canvas.renderAll();
+  if (ids.length) socket.emit('object:remove', ids);
+  boardLayers = boardLayers.filter(l => l.id !== layerId);
+  ensureActiveLayer(); // revalida — não assume boardLayers[0] diretamente
+  socket.emit('layers:update', boardLayers);
+  scheduleLayersUpdate();
+}
+
+function toggleLayerVisibility(layerId, e) {
+  if (e) e.stopPropagation();
+  const layer = boardLayers.find(l => l.id === layerId);
+  if (!layer) return;
+  layer.visible = !layer.visible;
+  socket.emit('layer:visibility', { layerId, visible: layer.visible });
+  // Aplica localmente também
+  canvas.getObjects().filter(o => o.layerId === layerId && !o._isViewportRect).forEach(o => {
+    if (!layer.visible) {
+      o._savedOpacity = o._savedOpacity ?? o.opacity;
+      o.set({ opacity: 0, visible: false }); hiddenObjects.add(o.id);
+    } else {
+      o.set({ opacity: o._savedOpacity ?? 1, visible: true });
+      delete o._savedOpacity; hiddenObjects.delete(o.id);
+    }
+  });
+  canvas.renderAll(); scheduleLayersUpdate();
+}
+
+function moveLayer(layerId, dir) {
+  const idx = boardLayers.findIndex(l => l.id === layerId);
+  if (idx < 0) return;
+  const swap = idx + dir;
+  if (swap < 0 || swap >= boardLayers.length) return;
+  [boardLayers[idx], boardLayers[swap]] = [boardLayers[swap], boardLayers[idx]];
+  applyLayerZOrder();  // reordena os objetos do canvas para refletir a nova ordem
+  socket.emit('layers:update', boardLayers);
+  socket.emit('zorder:sync', canvas.getObjects().map(o => o.id).filter(Boolean));
+  scheduleLayersUpdate();
+}
+
+// Reordena os objetos no canvas para que a ordem das camadas seja respeitada.
+// boardLayers[0] = topo visual → índice mais alto no canvas.
+// boardLayers[last] = fundo → índice 0 no canvas.
+function applyLayerZOrder() {
+  const allObjs = canvas.getObjects().filter(o => o.id && !o._isViewportRect);
+  // Ordena: fundo primeiro (último em boardLayers), topo depois (primeiro em boardLayers)
+  const layerOrder = [...boardLayers].reverse(); // index 0 = fundo
+  let targetIdx = 0;
+  layerOrder.forEach(layer => {
+    const layerObjs = allObjs.filter(o => o.layerId === layer.id);
+    layerObjs.forEach(obj => {
+      canvas.moveTo(obj, targetIdx++);
+    });
+  });
+  if (vpRect) canvas.bringToFront(vpRect);
+  canvas.renderAll();
+}
+
+// ── Toolbar: habilita botões ──────────────────────────────────────────────────
+function updateLayerToolbar() {
+  const btnG = document.getElementById('lt-group');
+  const btnU = document.getElementById('lt-ungroup');
+  if (!btnG) return;
+  const selObjs = canvas.getActiveObjects().filter(o => !o._isViewportRect);
+  btnG.disabled = selObjs.length < 2;
+  const single = canvas.getActiveObject();
+  btnU.disabled = !(single?.type === 'group');
+}
+
+// ── Agrupar / Desagrupar ──────────────────────────────────────────────────────
 function groupSelected() {
-  let targets = [...panelSelected].map(id => findById(id)).filter(o => o && !o._isViewportRect);
-  if (targets.length < 2) targets = canvas.getActiveObjects().filter(o => !o._isViewportRect);
+  let targets = canvas.getActiveObjects().filter(o => !o._isViewportRect);
   if (targets.length < 2) return;
-  pushH();
+  const layId = targets[0].layerId || activeLayerId;
   const oldIds = targets.map(o => o.id).filter(Boolean);
   canvas.discardActiveObject();
   const sel = new fabric.ActiveSelection(targets, { canvas });
   canvas.setActiveObject(sel);
   const group = sel.toGroup();
   group.id = genId();
+  group.layerId = layId;
   typeCounters['Grupo'] = (typeCounters['Grupo'] || 0) + 1;
   objectNames[group.id] = `Grupo ${typeCounters['Grupo']}`;
   if (vpRect) canvas.bringToFront(vpRect);
-  canvas.discardActiveObject();
-  canvas.setActiveObject(group);
-  canvas.renderAll();
-  panelSelected.clear();
+  canvas.discardActiveObject(); canvas.setActiveObject(group); canvas.renderAll();
   emitFull(group);
   socket.emit('object:remove', oldIds);
   scheduleLayersUpdate();
 }
 
-// ── Desagrupar ────────────────────────────────────────────────────────────────
 function ungroupSelected() {
-  let groupObj = null;
-  const selObjs = [...panelSelected].map(id => findById(id)).filter(Boolean);
-  if (selObjs.length === 1 && selObjs[0].type === 'group') groupObj = selObjs[0];
-  else groupObj = canvas.getActiveObject();
+  const groupObj = canvas.getActiveObject();
   if (!groupObj || groupObj.type !== 'group') return;
-  pushH();
-  const groupId = groupObj.id;
-  const children = groupObj.getObjects ? [...groupObj.getObjects()] : [];
-  canvas.discardActiveObject();
-  canvas.setActiveObject(groupObj);
+  const groupId  = groupObj.id;
+  const layId    = groupObj.layerId || activeLayerId;
+  const children = [...(groupObj.getObjects ? groupObj.getObjects() : [])];
+  canvas.discardActiveObject(); canvas.setActiveObject(groupObj);
   groupObj.toActiveSelection();
   children.forEach(ch => {
     if (!ch.id) ch.id = genId();
-    assignDefaultName(ch);
-    emitFull(ch);
+    ch.layerId = layId;
+    assignDefaultName(ch); emitFull(ch);
   });
   if (vpRect) canvas.bringToFront(vpRect);
   canvas.renderAll();
   socket.emit('object:remove', [groupId]);
-  panelSelected.clear();
   scheduleLayersUpdate();
 }
 
-// ── Recolher/expandir grupo no painel ────────────────────────────────────────
-function toggleGroupCollapse(id, e) {
-  if (e) e.stopPropagation();
-  if (collapsedGroups.has(id)) collapsedGroups.delete(id);
-  else collapsedGroups.add(id);
-  scheduleLayersUpdate();
-}
-
-// ── Drag & drop para reordenar ───────────────────────────────────────────────
+// ── Render principal ──────────────────────────────────────────────────────────
 let layerDragSrcId = null;
+const collapsedGroups = new Set();
 
-// ── Render principal do painel ───────────────────────────────────────────────
 function updateLayersPanel() {
   const list = document.getElementById('layers-list');
+  if (!list) return;
   const allObjs = canvas.getObjects().filter(o => o.id && !o._isViewportRect);
-  allObjs.forEach(o => assignDefaultName(o));
+  ensureActiveLayer();
+  // Objetos sem camada (criados antes de ter camada, ou após F5 com camada deletada)
+  // são reatribuídos à camada ativa
+  allObjs.forEach(o => {
+    if (!o.layerId || !boardLayers.find(l => l.id === o.layerId)) {
+      o.layerId = activeLayerId;
+    }
+    assignDefaultName(o);
+  });
 
-  if (!allObjs.length) {
-    list.innerHTML = '<div id="layers-empty">Nenhum objeto no board</div>';
-    updateLayerToolbar(); return;
+  if (!boardLayers.length) {
+    list.innerHTML = '<div id="layers-empty">Nenhuma camada</div>';
+    return;
   }
 
   const canvasSel = new Set(canvas.getActiveObjects().map(o => o.id));
   list.innerHTML = '';
 
-  [...allObjs].reverse().forEach(obj => {
-    const isGroup    = obj.type === 'group';
-    const collapsed  = collapsedGroups.has(obj.id);
-    const isPanSel   = panelSelected.has(obj.id);
-    const isCanSel   = canvasSel.has(obj.id);
-    const isHidden   = hiddenObjects.has(obj.id);
-    const accent     = obj.stroke || (obj.fill && obj.fill !== 'transparent' ? obj.fill : null) || '#7c5cff';
+  // Renderiza do topo para o fundo (boardLayers[0] = topo)
+  boardLayers.forEach(layer => {
+    const layerObjs   = allObjs.filter(o => o.layerId === layer.id);
+    const isActive    = layer.id === activeLayerId;
+    const isCollapsed = collapsedLayers.has(layer.id);
+    const paths       = layerObjs.filter(o => o.type === 'path');
+    const others      = layerObjs.filter(o => o.type !== 'path');
 
-    const item = document.createElement('div');
-    item.className = ['layer-item', isCanSel ? 'selected' : '', isPanSel ? 'panel-selected' : '', isGroup ? 'is-group' : ''].filter(Boolean).join(' ');
-    item.dataset.id = obj.id;
-    item.draggable = true;
+    // layerObjs já está na ordem do canvas (allObjs = canvas.getObjects() filtrado).
+    // Para o painel, precisamos do topo para baixo → reverso.
+    // Traços consecutivos são agrupados em um único item "N traços" que ocupa
+    // a posição correta na stack, respeitando objetos intercalados.
 
-    const expandHtml = isGroup
-      ? `<button class="layer-expand-btn ${collapsed ? '' : 'open'}" onclick="toggleGroupCollapse('${obj.id}',event)"><svg width="10" height="10" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></button>`
-      : `<span style="display:inline-block;width:14px;flex-shrink:0"></span>`;
+    // ── Cabeçalho da camada ───────────────────────────────────────────────────
+    const section = document.createElement('div');
+    section.className = 'layer-section' + (isCollapsed ? ' collapsed' : '');
+    section.dataset.layerId = layer.id;
 
-    const eyeHtml = isHidden
-      ? `<svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`
-      : `<svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
+    const eyeIcon = layer.visible
+      ? `<svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`
+      : `<svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
 
-    item.innerHTML = `
-      <div class="layer-check ${isPanSel ? 'checked' : ''}" data-check="${obj.id}"></div>
-      <div class="layer-drag-handle">⋮⋮</div>
-      ${expandHtml}
-      <div class="layer-icon" style="color:${accent}">${getLayerIcon(obj.type)}</div>
-      <span class="layer-name" data-rename="${obj.id}" title="Duplo clique para renomear">${getDisplayName(obj)}</span>
-      <div class="layer-actions">
-        <button class="layer-action-btn ${isHidden ? 'hidden-obj' : ''}" onclick="toggleObjVisibility('${obj.id}')">${eyeHtml}</button>
-        <button class="layer-action-btn" onclick="deleteObjById('${obj.id}')" style="color:#ff6060">
-          <svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/></svg>
+    const header = document.createElement('div');
+    header.className = 'layer-section-header' + (isActive ? ' active-layer' : '');
+    header.innerHTML = `
+      <button class="lsa-btn" onclick="collapsedLayers.has('${layer.id}')?collapsedLayers.delete('${layer.id}'):collapsedLayers.add('${layer.id}');scheduleLayersUpdate();">
+        <svg width="9" height="9" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" style="transform:rotate(${isCollapsed?'0':'90'}deg);transition:.15s">
+          <polyline points="9 18 15 12 9 6"/>
+        </svg>
+      </button>
+      <span class="layer-section-name" data-rename="${layer.id}">${layer.name}</span>
+      <span style="font-size:9px;color:var(--muted);flex-shrink:0">${layerObjs.length}</span>
+      <div class="layer-section-actions">
+        <button class="lsa-btn ${layer.visible ? '' : 'hidden-layer'}" onclick="toggleLayerVisibility('${layer.id}',event)">${eyeIcon}</button>
+        <button class="lsa-btn" onclick="moveLayer('${layer.id}',-1)" title="Subir">↑</button>
+        <button class="lsa-btn" onclick="moveLayer('${layer.id}',1)" title="Descer">↓</button>
+        <button class="lsa-btn" onclick="deleteLayer('${layer.id}')" title="Excluir camada" style="color:#ff6060">
+          <svg width="10" height="10" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/></svg>
         </button>
       </div>`;
 
-    // Checkbox painel
-    item.querySelector('[data-check]').addEventListener('click', e => {
-      e.stopPropagation();
-      panelSelected.has(obj.id) ? panelSelected.delete(obj.id) : panelSelected.add(obj.id);
+    // Clicar no header = ativar essa camada
+    header.addEventListener('click', e => {
+      if (e.target.closest('.lsa-btn') || e.target.closest('[data-rename]')) return;
+      activeLayerId = layer.id;
+      scheduleLayersUpdate();
+    });
+    header.querySelector('[data-rename]').addEventListener('dblclick', e => {
+      e.stopPropagation(); startRename(layer.id, e.currentTarget);
+    });
+
+    // Drop no header da camada = mover objeto(s) para essa camada
+    header.addEventListener('dragover', e => {
+      if (!layerDragSrcId) return;
+      e.preventDefault();
+      document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+      header.classList.add('drag-over');
+    });
+    header.addEventListener('dragleave', () => header.classList.remove('drag-over'));
+    header.addEventListener('drop', e => {
+      e.preventDefault(); e.stopPropagation();
+      header.classList.remove('drag-over');
+      const dragData = e.dataTransfer.getData('text/plain');
+      let idsToMove = [];
+      if (dragData.startsWith('__pathgroup__')) {
+        // Grupo de traços — move todos
+        idsToMove = dragData.replace('__pathgroup__', '').split(',').filter(Boolean);
+      } else if (layerDragSrcId) {
+        idsToMove = [layerDragSrcId];
+      }
+      idsToMove.forEach(id => {
+        const obj = findById(id);
+        if (obj && obj.layerId !== layer.id) {
+          obj.layerId = layer.id;
+          const s = ser(obj);
+          if (s) socket.emit('object:modify:commit', s);
+        }
+      });
+      if (idsToMove.length) {
+        applyLayerZOrder();
+        socket.emit('zorder:sync', canvas.getObjects().map(o => o.id).filter(Boolean));
+      }
+      layerDragSrcId = null;
       scheduleLayersUpdate();
     });
 
-    // Duplo clique → renomear
-    item.querySelector('[data-rename]').addEventListener('dblclick', e => {
-      e.stopPropagation();
-      startRename(obj.id, e.currentTarget);
-    });
+    section.appendChild(header);
 
-    // Clique simples → selecionar no canvas
-    item.addEventListener('click', e => {
-      if (e.target.closest('.layer-action-btn,.layer-drag-handle,[data-check],.layer-expand-btn,[data-rename]')) return;
-      canvas.setActiveObject(obj); canvas.renderAll(); scheduleLayersUpdate();
-    });
+    if (!isCollapsed) {
+      const objsDiv = document.createElement('div');
+      objsDiv.className = 'layer-section-objects';
 
-    // Drag reorder
-    item.addEventListener('dragstart', e => { layerDragSrcId = obj.id; item.style.opacity = '.5'; e.dataTransfer.effectAllowed = 'move'; });
-    item.addEventListener('dragend',   () => { item.style.opacity = ''; list.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over')); });
-    item.addEventListener('dragover',  e => { e.preventDefault(); list.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over')); item.classList.add('drag-over'); });
-    item.addEventListener('drop', e => {
-      e.preventDefault(); item.classList.remove('drag-over');
-      if (!layerDragSrcId || layerDragSrcId === obj.id) return;
-      const src = findById(layerDragSrcId); if (!src) return;
-      canvas.moveTo(src, allObjs.indexOf(obj));
-      canvas.renderAll();
-      socket.emit('zorder:sync', canvas.getObjects().map(o => o.id).filter(Boolean));
-      scheduleLayersUpdate(); layerDragSrcId = null;
-    });
+      // ── Helper: cria item de objeto (traço ou objeto) ──────────────────────
+      function makeObjItem(obj, indent, parentDiv) {
+        const isCanSel = canvasSel.has(obj.id);
+        const isGroup  = obj.type === 'group';
+        const isCollG  = collapsedGroups.has(obj.id);
+        const isHid    = hiddenObjects.has(obj.id);
+        const accent   = obj.stroke || (obj.fill && obj.fill !== 'transparent' ? obj.fill : null) || '#7c5cff';
+        const eyeSvg   = isHid
+          ? `<svg width="11" height="11" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`
+          : `<svg width="11" height="11" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
 
-    list.appendChild(item);
+        const item = document.createElement('div');
+        item.className = 'layer-item' + (isCanSel ? ' selected' : '') + (isGroup ? ' is-group' : '');
+        item.style.paddingLeft = indent + 'px';
+        item.draggable = true;
+        item.dataset.id = obj.id;
 
-    // Filhos do grupo (expandido)
-    if (isGroup && !collapsed) {
-      const children = obj.getObjects ? obj.getObjects() : [];
-      [...children].reverse().forEach(ch => {
-        if (!ch.id) ch.id = genId();
-        assignDefaultName(ch);
-        const ci = document.createElement('div');
-        ci.className = 'layer-item is-group-child';
-        ci.innerHTML = `
-          <span style="width:14px;flex-shrink:0"></span>
-          <span style="width:14px;flex-shrink:0"></span>
-          <span style="width:14px;flex-shrink:0;border-left:2px solid var(--border)"></span>
-          <div class="layer-icon" style="color:var(--muted);opacity:.6">${getLayerIcon(ch.type)}</div>
-          <span class="layer-name" style="color:var(--muted);font-size:10px" data-rename-child="${ch.id}"
-            title="Duplo clique para renomear">${getDisplayName(ch)}</span>`;
-        ci.querySelector('[data-rename-child]').addEventListener('dblclick', e => {
-          e.stopPropagation(); startRename(ch.id, e.currentTarget);
+        const expandHtml = isGroup
+          ? `<button class="layer-expand-btn ${isCollG?'':'open'}" onclick="collapsedGroups.has('${obj.id}')?collapsedGroups.delete('${obj.id}'):collapsedGroups.add('${obj.id}');scheduleLayersUpdate();event.stopPropagation()">
+              <svg width="9" height="9" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+            </button>`
+          : `<span style="width:14px;flex-shrink:0;display:inline-block"></span>`;
+
+        item.innerHTML = `
+          <div class="layer-drag-handle" title="Arrastar para reordenar ou mover de camada">⋮⋮</div>
+          ${expandHtml}
+          <div class="layer-icon" style="color:${accent}">${getLayerIcon(obj.type)}</div>
+          <span class="layer-name" data-rename="${obj.id}" title="Duplo clique = renomear">${getDisplayName(obj)}</span>
+          <div class="layer-actions">
+            <button class="layer-action-btn ${isHid ? 'hidden-obj' : ''}" onclick="toggleObjVisibility('${obj.id}')" title="${isHid ? 'Mostrar' : 'Ocultar'}">${eyeSvg}</button>
+            <button class="layer-action-btn" onclick="deleteObjById('${obj.id}')" style="color:#ff6060" title="Excluir">
+              <svg width="11" height="11" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/></svg>
+            </button>
+          </div>`;
+
+        item.querySelector('[data-rename]').addEventListener('dblclick', e => {
+          e.stopPropagation(); startRename(obj.id, e.currentTarget);
         });
-        list.appendChild(ci);
-      });
+        item.addEventListener('click', e => {
+          if (e.target.closest('.layer-action-btn,.layer-drag-handle,.layer-expand-btn,[data-rename]')) return;
+          if (obj.type !== 'path') { canvas.setActiveObject(obj); canvas.renderAll(); }
+          scheduleLayersUpdate();
+        });
+
+        // Drag: reorder dentro da camada OU mover para outra camada (drop no header)
+        item.addEventListener('dragstart', e => {
+          layerDragSrcId = obj.id;
+          item.style.opacity = '.5';
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData('text/plain', obj.id);
+        });
+        item.addEventListener('dragend', () => {
+          item.style.opacity = '';
+          document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+        });
+        item.addEventListener('dragover', e => {
+          e.preventDefault();
+          document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+          item.classList.add('drag-over');
+        });
+        item.addEventListener('drop', e => {
+          e.preventDefault(); e.stopPropagation();
+          item.classList.remove('drag-over');
+          if (!layerDragSrcId || layerDragSrcId === obj.id) return;
+          const src = findById(layerDragSrcId); if (!src) return;
+          // Reorder dentro da camada
+          canvas.moveTo(src, allObjs.indexOf(obj));
+          canvas.renderAll();
+          socket.emit('zorder:sync', canvas.getObjects().map(o => o.id).filter(Boolean));
+          scheduleLayersUpdate(); layerDragSrcId = null;
+        });
+
+        parentDiv.appendChild(item);
+
+        // Filhos do grupo — com drag reorder entre si
+        if (isGroup && !isCollG) {
+          const children = obj.getObjects ? obj.getObjects() : [];
+          [...children].reverse().forEach(ch => {
+            if (!ch.id) ch.id = genId(); assignDefaultName(ch);
+            const isChHid = hiddenObjects.has(ch.id);
+            const chEye   = isChHid
+              ? `<svg width="11" height="11" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`
+              : `<svg width="11" height="11" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
+            const ci = document.createElement('div');
+            ci.className = 'layer-item is-group-child';
+            ci.style.paddingLeft = (indent + 14) + 'px';
+            ci.draggable = true;
+            ci.dataset.id = ch.id;
+            ci.innerHTML = `
+              <div class="layer-drag-handle">⋮⋮</div>
+              <div class="layer-icon" style="color:var(--muted);opacity:.7">${getLayerIcon(ch.type)}</div>
+              <span class="layer-name" style="font-size:10px" data-rename-ch="${ch.id}">${getDisplayName(ch)}</span>
+              <div class="layer-actions">
+                <button class="layer-action-btn ${isChHid ? 'hidden-obj' : ''}" onclick="toggleObjVisibility('${ch.id}')">${chEye}</button>
+              </div>`;
+            ci.querySelector('[data-rename-ch]').addEventListener('dblclick', e => { e.stopPropagation(); startRename(ch.id, e.currentTarget); });
+            // Drag reorder within group children
+            ci.addEventListener('dragstart', e => { layerDragSrcId = ch.id; ci.style.opacity='.5'; e.dataTransfer.effectAllowed='move'; e.dataTransfer.setData('text/plain', ch.id); });
+            ci.addEventListener('dragend',   () => { ci.style.opacity=''; document.querySelectorAll('.drag-over').forEach(el=>el.classList.remove('drag-over')); });
+            ci.addEventListener('dragover',  e => { e.preventDefault(); document.querySelectorAll('.drag-over').forEach(el=>el.classList.remove('drag-over')); ci.classList.add('drag-over'); });
+            ci.addEventListener('drop', e => {
+              e.preventDefault(); e.stopPropagation(); ci.classList.remove('drag-over');
+              if (!layerDragSrcId || layerDragSrcId === ch.id) return;
+              // Reorder within group: toObject and rebuild — Fabric groups are immutable in child order
+              // For now: just reorder in allObjs
+              const srcObj2 = findById(layerDragSrcId); if (!srcObj2) return;
+              canvas.moveTo(srcObj2, allObjs.indexOf(ch));
+              canvas.renderAll();
+              socket.emit('zorder:sync', canvas.getObjects().map(o=>o.id).filter(Boolean));
+              scheduleLayersUpdate(); layerDragSrcId = null;
+            });
+            parentDiv.appendChild(ci);
+          });
+        }
+      }
+
+      // ── Renderiza em ordem real do canvas (topo → fundo) ──────────────────
+      // Agrupa traços CONSECUTIVOS em um único item "N traços".
+      // Objetos não-traço aparecem individualmente na posição correta.
+      const orderedDesc = [...layerObjs].reverse(); // topo do canvas primeiro
+      let i = 0;
+      while (i < orderedDesc.length) {
+        const obj = orderedDesc[i];
+        if (obj.type === 'path') {
+          // Coleta todos os traços consecutivos a partir deste
+          const pathGroup = [];
+          while (i < orderedDesc.length && orderedDesc[i].type === 'path') {
+            pathGroup.push(orderedDesc[i]); i++;
+          }
+          // Renderiza como um item agrupado de traços
+          const pathsHidden = pathGroup.every(p => hiddenObjects.has(p.id));
+          const pathsPartial = !pathsHidden && pathGroup.some(p => hiddenObjects.has(p.id));
+          const eyeStyle = pathsHidden ? 'opacity:.3' : (pathsPartial ? 'opacity:.6' : '');
+          const pathItem = document.createElement('div');
+          pathItem.className = 'layer-item';
+          pathItem.style.paddingLeft = '18px';
+          pathItem.style.cursor = 'default';
+          pathItem.draggable = true;
+          pathItem.dataset.pathGroup = pathGroup.map(p => p.id).join(',');
+          pathItem.innerHTML = `
+            <div class="layer-drag-handle" title="Arrastar para mover traços para outra camada">⋮⋮</div>
+            <span style="width:14px;flex-shrink:0;display:inline-block"></span>
+            <div class="layer-icon" style="color:#aaa">${getLayerIcon('path')}</div>
+            <span class="layer-name" style="color:var(--muted)">${pathGroup.length} traço${pathGroup.length > 1 ? 's' : ''}</span>
+            <div class="layer-actions">
+              <button class="layer-action-btn" style="${eyeStyle}" title="${pathsHidden ? 'Mostrar traços' : 'Ocultar traços'}"
+                onclick="togglePathGroup([${pathGroup.map(p=>`'${p.id}'`).join(',')}])">
+                ${pathsHidden
+                  ? `<svg width="11" height="11" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`
+                  : `<svg width="11" height="11" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`
+                }
+              </button>
+            </div>`;
+          // Drag do grupo de traços para outra camada
+          pathItem.addEventListener('dragstart', e => {
+            layerDragSrcId = pathGroup[0].id; // usa o primeiro como referência
+            pathItem.style.opacity = '.5';
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', '__pathgroup__' + pathGroup.map(p => p.id).join(','));
+          });
+          pathItem.addEventListener('dragend', () => {
+            pathItem.style.opacity = '';
+            document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+          });
+          objsDiv.appendChild(pathItem);
+        } else {
+          makeObjItem(obj, 18, objsDiv);
+          i++;
+        }
+      }
+
+      if (layerObjs.length === 0) {
+        const empty = document.createElement('div');
+        empty.style.cssText = 'padding:6px 20px;font-size:10px;color:var(--muted);font-style:italic';
+        empty.textContent = 'Camada vazia';
+        objsDiv.appendChild(empty);
+      }
+
+      section.appendChild(objsDiv);
     }
+
+    list.appendChild(section);
   });
 
   updateLayerToolbar();
@@ -918,28 +1228,47 @@ function toggleObjVisibility(id) {
   const obj = findById(id); if (!obj) return;
   if (hiddenObjects.has(id)) {
     hiddenObjects.delete(id);
-    obj.set({ opacity: obj._savedOpacity !== undefined ? obj._savedOpacity : 1, visible: true });
-    delete obj._savedOpacity;
+    obj.set({ opacity: obj._savedOpacity ?? 1, visible: true }); delete obj._savedOpacity;
   } else {
-    hiddenObjects.add(id);
-    obj._savedOpacity = obj.opacity;
-    obj.set({ opacity: 0, visible: false });
+    hiddenObjects.add(id); obj._savedOpacity = obj.opacity; obj.set({ opacity:0, visible:false });
   }
+  // Emite para a view também
+  const data = { ...ser(obj), _visibilityChange: true };
+  socket.emit('object:modify', data);
+  canvas.renderAll(); scheduleLayersUpdate();
+}
+
+// Oculta/mostra um grupo de traços de uma vez
+function togglePathGroup(ids) {
+  const allHidden = ids.every(id => hiddenObjects.has(id));
+  ids.forEach(id => {
+    const obj = findById(id); if (!obj) return;
+    if (allHidden) {
+      hiddenObjects.delete(id);
+      obj.set({ opacity: obj._savedOpacity ?? 1, visible: true }); delete obj._savedOpacity;
+    } else {
+      if (!hiddenObjects.has(id)) {
+        hiddenObjects.add(id); obj._savedOpacity = obj.opacity; obj.set({ opacity: 0, visible: false });
+      }
+    }
+    const data = { ...ser(obj), _visibilityChange: true };
+    socket.emit('object:modify', data);
+  });
   canvas.renderAll(); scheduleLayersUpdate();
 }
 
 function deleteObjById(id) {
   const obj = findById(id); if (!obj) return;
-  pushH(); canvas.remove(obj); canvas.discardActiveObject(); canvas.renderAll();
+  canvas.remove(obj); canvas.discardActiveObject(); canvas.renderAll();
   socket.emit('object:remove', [id]);
   panelSelected.delete(id); scheduleLayersUpdate();
 }
 
 canvas.on('object:added',      scheduleLayersUpdate);
 canvas.on('object:removed',    scheduleLayersUpdate);
-canvas.on('selection:created', scheduleLayersUpdate);
-canvas.on('selection:updated', scheduleLayersUpdate);
-canvas.on('selection:cleared', scheduleLayersUpdate);
+canvas.on('selection:created', () => { scheduleLayersUpdate(); updateLayerToolbar(); });
+canvas.on('selection:updated', () => { scheduleLayersUpdate(); updateLayerToolbar(); });
+canvas.on('selection:cleared', () => { scheduleLayersUpdate(); updateLayerToolbar(); });
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SERIALIZAÇÃO
@@ -983,7 +1312,7 @@ function absoluteImgUrl(src) {
 
 function ser(obj) {
   if (obj._isViewportRect) return null;
-  const j = obj.toJSON(['id']);
+  const j = obj.toJSON(['id', 'layerId']);
   if (obj.type === 'image') {
     const el = obj.getElement();
     const raw = el ? el.src : (j.src || '');
@@ -1043,16 +1372,23 @@ socket.on('disconnect', () => {
   document.getElementById('sdot').className = 'sdot blink';
   document.getElementById('stxt').textContent = 'Reconectando...';
 });
-socket.on('board:init', ({ state, userId, userColor }) => {
+socket.on('board:init', ({ state, userId, userColor, canUndo, canRedo }) => {
   myId = userId;
   document.getElementById('mydot').style.background = userColor;
+  if (state && state.layers && state.layers.length) {
+    boardLayers = state.layers;
+  }
+  ensureActiveLayer(); // garante activeLayerId válido logo no início
   loadState(state);
-  // Restaura tamanho do viewport salvo (posição é sempre 0,0)
   if (state && state.viewport) {
     vpW = state.viewport.w || 1920; vpH = state.viewport.h || 1080;
   }
   createViewportRect();
   fitViewport();
+  const btnU = document.querySelector('[onclick="undo()"]');
+  const btnR = document.querySelector('[onclick="redo()"]');
+  if (btnU) btnU.style.opacity = canUndo ? '1' : '0.35';
+  if (btnR) btnR.style.opacity = canRedo ? '1' : '0.35';
 });
 socket.on('users:update', users => {
   document.getElementById('ucnt').textContent =
@@ -1068,15 +1404,27 @@ socket.on('object:remove', ids => {
   canvas.renderAll();
 });
 socket.on('objects:batch', objs => { objs.forEach(d => applyFull(d, false)); canvas.renderAll(); });
-socket.on('board:clear', () => { canvas.clear(); canvas.backgroundColor = '#1e1e2a'; canvas.renderAll(); createViewportRect(); });
-socket.on('board:sync', st => { canvas.clear(); canvas.backgroundColor = '#1e1e2a'; loadState(st); setTimeout(createViewportRect, 100); });
+socket.on('board:clear', () => {
+  canvas.clear(); canvas.backgroundColor = '#1e1e2a'; canvas.renderAll();
+  createViewportRect();
+  hiddenObjects.clear();
+  scheduleLayersUpdate();
+});
+socket.on('board:sync', st => {
+  canvas.clear(); canvas.backgroundColor = '#1e1e2a';
+  hiddenObjects.clear();
+  if (st && st.layers && st.layers.length) { boardLayers = st.layers; }
+  ensureActiveLayer();
+  loadState(st);
+  setTimeout(createViewportRect, 100);
+  scheduleLayersUpdate();
+});
 socket.on('zorder:sync', order => {
   const contentObjs = canvas.getObjects().filter(o => !o._isViewportRect);
   order.forEach((id, idx) => {
     const o = contentObjs.find(x => x.id === id);
     if (o) canvas.moveTo(o, idx);
   });
-  // Mantém viewport no topo
   if (vpRect) canvas.bringToFront(vpRect);
   canvas.renderAll();
   scheduleLayersUpdate();
@@ -1085,6 +1433,34 @@ socket.on('zorder:sync', order => {
 socket.on('viewport:sync', vp => {
   vpW = vp.w; vpH = vp.h;
   drawViewportRect();
+});
+
+// Visibilidade de camada — aplica para todos os objetos dessa camada
+socket.on('layer:visibility', ({ layerId, visible }) => {
+  const layer = boardLayers.find(l => l.id === layerId);
+  if (layer) layer.visible = visible;
+  canvas.getObjects()
+    .filter(o => o.layerId === layerId && !o._isViewportRect)
+    .forEach(o => {
+      if (!visible) {
+        o._savedOpacity = o._savedOpacity ?? o.opacity;
+        o.set({ opacity: 0, visible: false });
+        hiddenObjects.add(o.id);
+      } else {
+        o.set({ opacity: o._savedOpacity ?? 1, visible: true });
+        delete o._savedOpacity;
+        hiddenObjects.delete(o.id);
+      }
+    });
+  canvas.renderAll();
+  scheduleLayersPanel();
+});
+
+socket.on('layers:update', layers => {
+  boardLayers = layers;
+  ensureActiveLayer();
+  applyLayerZOrder(); // reflete nova ordem das camadas no canvas
+  scheduleLayersPanel();
 });
 
 // Stroke streaming
@@ -1111,7 +1487,7 @@ socket.on('draw:end', ({ userId, object }) => {
   if (object) applyFull(object); else canvas.renderAll();
 });
 
-// Cursores remotos
+// Cursores remotos — recebidos em coordenadas do board, convertidos para tela
 socket.on('cursor:move', ({ userId, color: c, x, y }) => {
   if (userId === myId) return;
   if (!remoteCursors[userId]) {
@@ -1121,8 +1497,13 @@ socket.on('cursor:move', ({ userId, color: c, x, y }) => {
     document.body.appendChild(el);
     remoteCursors[userId] = el;
   }
-  remoteCursors[userId].style.left = x + 'px';
-  remoteCursors[userId].style.top  = y + 'px';
+  // Converte do espaço do board para a tela, respeitando zoom e pan atuais
+  const zoom = canvas.getZoom();
+  const vpt  = canvas.viewportTransform;
+  const sx   = x * zoom + vpt[4];
+  const sy   = y * zoom + vpt[5];
+  remoteCursors[userId].style.left = sx + 'px';
+  remoteCursors[userId].style.top  = sy + 'px';
 });
 socket.on('cursor:remove', uid => {
   if (remoteCursors[uid]) { remoteCursors[uid].remove(); delete remoteCursors[uid]; }
@@ -1131,11 +1512,30 @@ socket.on('cursor:remove', uid => {
 // ═══════════════════════════════════════════════════════════════════════════════
 // APLICAÇÃO DE DADOS RECEBIDOS
 // ═══════════════════════════════════════════════════════════════════════════════
+// ── Fila de carregamento por objeto ───────────────────────────────────────────
+// Evita race condition quando chegam múltiplos updates para o mesmo objeto
+// enquanto uma imagem ainda está carregando via fromURL.
+const loadingQueue = {};  // id → último data recebido enquanto carregando
+const loadingNow   = new Set();  // ids que estão no meio de um fromURL
+
 function applyFull(data, render = true) {
-  if (!data) return;
+  if (!data || !data.id) return;
+
+  // Se já está carregando esse objeto, guarda o update mais recente para depois
+  if (loadingNow.has(data.id)) {
+    loadingQueue[data.id] = data;
+    return;
+  }
+
   const ex = findById(data.id);
   if (ex) canvas.remove(ex);
+
+  if (data.type === 'image') loadingNow.add(data.id);
+
   deser(data, o => {
+    // Aplica visibility state de camada se existir
+    if (data._layerHidden) { o.set({ opacity: 0, visible: false }); }
+
     canvas.add(o);
     if (data.zIndex !== undefined) {
       const contentObjs = canvas.getObjects().filter(x => !x._isViewportRect);
@@ -1144,6 +1544,17 @@ function applyFull(data, render = true) {
     }
     if (vpRect) canvas.bringToFront(vpRect);
     if (render) canvas.renderAll();
+
+    if (data.type === 'image') {
+      loadingNow.delete(data.id);
+      // Se chegou um update durante o carregamento, aplica agora
+      if (loadingQueue[data.id]) {
+        const queued = loadingQueue[data.id];
+        delete loadingQueue[data.id];
+        applyFull(queued, true);
+        return;
+      }
+    }
     scheduleLayersUpdate();
   });
 }
@@ -1191,6 +1602,8 @@ function emitLiveTransform(target) {
 function emitFull(obj) {
   if (obj._isViewportRect) return;
   if (!obj.id) obj.id = genId();
+  ensureActiveLayer(); // garante que activeLayerId é válido antes de atribuir
+  if (!obj.layerId) obj.layerId = activeLayerId;
   const s = ser(obj);
   if (s) socket.emit('object:add', s);
 }
@@ -1198,7 +1611,7 @@ function emitFull(obj) {
 function emitModify(obj) {
   if (obj._isViewportRect || !obj.id) return;
   const s = ser(obj);
-  if (s) socket.emit('object:modify', s);
+  if (s) socket.emit('object:modify:commit', s);
 }
 
 function emitModifyGroup(target) {
@@ -1236,15 +1649,13 @@ canvas.on('object:rotating', opt => { if (!opt.target._isViewportRect) emitLiveT
 canvas.on('object:skewing',  opt => { if (!opt.target._isViewportRect) emitLiveTransform(opt.target); });
 canvas.on('object:modified', opt => {
   if (!opt.target || opt.target._isViewportRect) return;
-  pushH();
   emitModifyGroup(opt.target);
   scheduleLayersUpdate();
 });
 
 canvas.on('path:created', opt => {
   const path = opt.path; path.id = genId();
-  if (vpRect) canvas.bringToFront(vpRect);
-  pushH(); emitFull(path);
+  if (vpRect) canvas.bringToFront(vpRect); emitFull(path);
   socket.emit('draw:end', { object: ser(path) });
 });
 
@@ -1273,8 +1684,7 @@ function getCanvasPoint(e) {
 function handlePointerDown(p, target) {
   if (isPanMode || spaceHeld) return;
   if (tool === 'eraser') {
-    if (target && target.id && !target._isViewportRect) {
-      pushH(); const id = target.id; canvas.remove(target); canvas.renderAll();
+    if (target && target.id && !target._isViewportRect) { const id = target.id; canvas.remove(target); canvas.renderAll();
       socket.emit('object:remove', [id]);
       scheduleLayersUpdate();
     }
@@ -1321,7 +1731,6 @@ function handlePointerUp(p) {
       canvas.add(sh);
       if (vpRect) canvas.bringToFront(vpRect);
       canvas.renderAll();
-      pushH();
       emitFull(sh);
     }
   } else {
@@ -1431,8 +1840,7 @@ function addText(pos) {
     fill: color, fontSize: Math.max(16, sz * 4),
     fontFamily: 'Segoe UI, system-ui, sans-serif',
     selectable: true, editable: true
-  });
-  pushH(); canvas.add(t);
+  }); canvas.add(t);
   if (vpRect) canvas.bringToFront(vpRect);
   canvas.setActiveObject(t); t.enterEditing(); canvas.renderAll();
   t.on('editing:exited', () => emitFull(t));
@@ -1478,8 +1886,7 @@ async function insertImg(inp) {
   const file = inp.files[0]; if (!file) return; inp.value = '';
   try {
     const url = await uploadFile(file);
-    const img = await placeImageFromUrl(url);
-    pushH(); canvas.add(img);
+    const img = await placeImageFromUrl(url); canvas.add(img);
     if (vpRect) canvas.bringToFront(vpRect);
     canvas.setActiveObject(img); canvas.renderAll(); emitFull(img); hideToast();
   } catch (e) { hideToast(); alert('Erro: ' + e.message); }
@@ -1492,8 +1899,7 @@ window.addEventListener('paste', async e => {
       e.preventDefault();
       try {
         const url = await uploadFile(item.getAsFile());
-        const img = await placeImageFromUrl(url);
-        pushH(); canvas.add(img);
+        const img = await placeImageFromUrl(url); canvas.add(img);
         if (vpRect) canvas.bringToFront(vpRect);
         canvas.setActiveObject(img); canvas.renderAll(); emitFull(img); hideToast();
       } catch (err) { hideToast(); alert('Erro: ' + err.message); }
@@ -1503,41 +1909,23 @@ window.addEventListener('paste', async e => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// HISTÓRICO
+// HISTÓRICO (colaborativo — servidor é a fonte da verdade)
 // ═══════════════════════════════════════════════════════════════════════════════
-function snap() {
-  return canvas.getObjects()
-    .filter(o => o.id && !o._isViewportRect)
-    .reduce((acc, o) => { const s = ser(o); if (s) acc[o.id] = s; return acc; }, {});
-}
-function pushH() { undoStack.push(JSON.parse(JSON.stringify(snap()))); if (undoStack.length > MAX_H) undoStack.shift(); redoStack.length = 0; }
-function undo() { if (!undoStack.length) return; redoStack.push(snap()); applySnap(undoStack.pop()); }
-function redo() { if (!redoStack.length) return; undoStack.push(snap()); applySnap(redoStack.pop()); }
-function applySnap(map) {
-  // Remove objetos de conteúdo, mantém o vpRect
-  canvas.getObjects().filter(o => !o._isViewportRect).forEach(o => canvas.remove(o));
-  const objs = Object.values(map);
-  if (!objs.length) {
-    canvas.renderAll();
-    if (vpRect) canvas.bringToFront(vpRect);
-    socket.emit('board:sync', { objects: {} });
-    scheduleLayersUpdate();
-    return;
-  }
-  let done = 0;
-  objs.forEach(d => deser(d, o => {
-    canvas.add(o);
-    if (++done === objs.length) {
-      if (vpRect) canvas.bringToFront(vpRect);
-      canvas.renderAll();
-      socket.emit('board:sync', { objects: map });
-      scheduleLayersUpdate();
-    }
-  }));
-}
+// O servidor mantém undoStack/redoStack. O cliente apenas emite os comandos.
+// board:sync recebido do servidor recarrega o estado para todos.
+
+function undo() { socket.emit('history:undo'); }
+function redo() { socket.emit('history:redo'); }
+
+// Atualiza botões de undo/redo baseado no estado do servidor
+socket.on('history:update', ({ canUndo, canRedo }) => {
+  const btnU = document.querySelector('[onclick="undo()"]');
+  const btnR = document.querySelector('[onclick="redo()"]');
+  if (btnU) btnU.style.opacity = canUndo ? '1' : '0.35';
+  if (btnR) btnR.style.opacity = canRedo ? '1' : '0.35';
+});
 function clearAll() {
   if (!confirm('Limpar todo o quadro?')) return;
-  pushH();
   canvas.getObjects().filter(o => !o._isViewportRect).forEach(o => canvas.remove(o));
   canvas.renderAll();
   socket.emit('board:clear');
@@ -1560,18 +1948,18 @@ function getFabricType(type) {
 function deser(data, cb) {
   if (!data || !data.type) return;
   if (data.type === 'image') {
-    fabric.Image.fromURL(absoluteImgUrl(data.src), img => { img.set(data); img.id = data.id; cb(img); }, { crossOrigin: 'anonymous' });
+    fabric.Image.fromURL(absoluteImgUrl(data.src), img => { img.set(data); img.id = data.id; if (data.layerId) img.layerId = data.layerId; cb(img); }, { crossOrigin: 'anonymous' });
     return;
   }
-  if (data.type === 'path') { const o = new fabric.Path(data.path, data); o.id = data.id; cb(o); return; }
+  if (data.type === 'path') { const o = new fabric.Path(data.path, data); o.id = data.id; if (data.layerId) o.layerId = data.layerId; cb(o); return; }
   if (data.type === 'line') {
     const o = new fabric.Line([data.x1, data.y1, data.x2, data.y2], data);
     o.id = data.id; cb(o); return;
   }
-  if (data.type === 'group') { fabric.Group.fromObject(data, o => { o.id = data.id; cb(o); }); return; }
+  if (data.type === 'group') { fabric.Group.fromObject(data, o => { o.id = data.id; if (data.layerId) o.layerId = data.layerId; cb(o); }); return; }
   const FT = getFabricType(data.type);
   if (!FT) { console.warn('Tipo desconhecido:', data.type); return; }
-  FT.fromObject(data, o => { o.id = data.id; cb(o); });
+  FT.fromObject(data, o => { o.id = data.id; if (data.layerId) o.layerId = data.layerId; cb(o); });
 }
 
 function findById(id) { return canvas.getObjects().find(o => o.id === id); }
@@ -1585,6 +1973,7 @@ function loadState(state) {
   objs.forEach(d => deser(d, o => {
     canvas.add(o);
     if (++done === objs.length) {
+      applyLayerZOrder(); // garante z-order correto ao carregar
       if (vpRect) canvas.bringToFront(vpRect);
       canvas.renderAll();
       scheduleLayersUpdate();
@@ -1665,8 +2054,7 @@ window.addEventListener('keyup', e => {
 });
 
 function dupSel() {
-  const objs = canvas.getActiveObjects().filter(o => !o._isViewportRect); if (!objs.length) return;
-  pushH(); canvas.discardActiveObject();
+  const objs = canvas.getActiveObjects().filter(o => !o._isViewportRect); if (!objs.length) return; canvas.discardActiveObject();
   const clones = []; let done = 0;
   objs.forEach(o => o.clone(cl => {
     cl.id = genId(); cl.set({ left: o.left + 20, top: o.top + 20 });
