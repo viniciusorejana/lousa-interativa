@@ -67,12 +67,12 @@
        PAINEL DE CAMADAS
     ══════════════════════════════════════════ */
     #layers-panel {
-      position:fixed; right:8px; top:50%; transform:translateY(-50%);
+      position:fixed; right:8px; top:78%; transform:translateY(-50%);
       z-index:1000; background:var(--surface); border:1px solid var(--border);
       border-radius:14px; padding:0; width:240px;
       box-shadow:0 8px 32px rgba(0,0,0,.5);
       display:flex; flex-direction:column;
-      max-height:calc(100vh - 160px);
+      max-height:calc(53vh - 160px);
       transition: transform .2s, opacity .2s;
     }
     #layers-panel.collapsed { transform:translateY(-50%) translateX(232px); }
@@ -264,6 +264,8 @@
   <button class="tb-btn" onclick="resetZoom()"><svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/></svg><span class="tb-tip">Zoom 100% (0)</span></button>
   <div class="tb-sep"></div>
   <button class="tb-btn" onclick="clearAll()" style="color:#ff6060"><svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6M14 11v6"/></svg><span class="tb-tip">Limpar</span></button>
+  <div class="tb-sep"></div>
+  <button class="tb-btn" onclick="changeRoom()" title="Trocar de lousa"><svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg><span class="tb-tip">Trocar de Lousa</span></button>
 </div>
 
 <!-- ═══════════ OPÇÕES DE FERRAMENTA ═══════════ -->
@@ -380,7 +382,7 @@
 
 <!-- ═══════════ STATUS ═══════════ -->
 <div id="toast"><div class="spinner"></div><span id="toast-msg">Enviando imagem...</span></div>
-<div id="users"><div class="udot" id="mydot" style="background:#7c5cff"></div><span id="myname" style="font-weight:600;color:var(--text)"></span><span id="ucnt" style="color:var(--muted)"></span></div>
+<div id="users"><div class="udot" id="mydot" style="background:#7c5cff"></div><span id="myname" style="font-weight:600;color:var(--text)"></span><span id="ucnt" style="color:var(--muted)"></span><span id="roomlabel" style="color:#555568;font-size:10px;margin-left:6px;padding:2px 7px;background:rgba(124,92,255,.12);border-radius:5px;border:1px solid rgba(124,92,255,.2)"></span></div>
 <div id="status"><div class="sdot blink" id="sdot"></div><span id="stxt">Conectando...</span></div>
 <div id="zoom-info">100%</div>
 
@@ -1480,15 +1482,15 @@ function serTransformAbsolute(obj, groupMatrix) {
 // ═══════════════════════════════════════════════════════════════════════════════
 // SOCKET
 // ═══════════════════════════════════════════════════════════════════════════════
-// ── Nome do usuário ───────────────────────────────────────────────────────────
-// Lê do sessionStorage (definido no login). Se por algum motivo não existir
-// (ex: acesso direto à URL), tenta o localStorage ou usa fallback.
+// ── Nome do usuário e sala ────────────────────────────────────────────────────
 const myUserName = sessionStorage.getItem('lb_username')
   || localStorage.getItem('lb_username')
   || 'Anônimo';
+const myRoomId   = sessionStorage.getItem('lb_roomId')   || 'default';
+const myRoomName = sessionStorage.getItem('lb_roomName') || myRoomId;
 
 const socket = io({
-  query: { type: 'editor', userName: myUserName },
+  query: { type: 'editor', userName: myUserName, roomId: myRoomId },
   transports: ['websocket'],
 });
 
@@ -1500,10 +1502,13 @@ socket.on('disconnect', () => {
   document.getElementById('sdot').className = 'sdot blink';
   document.getElementById('stxt').textContent = 'Reconectando...';
 });
-socket.on('board:init', ({ state, userId, userName, userColor, canUndo, canRedo }) => {
+socket.on('board:init', ({ state, roomId, userId, userName, userColor, canUndo, canRedo }) => {
   myId = userId;
   document.getElementById('mydot').style.background = userColor;
   document.getElementById('myname').textContent = userName || myUserName;
+  // Mostra o nome da sala no badge inferior
+  const roomLabel = document.getElementById('roomlabel');
+  if (roomLabel) roomLabel.textContent = myRoomName || roomId || '';
   if (state && state.layers && state.layers.length) {
     boardLayers = state.layers;
   }
@@ -2185,6 +2190,14 @@ socket.on('history:update', ({ canUndo, canRedo }) => {
   if (btnU) btnU.style.opacity = canUndo ? '1' : '0.35';
   if (btnR) btnR.style.opacity = canRedo ? '1' : '0.35';
 });
+function changeRoom() {
+  // Volta para a tela de login direto no passo 2 (escolha de sala).
+  // A senha já está válida (cookie de sessão), não precisa redigitar.
+  // Guarda um flag para o index.html saber que deve pular o passo 1.
+  sessionStorage.setItem('lb_skip_pw', '1');
+  window.location.href = '/';
+}
+
 function clearAll() {
   if (!confirm('Limpar todo o quadro?')) return;
   canvas.getObjects().filter(o => !o._isViewportRect).forEach(o => canvas.remove(o));

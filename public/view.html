@@ -58,7 +58,12 @@ function applyViewportTransform() {
 }
 
 // ── Socket ────────────────────────────────────────────────────────────────────
-const socket = io({ query: { type: 'view' }, transports: ['websocket'] });
+// ── Lê o roomId da URL: /view/lousa-1 → roomId = "lousa-1" ──────────────────
+const pathParts = window.location.pathname.split('/').filter(Boolean);
+// pathParts: ['view'] ou ['view','lousa-1']
+const viewRoomId = pathParts.length >= 2 ? pathParts[pathParts.length - 1] : 'default';
+
+const socket = io({ query: { type: 'view', roomId: viewRoomId }, transports: ['websocket'] });
 
 socket.on('board:init', ({ state }) => {
   if (state && state.viewport) {

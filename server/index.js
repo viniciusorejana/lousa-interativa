@@ -12,7 +12,26 @@ const server = http.createServer(app);
 const PORT     = process.env.PORT;
 const PASSWORD = process.env.BOARD_PASSWORD;
 const UPLOADS  = path.join(__dirname, '../uploads');
-if (!fs.existsSync(UPLOADS)) fs.mkdirSync(UPLOADS, { recursive: true });
+const DATA_DIR = path.join(__dirname, '../data/rooms');
+[UPLOADS, DATA_DIR].forEach(d => fs.mkdirSync(d, { recursive: true }));
+
+// ─── Limpeza no startup ───────────────────────────────────────────────────────
+// Apaga todos os dados de rooms e uploads ao iniciar.
+// Garante estado limpo em cada inicialização — imagens são tratadas como
+// dados voláteis de sessão, não persistentes entre reinicializações.
+function cleanOnStartup() {
+  let files = 0;
+  for (const dir of [UPLOADS, DATA_DIR]) {
+    try {
+      for (const f of fs.readdirSync(dir)) {
+        fs.unlinkSync(path.join(dir, f));
+        files++;
+      }
+    } catch (_) {}
+  }
+  if (files > 0) console.log(`[startup] ${files} arquivo(s) removido(s) (uploads + rooms)`);
+}
+cleanOnStartup();
 
 const io = new Server(server, {
   cors: { origin: '*' },
@@ -25,7 +44,7 @@ const io = new Server(server, {
 // ─── Multer ───────────────────────────────────────────────────────────────────
 const storage = multer.diskStorage({
   destination: (_, __, cb) => cb(null, UPLOADS),
-  filename:    (_, file, cb) => { cb(null, uuidv4() + (path.extname(file.originalname) || '.png')); },
+  filename:    (_, file, cb) => cb(null, uuidv4() + (path.extname(file.originalname) || '.png')),
 });
 const upload = multer({
   storage,
@@ -43,30 +62,125 @@ const sessions = new Set();
 function getToken(req) { const m = (req.headers.cookie||'').match(/lb_session=([^;]+)/); return m?m[1]:null; }
 function isAuth(req)   { return sessions.has(getToken(req)); }
 
-// ─── Board state ──────────────────────────────────────────────────────────────
-// objects: { id → serialized fabric object }
-// layers:  [ { id, name, visible } ]  — ordem = ordem visual (index 0 = fundo)
-// undoStack / redoStack: arrays de snapshots do boardState.objects
-let boardState = {
-  objects:  {},
-  layers:   [{ id: 'layer-default', name: 'Camada 1', visible: true }],
-  viewport: { x: 0, y: 0, w: 1920, h: 1080 },
-};
-let undoStack = [];   // array de { objects, layers }
-let redoStack = [];
-const MAX_HISTORY = 30;
-let connectedUsers = {};
+// ─── Slugify: converte nome de sala para ID seguro para URL e arquivo ─────────
+// "Lousa 1" → "lousa-1", "Minha Lousa!" → "minha-lousa"
+function slugify(name) {
+  return (name || '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // remove acentos
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9\s-]/g, '')  // só letras, números, espaços e hífens
+    .replace(/\s+/g, '-')          // espaços → hífens
+    .replace(/-+/g, '-')           // hífens duplos → simples
+    .replace(/^-|-$/g, '')         // remove hífens no início/fim
+    || 'sala';
+}
 
-function snapState() {
+// ─── Persistência em arquivo JSON ─────────────────────────────────────────────
+const MAX_HISTORY    = 30;
+const EVICT_MS       = 30 * 60 * 1000;   // 30 minutos
+const SAVE_DEBOUNCE  = 2000;             // salva 2s após última alteração
+
+function roomFile(roomId) {
+  return path.join(DATA_DIR, roomId + '.json');
+}
+
+function loadRoomFromDisk(roomId) {
+  try {
+    const raw = fs.readFileSync(roomFile(roomId), 'utf8');
+    const data = JSON.parse(raw);
+    console.log(`[room] Carregado do disco: ${roomId}`);
+    return data;
+  } catch (_) {
+    return null;  // sala nova ou arquivo corrompido
+  }
+}
+
+function defaultRoomState() {
   return {
-    objects: JSON.parse(JSON.stringify(boardState.objects)),
-    layers:  JSON.parse(JSON.stringify(boardState.layers)),
+    objects:  {},
+    layers:   [{ id: 'layer-default', name: 'Camada 1', visible: true }],
+    viewport: { x: 0, y: 0, w: 1920, h: 1080 },
   };
 }
-function pushUndo() {
-  undoStack.push(snapState());
-  if (undoStack.length > MAX_HISTORY) undoStack.shift();
-  redoStack = [];
+
+// ─── Registro de salas em memória ─────────────────────────────────────────────
+// rooms[roomId] = { state, undoStack, redoStack, users, saveTimer, lastEmpty }
+const rooms = {};
+
+function getRoom(roomId) {
+  if (rooms[roomId]) return rooms[roomId];
+
+  // Tenta carregar do disco; se não existe, cria nova
+  const saved = loadRoomFromDisk(roomId);
+  rooms[roomId] = {
+    state:      saved ? saved.state      : defaultRoomState(),
+    undoStack:  saved ? (saved.undoStack || []) : [],
+    redoStack:  [],
+    users:      {},    // userId → { id, name, color }
+    saveTimer:  null,
+    lastEmpty:  null,  // timestamp em que a sala ficou vazia (para eviction)
+  };
+  console.log(`[room] Na memória: ${roomId} (${saved ? 'restaurado' : 'novo'})`);
+  return rooms[roomId];
+}
+
+// Salva uma sala no disco de forma debounced (2s após última alteração)
+function scheduleSave(roomId) {
+  const room = rooms[roomId]; if (!room) return;
+  clearTimeout(room.saveTimer);
+  room.saveTimer = setTimeout(() => {
+    const payload = JSON.stringify({
+      state:     room.state,
+      undoStack: room.undoStack,   // persiste histórico também
+    });
+    fs.writeFile(roomFile(roomId), payload, err => {
+      if (err) console.error(`[room] Erro ao salvar ${roomId}:`, err.message);
+    });
+  }, SAVE_DEBOUNCE);
+}
+
+// ─── Eviction: remove salas vazias há mais de 30 minutos da RAM ──────────────
+setInterval(() => {
+  const now = Date.now();
+  for (const roomId of Object.keys(rooms)) {
+    const room = rooms[roomId];
+    if (Object.keys(room.users).length > 0) continue;         // tem usuários
+    if (!room.lastEmpty) continue;                            // nunca ficou vazia
+    if (now - room.lastEmpty < EVICT_MS) continue;            // ainda no prazo
+
+    clearTimeout(room.saveTimer);
+    // Salva uma última vez antes de remover da RAM
+    const payload = JSON.stringify({ state: room.state, undoStack: room.undoStack });
+    fs.writeFileSync(roomFile(roomId), payload);
+    delete rooms[roomId];
+    console.log(`[room] Evicted da RAM: ${roomId} (inativa por ${Math.round((now - room.lastEmpty)/60000)} min)`);
+  }
+}, 60 * 1000);  // checa a cada 1 minuto
+
+// ─── Helpers de história por sala ─────────────────────────────────────────────
+function snapState(room) {
+  return {
+    objects: JSON.parse(JSON.stringify(room.state.objects)),
+    layers:  JSON.parse(JSON.stringify(room.state.layers)),
+  };
+}
+function pushUndo(room) {
+  room.undoStack.push(snapState(room));
+  if (room.undoStack.length > MAX_HISTORY) room.undoStack.shift();
+  room.redoStack = [];
+}
+
+// ─── Helpers de imagem ────────────────────────────────────────────────────────
+function imgFilename(src) {
+  if (!src) return null;
+  try { return path.basename(new URL(src).pathname); } catch(_) {}
+  if (src.includes('/uploads/')) return path.basename(src);
+  return null;
+}
+function deleteImgFile(src) {
+  const f = imgFilename(src);
+  if (f) fs.unlink(path.join(UPLOADS, f), () => {});
 }
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
@@ -78,17 +192,6 @@ app.use('/uploads', (req, res, next) => {
   next();
 }, express.static(UPLOADS));
 
-function imgFilename(src) {
-  if (!src) return null;
-  try { return path.basename(new URL(src).pathname); } catch(_) {}
-  if (src.includes('/uploads/')) return path.basename(src);
-  return null;
-}
-function deleteImgFile(src) {
-  const f = imgFilename(src);
-  if (f) fs.unlink(path.join(UPLOADS, f), ()=>{});
-}
-
 // ─── Routes ───────────────────────────────────────────────────────────────────
 app.post('/auth', (req, res) => {
   if ((req.body||{}).password === PASSWORD) {
@@ -98,180 +201,239 @@ app.post('/auth', (req, res) => {
     res.json({ ok: true });
   } else res.status(401).json({ ok: false });
 });
-app.get('/check', (req, res) => isAuth(req) ? res.json({ok:true}) : res.status(401).json({ok:false}));
+app.get('/check', (req, res) => isAuth(req) ? res.json({ ok: true }) : res.status(401).json({ ok: false }));
 
 app.post('/upload', upload.single('image'), (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo' });
   res.json({ url: '/uploads/' + req.file.filename });
 });
 
-app.get('/',          (req,res) => res.sendFile(path.join(__dirname,'../public/index.html')));
-app.get('/board.html',(req,res) => isAuth(req) ? res.sendFile(path.join(__dirname,'../public/board.html')) : res.redirect('/'));
-app.get('/view',      (req,res) => res.sendFile(path.join(__dirname,'../public/view.html')));
-app.use(express.static(path.join(__dirname,'../public')));
+// API: lista salas ativas (para UI de escolha de sala)
+app.get('/api/rooms', (req, res) => {
+  // Salas em RAM
+  const inMemory = Object.entries(rooms).map(([id, r]) => ({
+    id,
+    users: Object.keys(r.users).length,
+    active: Object.keys(r.users).length > 0,
+  }));
+  // Salas salvas em disco mas fora da RAM
+  const onDisk = fs.readdirSync(DATA_DIR)
+    .filter(f => f.endsWith('.json'))
+    .map(f => f.replace('.json', ''))
+    .filter(id => !rooms[id])
+    .map(id => ({ id, users: 0, active: false }));
+  res.json([...inMemory, ...onDisk]);
+});
+
+// Slug preview: retorna o slug que será usado para um nome
+app.get('/api/slug', (req, res) => {
+  res.json({ slug: slugify(req.query.name || '') });
+});
+
+// Páginas
+app.get('/', (req, res) => res.sendFile(path.join(__dirname, '../public/index.html')));
+app.get('/board.html', (req, res) =>
+  isAuth(req) ? res.sendFile(path.join(__dirname, '../public/board.html')) : res.redirect('/'));
+app.get('/view',          (req, res) => res.sendFile(path.join(__dirname, '../public/view.html')));
+app.get('/view/:roomId',  (req, res) => res.sendFile(path.join(__dirname, '../public/view.html')));
+app.use(express.static(path.join(__dirname, '../public')));
 
 // ─── Socket.IO ────────────────────────────────────────────────────────────────
 io.on('connection', socket => {
   const clientType = socket.handshake.query.type || 'editor';
-  const userId     = uuidv4().slice(0, 8);  // ID interno único para o socket
+  const userId     = uuidv4().slice(0, 8);
   const userName   = (socket.handshake.query.userName || '').trim().slice(0, 24) || `Usuário ${userId.slice(0,4)}`;
   const userColor  = `hsl(${Math.floor(Math.random()*360)},70%,60%)`;
-  console.log(`[${new Date().toLocaleTimeString()}] ${clientType} +${userName} (${userId})`);
+  const rawRoom    = (socket.handshake.query.roomId || 'default').trim();
+  const roomId     = slugify(rawRoom) || 'default';
 
-  socket.emit('board:init', { state: boardState, userId, userName, userColor,
-    canUndo: undoStack.length > 0, canRedo: redoStack.length > 0 });
+  const room = getRoom(roomId);
+  socket.join(roomId);  // Socket.IO room para broadcast isolado
+
+  console.log(`[${new Date().toLocaleTimeString()}] ${clientType} +${userName} → [${roomId}]`);
+
+  socket.emit('board:init', {
+    state:    room.state,
+    roomId,
+    userId,
+    userName,
+    userColor,
+    canUndo:  room.undoStack.length > 0,
+    canRedo:  room.redoStack.length > 0,
+  });
 
   if (clientType === 'editor') {
-    connectedUsers[userId] = { id: userId, name: userName, color: userColor };
-    io.emit('users:update', Object.values(connectedUsers));
+    room.users[userId] = { id: userId, name: userName, color: userColor };
+    room.lastEmpty = null;  // sala tem usuário — cancela eviction
+    io.to(roomId).emit('users:update', Object.values(room.users));
   }
+
+  // Helper: broadcast para a sala exceto o remetente
+  const bcast  = (ev, data) => socket.broadcast.to(roomId).emit(ev, data);
+  // Helper: emit para todos na sala (inclusive remetente)
+  const toRoom = (ev, data) => io.to(roomId).emit(ev, data);
 
   // ── Objects ────────────────────────────────────────────────────────────────
   socket.on('object:add', obj => {
-    pushUndo();
-    boardState.objects[obj.id] = { ...obj, ts: Date.now() };
-    socket.broadcast.emit('object:add', obj);
-    io.emit('history:update', { canUndo: true, canRedo: false });
+    pushUndo(room);
+    room.state.objects[obj.id] = { ...obj, ts: Date.now() };
+    bcast('object:add', obj);
+    toRoom('history:update', { canUndo: true, canRedo: false });
+    scheduleSave(roomId);
   });
 
   socket.on('object:modify', data => {
-    // visibility changes need special save to persist, but no undo push for live transforms
     if (data._visibilityChange) {
-      boardState.objects[data.id] = { ...boardState.objects[data.id], ...data };
-      socket.broadcast.emit('object:modify', data);
+      room.state.objects[data.id] = { ...room.state.objects[data.id], ...data };
+      bcast('object:modify', data);
+      scheduleSave(roomId);
       return;
     }
-    boardState.objects[data.id] = { ...data, ts: Date.now() };
-    socket.broadcast.emit('object:modify', data);
+    room.state.objects[data.id] = { ...data, ts: Date.now() };
+    bcast('object:modify', data);
+    scheduleSave(roomId);
   });
 
   socket.on('object:modify:commit', data => {
-    // Called after drag/resize ends — push undo
-    pushUndo();
-    boardState.objects[data.id] = { ...data, ts: Date.now() };
-    socket.broadcast.emit('object:modify', data);
-    io.emit('history:update', { canUndo: true, canRedo: false });
+    pushUndo(room);
+    room.state.objects[data.id] = { ...data, ts: Date.now() };
+    bcast('object:modify', data);
+    toRoom('history:update', { canUndo: true, canRedo: false });
+    scheduleSave(roomId);
   });
 
   socket.on('object:remove', ids => {
-    pushUndo();
+    pushUndo(room);
     const list = Array.isArray(ids) ? ids : [ids];
     list.forEach(id => {
-      const obj = boardState.objects[id];
-      if (obj?.type === 'image') deleteImgFile(obj.src);
-      delete boardState.objects[id];
+      // Não deletamos o arquivo físico aqui — seria um bug com undoStack.
+      // Uploads são limpos apenas no reinício do servidor.
+      delete room.state.objects[id];
     });
-    socket.broadcast.emit('object:remove', list);
-    io.emit('history:update', { canUndo: true, canRedo: false });
+    bcast('object:remove', list);
+    toRoom('history:update', { canUndo: true, canRedo: false });
+    scheduleSave(roomId);
   });
 
   socket.on('objects:batch', objects => {
-    pushUndo();
-    objects.forEach(obj => { boardState.objects[obj.id] = { ...obj, ts: Date.now() }; });
-    socket.broadcast.emit('objects:batch', objects);
-    io.emit('history:update', { canUndo: true, canRedo: false });
+    pushUndo(room);
+    objects.forEach(obj => { room.state.objects[obj.id] = { ...obj, ts: Date.now() }; });
+    bcast('objects:batch', objects);
+    toRoom('history:update', { canUndo: true, canRedo: false });
+    scheduleSave(roomId);
   });
 
   socket.on('object:transform', data => {
-    // Live transform — no undo push, just update state quietly
-    if (boardState.objects[data.id]) {
-      boardState.objects[data.id] = { ...boardState.objects[data.id], ...data };
-    }
-    socket.broadcast.volatile.emit('object:transform', data);
+    if (room.state.objects[data.id])
+      room.state.objects[data.id] = { ...room.state.objects[data.id], ...data };
+    socket.broadcast.to(roomId).volatile.emit('object:transform', data);
   });
 
   socket.on('objects:transform', updates => {
     updates.forEach(d => {
-      if (boardState.objects[d.id]) boardState.objects[d.id] = { ...boardState.objects[d.id], ...d };
+      if (room.state.objects[d.id])
+        room.state.objects[d.id] = { ...room.state.objects[d.id], ...d };
     });
-    socket.broadcast.volatile.emit('objects:transform', updates);
+    socket.broadcast.to(roomId).volatile.emit('objects:transform', updates);
   });
 
   socket.on('zorder:sync', order => {
-    boardState.zorder = order;
-    socket.broadcast.emit('zorder:sync', order);
+    room.state.zorder = order;
+    bcast('zorder:sync', order);
+    scheduleSave(roomId);
   });
 
   // ── Layers ────────────────────────────────────────────────────────────────
   socket.on('layers:update', layers => {
-    boardState.layers = layers;
-    socket.broadcast.emit('layers:update', layers);
+    room.state.layers = layers;
+    bcast('layers:update', layers);
+    scheduleSave(roomId);
   });
 
-  // layer visibility → must also propagate opacity change to all objects in that layer
   socket.on('layer:visibility', ({ layerId, visible }) => {
-    const layer = boardState.layers.find(l => l.id === layerId);
+    const layer = room.state.layers.find(l => l.id === layerId);
     if (layer) layer.visible = visible;
-    // Update all objects belonging to this layer
-    Object.values(boardState.objects).forEach(obj => {
-      if (obj.layerId === layerId) {
-        obj._layerHidden = !visible;
-      }
+    Object.values(room.state.objects).forEach(obj => {
+      if (obj.layerId === layerId) obj._layerHidden = !visible;
     });
-    io.emit('layer:visibility', { layerId, visible });
+    toRoom('layer:visibility', { layerId, visible });
+    scheduleSave(roomId);
   });
 
-  // ── Undo / Redo (collaborative — server owns history) ─────────────────────
+  // ── Undo / Redo ───────────────────────────────────────────────────────────
   socket.on('history:undo', () => {
-    if (!undoStack.length) return;
-    redoStack.push(snapState());
-    const prev = undoStack.pop();
-    boardState.objects = prev.objects;
-    boardState.layers  = prev.layers || boardState.layers;
-    io.emit('board:sync', boardState);
-    io.emit('history:update', { canUndo: undoStack.length > 0, canRedo: true });
+    if (!room.undoStack.length) return;
+    room.redoStack.push(snapState(room));
+    const prev = room.undoStack.pop();
+    room.state.objects = prev.objects;
+    room.state.layers  = prev.layers || room.state.layers;
+    toRoom('board:sync', room.state);
+    toRoom('history:update', { canUndo: room.undoStack.length > 0, canRedo: true });
+    scheduleSave(roomId);
   });
 
   socket.on('history:redo', () => {
-    if (!redoStack.length) return;
-    undoStack.push(snapState());
-    const next = redoStack.pop();
-    boardState.objects = next.objects;
-    boardState.layers  = next.layers || boardState.layers;
-    io.emit('board:sync', boardState);
-    io.emit('history:update', { canUndo: true, canRedo: redoStack.length > 0 });
+    if (!room.redoStack.length) return;
+    room.undoStack.push(snapState(room));
+    const next = room.redoStack.pop();
+    room.state.objects = next.objects;
+    room.state.layers  = next.layers || room.state.layers;
+    toRoom('board:sync', room.state);
+    toRoom('history:update', { canUndo: true, canRedo: room.redoStack.length > 0 });
+    scheduleSave(roomId);
   });
 
   // ── Draw streaming ────────────────────────────────────────────────────────
-  socket.on('draw:start', data => socket.broadcast.emit('draw:start', { ...data, userId }));
-  socket.on('draw:move',  data => socket.broadcast.volatile.emit('draw:move', { ...data, userId }));
+  socket.on('draw:start', data => bcast('draw:start', { ...data, userId }));
+  socket.on('draw:move',  data => socket.broadcast.to(roomId).volatile.emit('draw:move', { ...data, userId }));
   socket.on('draw:end',   data => {
     if (data.object) {
-      pushUndo();
-      boardState.objects[data.object.id] = data.object;
-      io.emit('history:update', { canUndo: true, canRedo: false });
+      pushUndo(room);
+      room.state.objects[data.object.id] = data.object;
+      toRoom('history:update', { canUndo: true, canRedo: false });
+      scheduleSave(roomId);
     }
-    socket.broadcast.emit('draw:end', { ...data, userId });
+    bcast('draw:end', { ...data, userId });
   });
 
-  // ── Cursor (board coordinates) ────────────────────────────────────────────
+  // ── Cursor ────────────────────────────────────────────────────────────────
   socket.on('cursor:move', pos => {
-    socket.broadcast.volatile.emit('cursor:move', { userId, userName, color: userColor, ...pos });
+    socket.broadcast.to(roomId).volatile.emit('cursor:move', { userId, userName, color: userColor, ...pos });
   });
 
   // ── Viewport ──────────────────────────────────────────────────────────────
   socket.on('viewport:sync', vp => {
-    boardState.viewport = vp;
-    socket.broadcast.emit('viewport:sync', vp);
+    room.state.viewport = vp;
+    bcast('viewport:sync', vp);
+    scheduleSave(roomId);
   });
 
-  // ── Board level ───────────────────────────────────────────────────────────
+  // ── Board clear ───────────────────────────────────────────────────────────
   socket.on('board:clear', () => {
-    pushUndo();
-    Object.values(boardState.objects).forEach(obj => { if (obj.type==='image') deleteImgFile(obj.src); });
-    boardState.objects = {};
-    io.emit('board:clear');
-    io.emit('history:update', { canUndo: true, canRedo: false });
+    pushUndo(room);
+    // Não deletamos arquivos aqui — uploads são limpos no reinício.
+    room.state.objects = {};
+    toRoom('board:clear');
+    toRoom('history:update', { canUndo: true, canRedo: false });
+    scheduleSave(roomId);
   });
 
+  // ── Disconnect ────────────────────────────────────────────────────────────
   socket.on('disconnect', () => {
-    delete connectedUsers[userId];
-    io.emit('users:update', Object.values(connectedUsers));
-    socket.broadcast.emit('cursor:remove', userId);
-    console.log(`[${new Date().toLocaleTimeString()}] ${clientType} -${userName} (${userId})`);
+    delete room.users[userId];
+    toRoom('users:update', Object.values(room.users));
+    bcast('cursor:remove', userId);
+    // Se a sala ficou vazia, marca o timestamp para eviction
+    if (Object.keys(room.users).length === 0) {
+      room.lastEmpty = Date.now();
+      scheduleSave(roomId);  // salva imediatamente ao ficar vazia
+      console.log(`[room] Vazia: ${roomId} — eviction em 30min se ninguém entrar`);
+    }
+    console.log(`[${new Date().toLocaleTimeString()}] ${clientType} -${userName} ← [${roomId}]`);
   });
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`\nLiveBoard rodando na porta ${PORT}\n`);
+  console.log(`\nLiveBoard rodando na porta ${PORT}`);
+  console.log(`Dados das salas: ${DATA_DIR}\n`);
 });
