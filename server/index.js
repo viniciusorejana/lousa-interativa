@@ -140,21 +140,38 @@ function scheduleSave(roomId) {
   }, SAVE_DEBOUNCE);
 }
 
-// ─── Eviction: remove salas vazias há mais de 30 minutos da RAM ──────────────
+// ─── Eviction: remove salas vazias há mais de 30 minutos ─────────────────────
+// Apaga da RAM, do disco (JSON) e todos uploads referenciados pela sala.
+// Economiza disco em ambientes com SSD limitado.
 setInterval(() => {
   const now = Date.now();
   for (const roomId of Object.keys(rooms)) {
     const room = rooms[roomId];
-    if (Object.keys(room.users).length > 0) continue;         // tem usuários
-    if (!room.lastEmpty) continue;                            // nunca ficou vazia
-    if (now - room.lastEmpty < EVICT_MS) continue;            // ainda no prazo
+    if (Object.keys(room.users).length > 0) continue;  // sala ainda tem usuários
+    if (!room.lastEmpty)                   continue;    // nunca ficou vazia
+    if (now - room.lastEmpty < EVICT_MS)   continue;    // ainda no prazo
 
     clearTimeout(room.saveTimer);
-    // Salva uma última vez antes de remover da RAM
-    const payload = JSON.stringify({ state: room.state, undoStack: room.undoStack });
-    fs.writeFileSync(roomFile(roomId), payload);
+
+    // Coleta uploads referenciados por imagens desta sala
+    const imgFiles = [];
+    for (const obj of Object.values(room.state.objects)) {
+      if (obj.type === 'image' && obj.src) {
+        const filename = imgFilename(obj.src);
+        if (filename) imgFiles.push(filename);
+      }
+    }
+
+    // Apaga JSON da sala e uploads (async, sem bloquear)
+    fs.unlink(roomFile(roomId), () => {});
+    for (const filename of imgFiles) {
+      fs.unlink(path.join(UPLOADS, filename), () => {});
+    }
+
     delete rooms[roomId];
-    console.log(`[room] Evicted da RAM: ${roomId} (inativa por ${Math.round((now - room.lastEmpty)/60000)} min)`);
+
+    const mins = Math.round((now - room.lastEmpty) / 60000);
+    console.log(`[room] Evicted: ${roomId} — ${mins}min inativa, ${imgFiles.length} upload(s) removido(s)`);
   }
 }, 60 * 1000);  // checa a cada 1 minuto
 
@@ -426,8 +443,8 @@ io.on('connection', socket => {
     // Se a sala ficou vazia, marca o timestamp para eviction
     if (Object.keys(room.users).length === 0) {
       room.lastEmpty = Date.now();
-      scheduleSave(roomId);  // salva imediatamente ao ficar vazia
-      console.log(`[room] Vazia: ${roomId} — eviction em 30min se ninguém entrar`);
+      // Não salvamos mais em disco ao ficar vazia — o eviction apaga tudo após 30min
+      console.log(`[room] Vazia: ${roomId} — será apagada em 30min se ninguém entrar`);
     }
     console.log(`[${new Date().toLocaleTimeString()}] ${clientType} -${userName} ← [${roomId}]`);
   });
