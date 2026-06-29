@@ -1068,13 +1068,20 @@ function updateLayersPanel() {
       </div>`;
 
     // Clicar no header = ativar essa camada
+    // Click simples = ativar camada (delay para não conflitar com dblclick de rename)
     header.addEventListener('click', e => {
-      if (e.target.closest('.lsa-btn') || e.target.closest('[data-rename]')) return;
-      activeLayerId = layer.id;
-      scheduleLayersUpdate();
+      if (e.target.closest('.lsa-btn')) return;
+      clearTimeout(header._clickTimer);
+      header._clickTimer = setTimeout(() => {
+        activeLayerId = layer.id;
+        scheduleLayersUpdate();
+      }, 200);
     });
+    // Duplo clique no nome = renomear camada
     header.querySelector('[data-rename]').addEventListener('dblclick', e => {
-      e.stopPropagation(); startRename(layer.id, e.currentTarget);
+      e.stopPropagation();
+      clearTimeout(header._clickTimer);
+      startRename(layer.id, e.currentTarget);
     });
 
     // Drop no header da camada = mover objeto(s) para essa camada
@@ -1153,12 +1160,20 @@ function updateLayersPanel() {
             </button>
           </div>`;
 
+        // Duplo clique no nome → renomear; cancela o select pendente do 1º clique
         item.querySelector('[data-rename]').addEventListener('dblclick', e => {
-          e.stopPropagation(); startRename(obj.id, e.currentTarget);
+          e.stopPropagation();
+          clearTimeout(item._clickTimer);
+          startRename(obj.id, e.currentTarget);
         });
+
+        // Click simples → selecionar (delay de 200ms para não conflitar com dblclick)
         item.addEventListener('click', e => {
-          if (e.target.closest('.layer-action-btn,.layer-drag-handle,.layer-expand-btn,[data-rename]')) return;
-          canvas.setActiveObject(obj); canvas.renderAll(); scheduleLayersUpdate();
+          if (e.target.closest('.layer-action-btn,.layer-drag-handle,.layer-expand-btn')) return;
+          clearTimeout(item._clickTimer);
+          item._clickTimer = setTimeout(() => {
+            canvas.setActiveObject(obj); canvas.renderAll(); scheduleLayersUpdate();
+          }, 200);
         });
 
         // Drag: reorder dentro da camada OU mover para outra camada (drop no header)
@@ -1385,7 +1400,13 @@ function deleteObjById(id) {
 }
 
 canvas.on('object:added',      scheduleLayersUpdate);
-canvas.on('object:removed',    scheduleLayersUpdate);
+canvas.on('object:removed',    obj => {
+  // Para o loop de animação se o objeto removido era um GIF
+  if (obj && obj._isGif && obj.id) {
+    activeGifs.delete(obj.id);
+  }
+  scheduleLayersUpdate();
+});
 canvas.on('selection:created', () => { scheduleLayersUpdate(); updateLayerToolbar(); });
 canvas.on('selection:updated', () => { scheduleLayersUpdate(); updateLayerToolbar(); });
 canvas.on('selection:cleared', () => { scheduleLayersUpdate(); updateLayerToolbar(); });
@@ -1432,12 +1453,18 @@ function absoluteImgUrl(src) {
 
 function ser(obj) {
   if (obj._isViewportRect) return null;
-  const j = obj.toJSON(['id', 'layerId', '_isArrow']);
+  const j = obj.toJSON(['id', 'layerId', '_isArrow', '_isGif', '_gifUrl']);
   if (obj.type === 'image') {
-    const el = obj.getElement();
-    const raw = el ? el.src : (j.src || '');
-    // Salva SEMPRE como path relativo — host-agnóstico
-    j.src = relativeImgPath(raw);
+    if (obj._isGif && obj._gifUrl) {
+      // GIF animado — usa a URL original guardada, não o src do canvas element
+      j.src     = relativeImgPath(obj._gifUrl);
+      j._isGif  = true;
+      j._gifUrl = j.src;
+    } else {
+      const el  = obj.getElement();
+      const raw = el ? el.src : (j.src || '');
+      j.src = relativeImgPath(raw);
+    }
   }
   if (j.scaleX < 0) { j.flipX = !j.flipX; j.scaleX = Math.abs(j.scaleX); }
   if (j.scaleY < 0) { j.flipY = !j.flipY; j.scaleY = Math.abs(j.scaleY); }
@@ -2132,17 +2159,102 @@ async function uploadFile(file) {
   return (await res.json()).url;
 }
 
+// ── Posiciona imagem no centro do viewport ────────────────────────────────────
+function centerImgOnViewport(img) {
+  const s   = img.width > canvas.width * .5 ? canvas.width * .5 / img.width : 1;
+  const zoom = canvas.getZoom(), vpt = canvas.viewportTransform;
+  const cx = (-vpt[4] + window.innerWidth  / 2) / zoom;
+  const cy = (-vpt[5] + window.innerHeight / 2) / zoom;
+  img.scale(s);
+  img.set({ left: cx - img.getScaledWidth() / 2, top: cy - img.getScaledHeight() / 2 });
+}
+
+function isGifUrl(url) {
+  if (!url) return false;
+  return url.toLowerCase().split('?')[0].endsWith('.gif');
+}
+
+// ── Imagens e GIFs animados ───────────────────────────────────────────────────
+// GIFs usam uma <img> tag nativa — o browser anima automaticamente sem decode manual.
+// Fabric renderiza o elemento <img> frame a frame via requestAnimationFrame.
+// Vantagens: sem travamento, sem bugs de disposal/transparência, suporte universal.
+
+function isGifUrl(url) {
+  if (!url) return false;
+  return url.toLowerCase().split('?')[0].endsWith('.gif');
+}
+
+// Loop de animação para GIFs — usa rAF para re-renderizar o canvas do Fabric
+// enquanto houver GIFs ativos. Cada gif registra seu ID no set activeGifs.
+const activeGifs = new Set();
+let gifRafId = null;
+
+function startGifLoop() {
+  if (gifRafId) return; // já rodando
+  function tick() {
+    if (activeGifs.size === 0) { gifRafId = null; return; }
+    canvas.requestRenderAll();
+    gifRafId = requestAnimationFrame(tick);
+  }
+  gifRafId = requestAnimationFrame(tick);
+}
+
+function placeGif(url, existingData) {
+  return new Promise((resolve, reject) => {
+    const absUrl = absoluteImgUrl(url);
+    const imgEl  = new Image();
+    imgEl.crossOrigin = 'anonymous';
+
+    imgEl.onload = () => {
+      const fabricImg = new fabric.Image(imgEl, {
+        left:    0,
+        top:     0,
+        id:      existingData ? existingData.id      : genId(),
+        layerId: existingData ? existingData.layerId : activeLayerId,
+        _gifUrl: url,
+        _isGif:  true,
+      });
+
+      if (existingData) {
+        fabricImg.set({
+          left:    existingData.left    ?? 0,
+          top:     existingData.top     ?? 0,
+          scaleX:  existingData.scaleX  ?? 1,
+          scaleY:  existingData.scaleY  ?? 1,
+          angle:   existingData.angle   ?? 0,
+          opacity: existingData.opacity ?? 1,
+          flipX:   existingData.flipX   ?? false,
+          flipY:   existingData.flipY   ?? false,
+        });
+      } else {
+        const maxW = (window.innerWidth * 0.5) / canvas.getZoom();
+        const s    = imgEl.naturalWidth > maxW ? maxW / imgEl.naturalWidth : 1;
+        fabricImg.scale(s);
+        centerImgOnViewport(fabricImg);
+      }
+
+      fabricImg.setCoords();
+
+      // Registra o ID do GIF e inicia (ou mantém) o loop de animação
+      activeGifs.add(fabricImg.id);
+      startGifLoop();
+
+      resolve(fabricImg);
+    };
+
+    imgEl.onerror = () => reject(new Error('Falha ao carregar GIF: ' + absUrl));
+    imgEl.src = absUrl;
+  });
+}
+
 async function placeImageFromUrl(url) {
+  if (isGifUrl(url)) {
+    return placeGif(url, null);
+  }
   return new Promise(resolve => {
-    fabric.Image.fromURL(url, img => {
-      const s = img.width > canvas.width * .5 ? canvas.width * .5 / img.width : 1;
-      img.scale(s); img.id = genId();
-      // Posiciona a imagem no centro do viewport
-      const zoom = canvas.getZoom();
-      const vpt  = canvas.viewportTransform;
-      const cx = (-vpt[4] + window.innerWidth / 2) / zoom;
-      const cy = (-vpt[5] + window.innerHeight / 2) / zoom;
-      img.set({ left: cx - img.getScaledWidth()/2, top: cy - img.getScaledHeight()/2 });
+    fabric.Image.fromURL(absoluteImgUrl(url), img => {
+      img.id = genId();
+      centerImgOnViewport(img);
       resolve(img);
     }, { crossOrigin: 'anonymous' });
   });
@@ -2152,7 +2264,8 @@ async function insertImg(inp) {
   const file = inp.files[0]; if (!file) return; inp.value = '';
   try {
     const url = await uploadFile(file);
-    const img = await placeImageFromUrl(url); canvas.add(img);
+    const img = await placeImageFromUrl(url);  // placeImageFromUrl já trata GIFs
+    canvas.add(img);
     if (vpRect) canvas.bringToFront(vpRect);
     canvas.setActiveObject(img); canvas.renderAll(); emitFull(img); hideToast();
   } catch (e) { hideToast(); alert('Erro: ' + e.message); }
@@ -2165,7 +2278,8 @@ window.addEventListener('paste', async e => {
       e.preventDefault();
       try {
         const url = await uploadFile(item.getAsFile());
-        const img = await placeImageFromUrl(url); canvas.add(img);
+        const img = await placeImageFromUrl(url);  // trata GIFs automaticamente
+        canvas.add(img);
         if (vpRect) canvas.bringToFront(vpRect);
         canvas.setActiveObject(img); canvas.renderAll(); emitFull(img); hideToast();
       } catch (err) { hideToast(); alert('Erro: ' + err.message); }
@@ -2222,6 +2336,18 @@ function getFabricType(type) {
 function deser(data, cb) {
   if (!data || !data.type) return;
   if (data.type === 'image') {
+    if (data._isGif && (data._gifUrl || data.src)) {
+      // GIF — usa placeGif com <img> nativa (anima nativamente, sem decode manual)
+      placeGif(data._gifUrl || data.src, data)
+        .then(img => cb(img))
+        .catch(() => {
+          // Fallback: carrega como imagem estática
+          fabric.Image.fromURL(absoluteImgUrl(data.src || data._gifUrl), img => {
+            img.set(data); img.id = data.id; if (data.layerId) img.layerId = data.layerId; cb(img);
+          }, { crossOrigin: 'anonymous' });
+        });
+      return;
+    }
     fabric.Image.fromURL(absoluteImgUrl(data.src), img => { img.set(data); img.id = data.id; if (data.layerId) img.layerId = data.layerId; cb(img); }, { crossOrigin: 'anonymous' });
     return;
   }

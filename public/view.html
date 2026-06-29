@@ -180,6 +180,26 @@ function getFabricType(type) {
 function deser(data, cb) {
   if (!data || !data.type) return;
   if (data.type === 'image') {
+    if (data._isGif && (data._gifUrl || data.src)) {
+      const gifUrl = absoluteImgUrl(data._gifUrl || data.src);
+      const imgEl  = new Image();
+      imgEl.crossOrigin = 'anonymous';
+      imgEl.onload = () => {
+        const img = new fabric.Image(imgEl, {});
+        img.set(data); img.id = data.id;
+        if (data.layerId) img.layerId = data.layerId;
+        img._isGif = true; img._gifUrl = data._gifUrl || data.src;
+        img.selectable = false; img.evented = false;
+        activeGifs.add(img.id);
+        startGifLoop();
+        cb(img);
+      };
+      imgEl.onerror = () => {
+        fabric.Image.fromURL(gifUrl, img => { img.set(data); img.id = data.id; if (data.layerId) img.layerId = data.layerId; cb(img); }, { crossOrigin: 'anonymous' });
+      };
+      imgEl.src = gifUrl;
+      return;
+    }
     fabric.Image.fromURL(absoluteImgUrl(data.src), img => { img.set(data); img.id = data.id; if (data.layerId) img.layerId = data.layerId; cb(img); }, { crossOrigin: 'anonymous' });
     return;
   }
@@ -204,6 +224,19 @@ function loadState(state) {
     canvas.add(o);
     if (++done === objs.length) canvas.renderAll();
   }));
+}
+
+// Loop de animação para GIFs na view
+const activeGifs = new Set();
+let gifRafId = null;
+function startGifLoop() {
+  if (gifRafId) return;
+  function tick() {
+    if (activeGifs.size === 0) { gifRafId = null; return; }
+    canvas.requestRenderAll();
+    gifRafId = requestAnimationFrame(tick);
+  }
+  gifRafId = requestAnimationFrame(tick);
 }
 
 function pts2path(pts) { return pts.reduce((a, p, i) => i === 0 ? 'M ' + p.x + ' ' + p.y : a + ' L ' + p.x + ' ' + p.y, ''); }
