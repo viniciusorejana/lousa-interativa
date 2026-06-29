@@ -181,23 +181,40 @@ function deser(data, cb) {
   if (!data || !data.type) return;
   if (data.type === 'image') {
     if (data._isGif && (data._gifUrl || data.src)) {
-      const gifUrl = absoluteImgUrl(data._gifUrl || data.src);
-      const imgEl  = new Image();
-      imgEl.crossOrigin = 'anonymous';
-      imgEl.onload = () => {
-        const img = new fabric.Image(imgEl, {});
+      const gifUrl    = absoluteImgUrl(data._gifUrl || data.src);
+      const relGifUrl = data._gifUrl || data.src;
+
+      _viewDecodeGif(gifUrl).then(({ frames, canvasW, canvasH }) => {
+        const firstBitmap = frames[0].bitmap;
+        const img = new fabric.Image(firstBitmap, {
+          width: canvasW, height: canvasH,
+        });
         img.set(data); img.id = data.id;
         if (data.layerId) img.layerId = data.layerId;
-        img._isGif = true; img._gifUrl = data._gifUrl || data.src;
+        img._isGif = true; img._gifUrl = relGifUrl;
         img.selectable = false; img.evented = false;
-        activeGifs.add(img.id);
-        startGifLoop();
+
+        _viewGifRegistry.set(img.id, {
+          fabricImg: img, frames, frameIdx: 0, lastTime: performance.now(),
+        });
+        _viewEnsureLoop();
         cb(img);
-      };
-      imgEl.onerror = () => {
-        fabric.Image.fromURL(gifUrl, img => { img.set(data); img.id = data.id; if (data.layerId) img.layerId = data.layerId; cb(img); }, { crossOrigin: 'anonymous' });
-      };
-      imgEl.src = gifUrl;
+      }).catch(() => {
+        // Fallback nativo
+        const imgEl = new Image();
+        imgEl.crossOrigin = 'anonymous';
+        imgEl.onload = () => {
+          const img = new fabric.Image(imgEl, {});
+          img.set(data); img.id = data.id;
+          if (data.layerId) img.layerId = data.layerId;
+          img._isGif = true; img.selectable = false; img.evented = false;
+          cb(img);
+        };
+        imgEl.onerror = () => {
+          fabric.Image.fromURL(gifUrl, img => { img.set(data); img.id = data.id; if (data.layerId) img.layerId = data.layerId; cb(img); }, { crossOrigin: 'anonymous' });
+        };
+        imgEl.src = gifUrl;
+      });
       return;
     }
     fabric.Image.fromURL(absoluteImgUrl(data.src), img => { img.set(data); img.id = data.id; if (data.layerId) img.layerId = data.layerId; cb(img); }, { crossOrigin: 'anonymous' });
@@ -226,18 +243,56 @@ function loadState(state) {
   }));
 }
 
-// Loop de animação para GIFs na view
-const activeGifs = new Set();
-let gifRafId = null;
-function startGifLoop() {
-  if (gifRafId) return;
-  function tick() {
-    if (activeGifs.size === 0) { gifRafId = null; return; }
-    canvas.requestRenderAll();
-    gifRafId = requestAnimationFrame(tick);
-  }
-  gifRafId = requestAnimationFrame(tick);
+// ── Worker GIF para view ──────────────────────────────────────────────────────
+const _viewGifWorker  = new Worker('/gif.worker.js');
+const _viewGifPending = new Map();
+let   _viewGifReqId   = 0;
+
+_viewGifWorker.onmessage = function(e) {
+  const { id, frames, canvasW, canvasH, error } = e.data;
+  const cb = _viewGifPending.get(id);
+  if (!cb) return;
+  _viewGifPending.delete(id);
+  if (error) cb.reject(new Error(error));
+  else       cb.resolve({ frames, canvasW, canvasH });
+};
+
+function _viewDecodeGif(url) {
+  return new Promise((resolve, reject) => {
+    const id = ++_viewGifReqId;
+    _viewGifPending.set(id, { resolve, reject });
+    _viewGifWorker.postMessage({ id, url });
+  });
 }
+
+const _viewGifRegistry = new Map();
+// Mantido para compatibilidade
+const activeGifs = { add: id => {}, delete: id => { _viewGifRegistry.delete(id); }, size: 0 };
+
+let _viewRafId = null;
+function _viewGifTick(now) {
+  if (_viewGifRegistry.size === 0) { _viewRafId = null; return; }
+  _viewRafId = requestAnimationFrame(_viewGifTick);
+  let needsRender = false;
+  _viewGifRegistry.forEach((state) => {
+    const { fabricImg, frames } = state;
+    if (!frames || frames.length === 0) return;
+    const elapsed = now - state.lastTime;
+    if (elapsed >= frames[state.frameIdx].delay) {
+      state.frameIdx = (state.frameIdx + 1) % frames.length;
+      state.lastTime = now;
+      const nb = frames[state.frameIdx].bitmap;
+      fabricImg._element = nb;
+      if (fabricImg._originalElement !== undefined) fabricImg._originalElement = nb;
+      needsRender = true;
+    }
+  });
+  if (needsRender) canvas.requestRenderAll();
+}
+function _viewEnsureLoop() {
+  if (!_viewRafId) _viewRafId = requestAnimationFrame(_viewGifTick);
+}
+function startGifLoop() { _viewEnsureLoop(); } // compatibilidade
 
 function pts2path(pts) { return pts.reduce((a, p, i) => i === 0 ? 'M ' + p.x + ' ' + p.y : a + ' L ' + p.x + ' ' + p.y, ''); }
 
