@@ -332,17 +332,43 @@ async function renderFrames(gif) {
 }
 
 // ── Handler de mensagens ──────────────────────────────────────────────────────
+// Cache de buffers por URL — evita re-download do mesmo GIF.
+// Guardamos o ArrayBuffer (não os ImageBitmaps, que são transferíveis e ficam
+// detached após o postMessage). Re-renderizar frames é barato (CPU local).
+// Também guardamos o gif parsed para não re-parsear.
+const _gifCache = new Map(); // url → { buffer: ArrayBuffer, gif: parsedGif }
 
-self.onmessage = async function(e) {
-  const { id, url } = e.data;
-  try {
+// Requisições em andamento para a mesma URL — evita dois fetches simultâneos
+// para o mesmo GIF. Quem chegar depois espera a mesma Promise.
+const _gifFetching = new Map(); // url → Promise<{buffer, gif}>
+
+async function fetchAndParse(url) {
+  if (_gifCache.has(url)) return _gifCache.get(url);
+  if (_gifFetching.has(url)) return _gifFetching.get(url);
+
+  const p = (async () => {
     const res = await fetch(url);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const buffer = await res.arrayBuffer();
     const gif    = parseGIF(buffer);
+    const entry  = { buffer, gif };
+    _gifCache.set(url, entry);
+    _gifFetching.delete(url);
+    return entry;
+  })();
+
+  _gifFetching.set(url, p);
+  return p;
+}
+
+self.onmessage = async function(e) {
+  const { id, url } = e.data;
+  try {
+    const { gif } = await fetchAndParse(url);
+    // Re-renderiza frames a cada requisição — gera novos ImageBitmaps válidos.
+    // O parse já foi feito e está em cache; só o render (CPU) é repetido.
     const frames = await renderFrames(gif);
 
-    // Transfere os bitmaps sem cópia
     self.postMessage(
       { id, frames, canvasW: gif.canvasW, canvasH: gif.canvasH },
       frames.map(f => f.bitmap)

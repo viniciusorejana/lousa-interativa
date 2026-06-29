@@ -903,7 +903,8 @@ function updateLayerToolbar() {
   const btnU = document.getElementById('lt-ungroup');
   if (!btnG) return;
   const selObjs = canvas.getActiveObjects().filter(o => !o._isViewportRect);
-  btnG.disabled = selObjs.length < 2;
+  const hasGif  = selObjs.some(o => o._isGif);
+  btnG.disabled = selObjs.length < 2 || hasGif;
   const single = canvas.getActiveObject();
   btnU.disabled = !(single?.type === 'group');
 }
@@ -912,20 +913,32 @@ function updateLayerToolbar() {
 function groupSelected() {
   let targets = canvas.getActiveObjects().filter(o => !o._isViewportRect);
   if (targets.length < 2) return;
-  const layId = targets[0].layerId || activeLayerId;
+
+  // GIFs não podem ser agrupados
+  if (targets.some(o => o._isGif)) {
+    showToast('GIFs animados não podem ser agrupados.', 2500);
+    return;
+  }
+
+  const layId  = targets[0].layerId || activeLayerId;
   const oldIds = targets.map(o => o.id).filter(Boolean);
+
   canvas.discardActiveObject();
   const sel = new fabric.ActiveSelection(targets, { canvas });
   canvas.setActiveObject(sel);
   const group = sel.toGroup();
-  group.id = genId();
+  group.id      = genId();
   group.layerId = layId;
   typeCounters['Grupo'] = (typeCounters['Grupo'] || 0) + 1;
   objectNames[group.id] = `Grupo ${typeCounters['Grupo']}`;
   if (vpRect) canvas.bringToFront(vpRect);
-  canvas.discardActiveObject(); canvas.setActiveObject(group); canvas.renderAll();
-  emitFull(group);
-  socket.emit('object:remove', oldIds);
+  canvas.discardActiveObject();
+  canvas.setActiveObject(group);
+  canvas.renderAll();
+
+  const zorder = canvas.getObjects().filter(o => o.id && !o._isViewportRect).map(o => o.id);
+  // Operação atômica — 1 único pushUndo no servidor
+  socket.emit('group:commit', { group: ser(group), childIds: oldIds, zorder });
   scheduleLayersUpdate();
 }
 
@@ -935,68 +948,48 @@ function ungroupSelected() {
   const groupId = groupObj.id;
   const layId   = groupObj.layerId || activeLayerId;
 
-  // Captura transform absoluto de cada filho ANTES de desagrupar.
-  // qrDecompose retorna translateX/Y = centro do objeto no espaço do canvas.
-  // Fabric usa originX/Y 'center' por padrão em grupos — usamos isso diretamente.
-  const groupMatrix = groupObj.calcTransformMatrix();
+  const groupMatrix    = groupObj.calcTransformMatrix();
   const childSnapshots = (groupObj.getObjects ? groupObj.getObjects() : []).map(ch => {
     const localMatrix = ch.calcOwnMatrix();
     const absMatrix   = fabric.util.multiplyTransformMatrices(groupMatrix, localMatrix);
     const decomp      = fabric.util.qrDecompose(absMatrix);
-    return {
-      obj:    ch,
-      left:   decomp.translateX,   // centro X no canvas
-      top:    decomp.translateY,   // centro Y no canvas
-      scaleX: Math.abs(decomp.scaleX),
-      scaleY: Math.abs(decomp.scaleY),
-      angle:  decomp.angle,
-      flipX:  decomp.scaleX < 0,
-      flipY:  decomp.scaleY < 0,
-    };
+    return { obj: ch, left: decomp.translateX, top: decomp.translateY,
+      scaleX: Math.abs(decomp.scaleX), scaleY: Math.abs(decomp.scaleY),
+      angle: decomp.angle, flipX: decomp.scaleX < 0, flipY: decomp.scaleY < 0 };
   });
 
-  // Desagrupa via Fabric
   canvas.discardActiveObject();
   canvas.setActiveObject(groupObj);
   groupObj.toActiveSelection();
   canvas.discardActiveObject();
 
-  // Restaura posições usando originX/Y: 'left' (padrão de serialização do Fabric).
-  // qrDecompose retorna translateX/Y = CENTRO do objeto.
-  // Para converter centro → canto superior esquerdo com origem 'left':
-  //   left = centerX - cos(angle)*scaledW/2 + sin(angle)*scaledH/2
-  //   top  = centerY - sin(angle)*scaledW/2 - cos(angle)*scaledH/2
+  const serializedChildren = [];
   childSnapshots.forEach(snap => {
     const ch = snap.obj;
     if (!ch.id) ch.id = genId();
     ch.layerId = layId;
 
-    // Calcula canto superior esquerdo a partir do centro
     const rad    = (snap.angle || 0) * Math.PI / 180;
     const sw     = (ch.width  || 0) * snap.scaleX;
     const sh     = (ch.height || 0) * snap.scaleY;
     const leftTL = snap.left - (Math.cos(rad) * sw / 2 - Math.sin(rad) * sh / 2);
     const topTL  = snap.top  - (Math.sin(rad) * sw / 2 + Math.cos(rad) * sh / 2);
 
-    ch.set({
-      originX: 'left',
-      originY: 'top',
-      left:    leftTL,
-      top:     topTL,
-      scaleX:  snap.scaleX,
-      scaleY:  snap.scaleY,
-      angle:   snap.angle,
-      flipX:   snap.flipX,
-      flipY:   snap.flipY,
-    });
+    ch.set({ originX: 'left', originY: 'top', left: leftTL, top: topTL,
+      scaleX: snap.scaleX, scaleY: snap.scaleY, angle: snap.angle,
+      flipX: snap.flipX, flipY: snap.flipY });
     ch.setCoords();
     assignDefaultName(ch);
-    emitFull(ch);
+    const s = ser(ch);
+    if (s) serializedChildren.push(s);
   });
 
   if (vpRect) canvas.bringToFront(vpRect);
   canvas.renderAll();
-  socket.emit('object:remove', [groupId]);
+
+  const zorder = canvas.getObjects().filter(o => o.id && !o._isViewportRect).map(o => o.id);
+  // Operação atômica — 1 único pushUndo no servidor
+  socket.emit('ungroup:commit', { groupId, children: serializedChildren, zorder });
   scheduleLayersUpdate();
 }
 
@@ -1451,23 +1444,37 @@ function absoluteImgUrl(src) {
   return window.location.origin + (src.startsWith('/') ? src : '/' + src);
 }
 
-function ser(obj) {
-  if (obj._isViewportRect) return null;
-  const j = obj.toJSON(['id', 'layerId', '_isArrow', '_isGif', '_gifUrl']);
-  if (obj.type === 'image') {
-    if (obj._isGif && obj._gifUrl) {
-      // GIF animado — usa a URL original guardada, não o src do canvas element
-      j.src     = relativeImgPath(obj._gifUrl);
-      j._isGif  = true;
+function normalizeSerializedObj(j, fabricObj) {
+  // Normaliza src de imagens (topo ou dentro de grupo)
+  if (j.type === 'image') {
+    if (j._isGif && (j._gifUrl || j.src)) {
+      j.src     = relativeImgPath(j._gifUrl || j.src);
       j._gifUrl = j.src;
-    } else {
-      const el  = obj.getElement();
+    } else if (fabricObj && fabricObj.getElement) {
+      const el  = fabricObj.getElement();
       const raw = el ? el.src : (j.src || '');
       j.src = relativeImgPath(raw);
+    } else {
+      j.src = relativeImgPath(j.src || '');
     }
+  }
+  // Normaliza recursivamente os filhos de grupos
+  if (j.type === 'group' && Array.isArray(j.objects)) {
+    const children = fabricObj && fabricObj.getObjects ? fabricObj.getObjects() : [];
+    j.objects = j.objects.map((childJ, i) => {
+      normalizeSerializedObj(childJ, children[i] || null);
+      return childJ;
+    });
   }
   if (j.scaleX < 0) { j.flipX = !j.flipX; j.scaleX = Math.abs(j.scaleX); }
   if (j.scaleY < 0) { j.flipY = !j.flipY; j.scaleY = Math.abs(j.scaleY); }
+  return j;
+}
+
+function ser(obj) {
+  if (obj._isViewportRect) return null;
+  const j = obj.toJSON(['id', 'layerId', '_isArrow', '_isGif', '_gifUrl']);
+  normalizeSerializedObj(j, obj);
   j.zIndex = canvas.getObjects().filter(o => !o._isViewportRect).indexOf(obj);
   return j;
 }
@@ -1568,6 +1575,27 @@ socket.on('object:remove', ids => {
   canvas.renderAll();
 });
 socket.on('objects:batch', objs => { objs.forEach(d => applyFull(d, false)); canvas.renderAll(); });
+
+// Operações atômicas de grupo — aplicadas por outros clientes
+socket.on('group:commit', ({ group, childIds, zorder }) => {
+  // Remove os filhos que foram agrupados
+  childIds.forEach(id => { const o = findById(id); if (o) canvas.remove(o); });
+  // Adiciona o grupo
+  applyFull(group, false);
+  // Aplica z-order
+  if (zorder) zorder.forEach((id, idx) => { const o = findById(id); if (o) canvas.moveTo(o, idx); });
+  canvas.renderAll();
+});
+
+socket.on('ungroup:commit', ({ groupId, children, zorder }) => {
+  // Remove o grupo
+  const g = findById(groupId); if (g) canvas.remove(g);
+  // Adiciona os filhos
+  children.forEach(d => applyFull(d, false));
+  // Aplica z-order
+  if (zorder) zorder.forEach((id, idx) => { const o = findById(id); if (o) canvas.moveTo(o, idx); });
+  canvas.renderAll();
+});
 socket.on('board:clear', () => {
   canvas.clear(); canvas.backgroundColor = '#1e1e2a'; canvas.renderAll();
   createViewportRect();
@@ -1695,7 +1723,11 @@ function applyFull(data, render = true) {
   const ex = findById(data.id);
   if (ex) canvas.remove(ex);
 
-  if (data.type === 'image') loadingNow.add(data.id);
+  // Trata como async se for imagem OU grupo que contém imagens/gifs (deser é assíncrono)
+  const isAsync = data.type === 'image' ||
+    (data.type === 'group' && Array.isArray(data.objects) &&
+      data.objects.some(c => c.type === 'image'));
+  if (isAsync) loadingNow.add(data.id);
 
   deser(data, o => {
     // Aplica visibility state de camada se existir
@@ -1710,9 +1742,8 @@ function applyFull(data, render = true) {
     if (vpRect) canvas.bringToFront(vpRect);
     if (render) canvas.renderAll();
 
-    if (data.type === 'image') {
+    if (isAsync) {
       loadingNow.delete(data.id);
-      // Se chegou um update durante o carregamento, aplica agora
       if (loadingQueue[data.id]) {
         const queued = loadingQueue[data.id];
         delete loadingQueue[data.id];
@@ -1820,8 +1851,11 @@ canvas.on('object:modified', opt => {
 
 canvas.on('path:created', opt => {
   const path = opt.path; path.id = genId();
+  path.layerId = activeLayerId;
   if (vpRect) canvas.bringToFront(vpRect); emitFull(path);
   socket.emit('draw:end', { object: ser(path) });
+  // Sincroniza z-order para que o traço apareça na camada correta nos clientes remotos
+  socket.emit('zorder:sync', canvas.getObjects().filter(o => o.id && !o._isViewportRect).map(o => o.id));
 });
 
 canvas.on('selection:created', updCtx);
@@ -2468,7 +2502,37 @@ function deser(data, cb) {
     const o = new fabric.Line([data.x1, data.y1, data.x2, data.y2], data);
     o.id = data.id; cb(o); return;
   }
-  if (data.type === 'group') { fabric.Group.fromObject(data, o => { o.id = data.id; if (data.layerId) o.layerId = data.layerId; cb(o); }); return; }
+  if (data.type === 'group') {
+    const children = Array.isArray(data.objects) ? data.objects : [];
+    if (children.length === 0) {
+      // Grupo vazio — usa o caminho padrão do Fabric
+      const grp = new fabric.Group([], data);
+      grp.id = data.id;
+      if (data.layerId) grp.layerId = data.layerId;
+      cb(grp);
+      return;
+    }
+    const hasAsyncChild = children.some(c => c.type === 'image');
+    const builtChildren = new Array(children.length);
+    let done = 0;
+    children.forEach((childData, i) => {
+      deser(childData, childObj => {
+        builtChildren[i] = childObj;
+        if (++done < children.length) return;
+        // Reconstrói o grupo com os filhos já deserializados.
+        // O 3º argumento 'true' (isAlreadyGrouped) instrui o Fabric a NÃO
+        // recalcular bounds nem re-centrar — os filhos já têm coordenadas
+        // relativas ao centro do grupo, exatamente como foram serializados.
+        const opts = Object.assign({}, data);
+        delete opts.objects; // evita que o Fabric tente reprocessar os filhos
+        const grp = new fabric.Group(builtChildren, opts, true);
+        grp.id = data.id;
+        if (data.layerId) grp.layerId = data.layerId;
+        cb(grp);
+      });
+    });
+    return;
+  }
   const FT = getFabricType(data.type);
   if (!FT) { console.warn('Tipo desconhecido:', data.type); return; }
   FT.fromObject(data, o => { o.id = data.id; if (data.layerId) o.layerId = data.layerId; cb(o); });
@@ -2476,16 +2540,23 @@ function deser(data, cb) {
 
 function findById(id) { return canvas.getObjects().find(o => o.id === id); }
 
+// Token de geração — cancela loadState anterior se um novo board:sync chegar antes de terminar
+let _loadGen = 0;
+
 function loadState(state) {
+  const gen = ++_loadGen;
   canvas.getObjects().filter(o => !o._isViewportRect).forEach(o => canvas.remove(o));
   if (!state || !state.objects) { canvas.renderAll(); return; }
   const objs = Object.values(state.objects);
   if (!objs.length) { canvas.renderAll(); return; }
   let done = 0;
+  const total = objs.length;
   objs.forEach(d => deser(d, o => {
+    if (gen !== _loadGen) return; // geração obsoleta — board:sync mais novo chegou
     canvas.add(o);
-    if (++done === objs.length) {
-      applyLayerZOrder(); // garante z-order correto ao carregar
+    if (++done === total) {
+      if (gen !== _loadGen) return;
+      applyLayerZOrder();
       if (vpRect) canvas.bringToFront(vpRect);
       canvas.renderAll();
       scheduleLayersUpdate();

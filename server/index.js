@@ -340,6 +340,28 @@ io.on('connection', socket => {
     scheduleSave(roomId);
   });
 
+  // Operação atômica: adiciona grupo, remove filhos, atualiza zorder — 1 único pushUndo
+  socket.on('group:commit', ({ group, childIds, zorder }) => {
+    pushUndo(room);
+    room.state.objects[group.id] = { ...group, ts: Date.now() };
+    childIds.forEach(id => delete room.state.objects[id]);
+    if (zorder) room.state.zorder = zorder;
+    bcast('group:commit', { group, childIds, zorder });
+    toRoom('history:update', { canUndo: true, canRedo: false });
+    scheduleSave(roomId);
+  });
+
+  // Operação atômica: remove grupo, adiciona filhos, atualiza zorder — 1 único pushUndo
+  socket.on('ungroup:commit', ({ groupId, children, zorder }) => {
+    pushUndo(room);
+    delete room.state.objects[groupId];
+    children.forEach(ch => { room.state.objects[ch.id] = { ...ch, ts: Date.now() }; });
+    if (zorder) room.state.zorder = zorder;
+    bcast('ungroup:commit', { groupId, children, zorder });
+    toRoom('history:update', { canUndo: true, canRedo: false });
+    scheduleSave(roomId);
+  });
+
   socket.on('object:transform', data => {
     if (room.state.objects[data.id])
       room.state.objects[data.id] = { ...room.state.objects[data.id], ...data };
