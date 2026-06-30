@@ -256,6 +256,7 @@
   <div class="tb-sep"></div>
   <button class="tb-btn" onclick="document.getElementById('img-inp').click()"><svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg><span class="tb-tip">Imagem</span></button>
   <input type="file" id="img-inp" accept="image/*" style="display:none" onchange="insertImg(this)">
+  <button class="tb-btn" onclick="exportSelectionOrBoardAsPNG()"><svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" stroke-linecap="round" stroke-linejoin="round"/><polyline points="7 10 12 15 17 10" stroke-linecap="round" stroke-linejoin="round"/><line x1="12" y1="15" x2="12" y2="3" stroke-linecap="round"/></svg><span class="tb-tip">Exportar PNG</span></button>
   <div class="tb-sep"></div>
   <button class="tb-btn" onclick="undo()"><svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 00-4-4H4"/></svg><span class="tb-tip">Desfazer (Ctrl+Z)</span></button>
   <button class="tb-btn" onclick="redo()"><svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><polyline points="15 14 20 9 15 4"/><path d="M4 20v-7a4 4 0 014-4h12"/></svg><span class="tb-tip">Refazer (Ctrl+Y)</span></button>
@@ -324,6 +325,7 @@
   <div class="cr"><span class="cl">Opacidade</span><input type="number" class="ci" id="cop" min="0" max="100" oninput="setSelOp(this.value)"></div>
   <button class="cb" onclick="sendBackFront('back')">⬇ Para trás</button>
   <button class="cb" onclick="sendBackFront('front')">⬆ Para frente</button>
+  <button class="cb" onclick="exportSelectionOrBoardAsPNG()">⬇ Exportar PNG</button>
   <button class="cb d" onclick="delSel()">Excluir</button>
 </div>
 
@@ -1007,7 +1009,7 @@ function groupSelected() {
 
   // GIFs não podem ser agrupados
   if (targets.some(o => o._isGif)) {
-    showToast('GIFs animados não podem ser agrupados.', 2500);
+    showToast('GIFs animados não podem ser agrupados.');
     return;
   }
 
@@ -1082,6 +1084,137 @@ function ungroupSelected() {
   // Operação atômica — 1 único pushUndo no servidor
   socket.emit('ungroup:commit', { groupId, children: serializedChildren, zorder });
   scheduleLayersUpdate();
+}
+
+// ── Exportar PNG ──────────────────────────────────────────────────────────────
+// 3 modos: objeto único, seleção/grupo (vários objetos), board inteiro (viewport).
+// Sempre fundo transparente, sem incluir o retângulo guia do viewport.
+
+function _downloadDataUrl(dataUrl, filename) {
+  const a = document.createElement('a');
+  a.href = dataUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
+// Exporta a bounding box exata de um conjunto de objetos (seleção, grupo, ou objeto único).
+// Usa canvas.toDataURL com left/top/width/height = bounding box absoluta dos objetos,
+// e multiplier=1 para exportar no tamanho exato em que estão no board.
+function exportObjectsAsPNG(objects, filename) {
+  const targets = objects.filter(o => !o._isViewportRect);
+  if (!targets.length) { showToast('Nada selecionado para exportar.'); return; }
+
+  // Para obter a bounding box correta no espaço lógico do canvas:
+  // - 1 objeto ou grupo real → usa os aCoords do próprio objeto
+  // - seleção múltipla (ActiveSelection) → o canvas.getActiveObject() É o
+  //   ActiveSelection (subclasse de Group) e tem seus próprios aCoords que
+  //   envolvem TODOS os filhos — exatamente como um grupo real funciona
+  const activeObj = canvas.getActiveObject();
+  const source = (activeObj && !activeObj._isViewportRect) ? activeObj : targets[0];
+  source.setCoords();
+
+  const coords = source.aCoords; // { tl, tr, bl, br } em coords do canvas
+  let minX, minY, maxX, maxY;
+
+  if (coords) {
+    const pts = [coords.tl, coords.tr, coords.bl, coords.br];
+    minX = Math.min(...pts.map(p => p.x));
+    minY = Math.min(...pts.map(p => p.y));
+    maxX = Math.max(...pts.map(p => p.x));
+    maxY = Math.max(...pts.map(p => p.y));
+  } else {
+    // Fallback: itera filhos individualmente
+    minX = Infinity; minY = Infinity; maxX = -Infinity; maxY = -Infinity;
+    targets.forEach(o => {
+      o.setCoords();
+      const c = o.aCoords;
+      if (c) {
+        [c.tl, c.tr, c.bl, c.br].forEach(pt => {
+          minX = Math.min(minX, pt.x); minY = Math.min(minY, pt.y);
+          maxX = Math.max(maxX, pt.x); maxY = Math.max(maxY, pt.y);
+        });
+      }
+    });
+  }
+
+  const w = Math.max(1, Math.ceil(maxX - minX));
+  const h = Math.max(1, Math.ceil(maxY - minY));
+
+  // Esconde objetos que não fazem parte do export
+  const allObjs = canvas.getObjects();
+  const prevVisible = new Map();
+  allObjs.forEach(o => {
+    prevVisible.set(o, o.visible);
+    if (o._isViewportRect || !targets.includes(o)) o.visible = false;
+  });
+
+  const prevBg  = canvas.backgroundColor;
+  const prevVpt = canvas.viewportTransform.slice();
+  canvas.backgroundColor = '';
+  canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
+  canvas.renderAll();
+
+  const dataUrl = canvas.toDataURL({
+    format: 'png',
+    left: minX, top: minY, width: w, height: h,
+    multiplier: 1,
+  });
+
+  canvas.setViewportTransform(prevVpt);
+  allObjs.forEach(o => { o.visible = prevVisible.get(o); o.setCoords(); });
+  canvas.backgroundColor = prevBg;
+  canvas.renderAll();
+
+  _downloadDataUrl(dataUrl, filename);
+}
+
+// Exporta o board inteiro na área do viewport (ex: 1920×1080), com todos os
+// objetos nas posições em que estão, fundo transparente, sem o retângulo guia.
+function exportBoardAsPNG() {
+  const allObjs = canvas.getObjects();
+  const prevVisible = new Map();
+  allObjs.forEach(o => {
+    prevVisible.set(o, o.visible);
+    if (o._isViewportRect) o.visible = false;
+  });
+
+  const prevBg = canvas.backgroundColor;
+  canvas.backgroundColor = '';
+
+  const prevVpt = canvas.viewportTransform.slice();
+  canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
+  canvas.renderAll();
+
+  const dataUrl = canvas.toDataURL({
+    format: 'png',
+    left: 0, top: 0, width: vpW, height: vpH,
+    multiplier: 1,
+  });
+
+  canvas.setViewportTransform(prevVpt);
+  allObjs.forEach(o => { o.visible = prevVisible.get(o); });
+  canvas.backgroundColor = prevBg;
+  canvas.renderAll();
+
+  _downloadDataUrl(dataUrl, `lousa-${Date.now()}.png`);
+}
+
+// Decide automaticamente qual modo usar baseado na seleção atual:
+// nenhuma seleção → exporta o board inteiro (viewport);
+// 1 objeto selecionado → exporta aquele objeto;
+// 2+ objetos selecionados (ou um grupo) → exporta a bounding box da seleção.
+function exportSelectionOrBoardAsPNG() {
+  const active = canvas.getActiveObjects().filter(o => !o._isViewportRect);
+  if (active.length === 0) {
+    exportBoardAsPNG();
+  } else if (active.length === 1) {
+    const name = (objectNames[active[0].id] || active[0].type || 'objeto').replace(/[^\w\-]+/g, '_');
+    exportObjectsAsPNG(active, `${name}-${Date.now()}.png`);
+  } else {
+    exportObjectsAsPNG(active, `selecao-${Date.now()}.png`);
+  }
 }
 
 // ── Render principal ──────────────────────────────────────────────────────────
@@ -2691,15 +2824,25 @@ function loadState(state) {
   let done = 0;
   const total = objs.length;
   objs.forEach(d => deser(d, o => {
-    if (gen !== _loadGen) return; // geração obsoleta — board:sync mais novo chegou
+    if (gen !== _loadGen) return;
     canvas.add(o);
-    if (++done === total) {
-      if (gen !== _loadGen) return;
+    if (++done < total) return;
+    if (gen !== _loadGen) return;
+
+    // Aplica z-order: usa state.zorder se disponível (fonte de verdade precisa),
+    // senão cai no applyLayerZOrder como fallback (para salas antigas sem zorder salvo).
+    if (state.zorder && state.zorder.length) {
+      state.zorder.forEach((id, idx) => {
+        const o = canvas.getObjects().find(x => x.id === id);
+        if (o) canvas.moveTo(o, idx);
+      });
+    } else {
       applyLayerZOrder();
-      if (vpRect) canvas.bringToFront(vpRect);
-      canvas.renderAll();
-      scheduleLayersUpdate();
     }
+
+    if (vpRect) canvas.bringToFront(vpRect);
+    canvas.renderAll();
+    scheduleLayersUpdate();
   }));
 }
 
@@ -2733,6 +2876,8 @@ window.addEventListener('keydown', e => {
     if (e.key === 'z') { e.preventDefault(); undo(); }
     else if (e.key === 'y') { e.preventDefault(); redo(); }
     else if (e.key === 'd') { e.preventDefault(); dupSel(); }
+    else if (e.key === 'c') { e.preventDefault(); copySel(); }
+    else if (e.key === 'v') { e.preventDefault(); pasteSel(); }
     else if (e.key === 'a') { e.preventDefault(); canvas.setActiveObject(new fabric.ActiveSelection(canvas.getObjects().filter(o => !o._isViewportRect), { canvas })); canvas.renderAll(); }
     return;
   }
@@ -2788,7 +2933,78 @@ function dupSel() {
       socket.emit('objects:batch', clones.map(ser).filter(Boolean));
       scheduleLayersUpdate();
     }
-  }, ['id']));
+  }, ['id', 'layerId', '_isArrow', '_isGif', '_gifUrl']));
+}
+
+// ── Copiar / Colar ──────────────────────────────────────────────────────────────
+// Clipboard interno (em memória) — guarda dados serializados (não objetos Fabric
+// vivos) para que colar sempre gere objetos 100% novos, com novos ids/elementos.
+let _clipboard = [];
+let _pasteCount = 0; // incrementa a cada colagem para o offset não empilhar no mesmo lugar
+
+function copySel() {
+  const objs = canvas.getActiveObjects().filter(o => !o._isViewportRect);
+  if (!objs.length) { _clipboard = []; return; }
+  _clipboard = objs.map(o => ser(o)).filter(Boolean);
+  _pasteCount = 0;
+  showToast(`${_clipboard.length} objeto(s) copiado(s)`);
+}
+
+async function pasteSel() {
+  if (!_clipboard.length) return;
+  _pasteCount++;
+  const offset = 24 * _pasteCount;
+
+  canvas.discardActiveObject();
+  const pasted = [];
+
+  for (const srcData of _clipboard) {
+    const data = JSON.parse(JSON.stringify(srcData)); // cópia profunda, nunca reaproveita refs
+    const newId = genId();
+    const newLeft = (data.left || 0) + offset;
+    const newTop  = (data.top  || 0) + offset;
+
+    if (data.type === 'image' && data._isGif) {
+      // GIFs precisam passar por placeGif() para entrar no _gifRegistry
+      // e animar corretamente — clone() não registra o loop de animação.
+      data.id = newId;
+      data.layerId = activeLayerId;
+      data.left = newLeft; data.top = newTop;
+      try {
+        const gifObj = await placeGif(data._gifUrl || data.src, data);
+        canvas.add(gifObj);
+        pasted.push(gifObj);
+      } catch (_) { /* ignora gif que falhou ao colar */ }
+      continue;
+    }
+
+    // Demais tipos (imagem comum, formas, texto, traços, grupos): deser() já
+    // resolve cada caso (inclusive grupos recursivamente e imagens via cache).
+    data.id = newId;
+    data.layerId = activeLayerId;
+    data.left = newLeft; data.top = newTop;
+    assignDefaultName(data);
+
+    await new Promise(resolve => {
+      deser(data, obj => {
+        canvas.add(obj);
+        pasted.push(obj);
+        resolve();
+      });
+    });
+    hideToast();
+  }
+
+  if (vpRect) canvas.bringToFront(vpRect);
+  canvas.setActiveObject(pasted.length > 1
+    ? new fabric.ActiveSelection(pasted, { canvas })
+    : pasted[0]);
+  canvas.renderAll();
+
+  // objects:batch → applyFull no destino trata cada tipo corretamente,
+  // inclusive _isGif (decodifica via Worker e registra no _gifRegistry).
+  socket.emit('objects:batch', pasted.map(ser).filter(Boolean));
+  scheduleLayersUpdate();
 }
 
 // Init

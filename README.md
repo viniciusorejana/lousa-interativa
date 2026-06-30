@@ -44,80 +44,62 @@ npm run dev
 | `http://localhost:3000/view` | Source do OBS — sala padrão |
 | `http://localhost:3000/view/:sala` | Source do OBS — sala específica |
 
-Para acesso de outros dispositivos na mesma rede (LAN), substitua `localhost` pelo IP da máquina host:
-
-```
-http://192.168.x.x:3000
-```
+Para acesso de outros dispositivos na mesma rede (LAN), substitua `localhost` pelo IP da máquina host.
 
 ---
 
 ## Salas (multi-board)
 
-O LiveBoard suporta **múltiplas salas independentes** simultaneamente. Cada sala tem seu próprio estado, objetos, camadas e histórico de undo/redo.
+O LiveBoard suporta **múltiplas salas independentes** simultaneamente. Cada sala tem seu próprio estado, objetos, camadas, histórico de undo/redo e z-order.
 
 ### Como funciona
 
-Na tela de login, o editor digita um **nome de sala** (ex: `Lousa 1`, `Aula de Matemática`). O servidor converte esse nome para um **slug de URL** seguro:
+Na tela de login, o editor digita um **nome de sala**. O servidor converte para um **slug de URL** seguro, exibido em preview em tempo real:
 
 ```
 "Lousa 1"             → /view/lousa-1
 "Aula de Matemática"  → /view/aula-de-matematica
-"Minha Lousa!"        → /view/minha-lousa
 ```
 
-O preview do slug aparece em tempo real enquanto você digita na tela de login.
-
 ### Source do OBS por sala
-
-Cada sala tem sua própria URL para o OBS:
 
 ```
 http://localhost:3000/view/lousa-1
 http://localhost:3000/view/aula-de-matematica
 ```
 
-### Trocar de sala sem relogar
+### Trocar de sala
 
-No editor, o botão **"Trocar de Lousa"** (ícone de casinha na toolbar) redireciona para o passo de escolha de sala sem pedir a senha novamente, desde que a sessão ainda seja válida.
+O botão **"Trocar de Lousa"** (ícone de casinha na toolbar) redireciona para a escolha de sala sem pedir a senha novamente.
 
 ### Persistência e eviction
 
-- O estado de cada sala é **salvo em disco** (`/data/rooms/<slug>.json`) 2 segundos após qualquer alteração.
-- Salas ficam em memória enquanto têm usuários conectados.
-- Salas vazias há mais de **30 minutos** são apagadas automaticamente da RAM e do disco, junto com todos os uploads associados.
-- Ao reiniciar o servidor, **todos os uploads e estados de sala são limpos** — o board é tratado como volátil de sessão por design.
+- Estado salvo em disco (`/data/rooms/<slug>.json`) 2 segundos após qualquer alteração
+- Salas vazias há mais de **30 minutos** são removidas da RAM e do disco
+- Ao reiniciar o servidor, todos os uploads e estados são limpos (volátil por design)
 
 ---
 
 ## Senha de acesso
 
-Definida no arquivo `.env`:
+Definida em `.env`:
 
 ```
 BOARD_PASSWORD=live123
 ```
 
-A senha é validada no servidor via cookie de sessão HttpOnly — nunca fica exposta no código do cliente.
-
-Para usar uma senha diferente sem editar o arquivo:
-
-```bash
-BOARD_PASSWORD=minhasenha npm start
-```
+Validada no servidor via cookie de sessão HttpOnly.
 
 ---
 
 ## Configurar no OBS
 
-1. Adicione uma source do tipo **"Browser"**
-2. URL: `http://localhost:3000/view` (ou `http://localhost:3000/view/nome-da-sala`)
-3. Largura/Altura: igual à resolução do stream (ex: `1920` × `1080`)
+1. Source do tipo **"Browser"**
+2. URL: `http://localhost:3000/view` (ou `/view/nome-da-sala`)
+3. Largura/Altura: igual à resolução do stream (ex: `1920 × 1080`)
 4. **"Shutdown source when not visible"** → **OFF**
 5. **"Refresh browser when scene becomes active"** → **OFF**
-6. **"CSS personalizado"** → deixe em branco (o fundo já é transparente por padrão)
-
-A página `/view` não tem HUD nem controles — apenas os objetos do quadro sobre fundo transparente, pronta para ser sobreposta na live.
+6. CSS personalizado → vazio (fundo já transparente)
 
 ---
 
@@ -125,8 +107,8 @@ A página `/view` não tem HUD nem controles — apenas os objetos do quadro sob
 
 ### Atalhos de teclado
 
-| Tecla | Ferramenta |
-|-------|------------|
+| Tecla | Ação |
+|-------|------|
 | `V` | Selecionar / mover |
 | `P` | Caneta livre |
 | `E` | Borracha |
@@ -137,86 +119,99 @@ A página `/view` não tem HUD nem controles — apenas os objetos do quadro sob
 | `T` | Texto |
 | `Ctrl+Z` | Desfazer |
 | `Ctrl+Y` | Refazer |
-| `Ctrl+D` | Duplicar seleção |
 | `Ctrl+A` | Selecionar tudo |
+| `Ctrl+D` | Duplicar seleção |
+| `Ctrl+C` | Copiar seleção |
+| `Ctrl+V` | Colar |
 | `Delete` / `Backspace` | Apagar selecionado |
 
 ### Painel de opções (toolbar)
 
-Ao selecionar qualquer ferramenta de desenho, aparece um painel abaixo da toolbar com:
-- **Cor** — 8 cores predefinidas + seletor de cor livre
-- **Espessura** — slider de 1 a 60px
-- **Opacidade** — slider de 10% a 100%
-- **Preenchimento** — checkbox para preencher formas geométricas
+Cor, espessura (1–60px), opacidade (10–100%) e preenchimento para formas geométricas.
 
 ### Painel contextual (objeto selecionado)
 
-Ao selecionar um objeto no modo **Selecionar**, aparece um painel lateral com:
-- Largura e altura (redimensionamento numérico)
-- Opacidade
-- Botões "Para trás" / "Para frente" (controle de z-order)
-- Botão "Excluir"
+Largura, altura, opacidade, z-order ("Para trás" / "Para frente"), exportar PNG e excluir.
 
 ### Viewport
 
-O painel de **Viewport** (canto esquerdo) define a resolução do canvas de transmissão. O padrão é `1920 × 1080`. Alterar esse valor reposiciona e reescala a visualização para refletir a área que o OBS vai capturar.
+O painel **VIEWPORT** (canto esquerdo) define a resolução de captura (padrão `1920 × 1080`) e o botão "Ir para Viewport" centraliza a visão.
 
 ---
 
 ## Funcionalidades
 
 ### Colaboração em tempo real
+
 - Sincronização via **WebSocket** (Socket.IO) com latência ~1–5ms em LAN
-- **Stroke streaming** — o traço da caneta aparece ponto a ponto nos outros clientes enquanto você desenha
-- **Transform em tempo real** — mover, escalar e rotacionar objetos reflete imediatamente para todos
-- **Seleção múltipla sincronizada** — mover/escalar vários objetos juntos sincroniza todos simultaneamente
+- **Stroke streaming** — traço aparece ponto a ponto nos outros clientes
+- **Transform em tempo real** — mover/escalar/rotacionar reflete imediatamente para todos
+- **Seleção múltipla sincronizada** — move vários objetos em conjunto
 - **Cursores remotos** — cada editor tem um cursor colorido visível para os demais
-- **Texto ao vivo** — digitação aparece letra a letra para todos os visualizadores
+- **Texto ao vivo** — digitação aparece letra a letra
 
-### Ferramentas de desenho
-- Caneta livre com streaming em tempo real
-- Retângulo, elipse, linha, seta (com cabeça de flecha)
-- Texto editável com suporte a redimensionamento
-- Borracha (clique para apagar objeto)
+### Z-order persistente
 
-### Imagens e GIFs animados
-- Upload via botão na toolbar (até 20MB por arquivo)
-- Colar da área de transferência com **Ctrl+V**
-- Formatos suportados: JPG, PNG, GIF, WebP, BMP, SVG
-- Redimensionar, rotacionar e espelhar (horizontal/vertical)
-- Imagens armazenadas em disco no servidor (`/uploads/`) — nunca trafegam como base64, apenas como URL
-- Limpeza automática: ao remover uma imagem do board, o arquivo é apagado do disco
+A ordem visual dos objetos (quem fica na frente de quem) é mantida como um array `zorder` no estado da sala, salvo em disco. Após F5, undo/redo ou entrada de novos usuários, a ordem é restaurada exatamente como estava — imagens não sobem mais para a frente de tudo ao recarregar.
 
-#### GIFs animados
+### Copiar e colar
 
-GIFs são decodificados fora da thread principal usando uma **WebWorker** dedicada (`public/gif.worker.js`):
+`Ctrl+C` copia a seleção atual (1 ou vários objetos, qualquer tipo) para um clipboard interno. `Ctrl+V` gera **novos objetos** com novos IDs para todos os clientes:
 
-1. O Worker faz `fetch` do GIF, parseia o binário (formato GIF89a/87a) e decodifica cada frame via LZW
-2. Os frames são compostos num `OffscreenCanvas`, respeitando todos os 4 modos de disposal do formato GIF (keep, clear, restore-to-background, restore-to-previous) e transparência por índice
-3. Cada frame é convertido em `ImageBitmap` e enviado para a thread principal via `postMessage` com transferência zero-copy
-4. Um único loop `requestAnimationFrame` global anima todos os GIFs ativos simultaneamente, avançando frames com base no delay real de cada GIF (mínimo 20ms)
+- Cada colagem aplica um offset incremental de 24px para não empilhar no mesmo lugar
+- `Ctrl+V` múltiplas vezes continua offset­ando progressivamente
+- GIFs colados entram diretamente no pipeline de animação (não são cópias estáticas)
+- Objetos colados vão para a camada ativa no momento da colagem
 
-Isso garante GIFs animados funcionais no canvas, sem travamentos na UI e com delays por frame corretos.
+### Exportar PNG
+
+Botão na toolbar e no painel contextual. Três modos automáticos com base na seleção:
+
+| Cenário | Resultado |
+|---------|-----------|
+| Nenhum objeto selecionado | PNG do board inteiro no tamanho do viewport (ex: 1920×1080) |
+| 1 objeto selecionado | PNG recortado na bounding box exata daquele objeto |
+| 2+ objetos ou grupo selecionado | PNG recortado na bounding box de toda a seleção |
+
+Todos os modos: fundo transparente, tamanho exato dos objetos em pixels, independente do zoom atual do editor. A bounding box usa `aCoords` do `ActiveSelection` (o mesmo mecanismo dos grupos reais) para coordenadas corretas no espaço lógico do canvas.
+
+### GIFs animados
+
+GIFs são decodificados fora da thread principal em uma **WebWorker** dedicada (`public/gif.worker.js`):
+
+1. Worker faz `fetch` do GIF, parseia o binário (GIF89a/87a) e decodifica via LZW
+2. Frames compostos num `OffscreenCanvas`, respeitando os 4 modos de disposal e transparência por índice
+3. Frames enviados como `ImageBitmap[]` via `postMessage` (zero-copy)
+4. Um único loop `requestAnimationFrame` global anima todos os GIFs ativos com delays reais por frame
+
+GIFs **não podem ser agrupados** (o botão de grupo fica desabilitado quando algum GIF está selecionado).
+
+### Cache de imagens
+
+`fabric.Image.fromURL` é interceptado globalmente (monkey-patch) em todos os clientes. Efeitos:
+
+- **Cache de `HTMLImageElement`**: cada imagem é baixada uma única vez por sessão, independente de quantas vezes o objeto é movido, modificado, desagrupado ou recebido via socket
+- **Normalização de URL**: URLs absolutas de outros hosts são reescritas para o `origin` atual, eliminando falhas de carregamento em ambientes com múltiplos hostnames
+- **`crossOrigin: 'anonymous'` garantido** em 100% das cargas, inclusive filhos de grupos via `fabric.Group.fromObject`
+- **Warm-up `fetch`**: primeira carga popula o cache HTTP com headers CORS antes do `<img>` tag, evitando o problema de canvas tainted
+
+### Agrupamento atômico
+
+Agrupar e desagrupar são **operações atômicas** no servidor — um único `pushUndo` por operação. Os clientes remotos reutilizam os objetos Fabric já existentes no canvas (sem destruir e recriar), eliminando o frame em branco e o problema de imagens desaparecendo ao agrupar.
 
 ### Camadas
-- Painel de camadas no lado direito do editor
+
 - Adicionar, renomear, reordenar (drag-and-drop) e apagar camadas
-- Visibilidade por camada (ocultar/mostrar sincronizado para todos)
+- Visibilidade por camada sincronizada para todos
 - Cada objeto pertence a uma camada; novos objetos vão para a camada ativa
 - Objetos em camadas ocultas ficam invisíveis na view do OBS
 
-### Histórico
-- **Desfazer/Refazer** local com até 50 estados
-- Undo/Redo sincroniza o estado completo para todos os clientes
-- Histórico persistido em disco junto com o estado da sala
+### Histórico (undo/redo)
 
-### Z-order (camadas de objeto)
-- "Para trás" e "Para frente" sincronizados para todos os visualizadores
-
-### Suporte mobile
-- Toolbar com scroll horizontal para telas pequenas
-- Todos os gestos de toque suportados: desenhar, mover, redimensionar
-- Viewport fixo (sem zoom acidental ao desenhar)
+- Até 50 estados por sala
+- Snapshots incluem objetos, camadas e z-order — o undo/redo restaura a ordem visual completamente
+- Sincronizado: todos os clientes veem o mesmo estado após undo/redo
+- Token de geração em `loadState` cancela deserializações obsoletas quando `board:sync` chega rapidamente (Ctrl+Z/Y rápido não deixa estados híbridos)
 
 ---
 
@@ -227,9 +222,9 @@ liveboard/
 ├── server/
 │   └── index.js          # Servidor Node.js (Express + Socket.IO)
 ├── public/
-│   ├── index.html        # Página de login (3 passos: senha → sala → nome)
+│   ├── index.html        # Página de login (senha → sala → nome)
 │   ├── board.html        # Editor principal
-│   ├── view.html         # Source do OBS (só visualização, fundo transparente)
+│   ├── view.html         # Source do OBS (visualização, fundo transparente)
 │   └── gif.worker.js     # WebWorker de decodificação de GIF
 ├── uploads/              # Imagens enviadas (criada automaticamente)
 ├── data/
@@ -243,19 +238,20 @@ liveboard/
 
 ## Arquitetura de sincronização
 
-O sistema usa dois canais distintos para otimizar performance e fidelidade:
-
-| Canal | Evento | Quando | Comportamento |
-|-------|--------|--------|---------------|
-| Tempo real | `object:transform` | Durante drag/scale/rotate | `volatile` — descartável se congestionado |
-| Tempo real | `objects:transform` | Multi-seleção em movimento | `volatile` — batch de todos os objetos |
-| Final | `object:add` | Objeto criado | Garantido — JSON completo |
-| Final | `object:modify` | Após mouse:up | Garantido — JSON completo |
-| Final | `object:modify:commit` | Commit de transformação | Garantido + push undo |
-| Streaming | `draw:move` | Caneta em movimento | `volatile` ponto a ponto |
-| Histórico | `history:undo` / `history:redo` | Undo/Redo | Sincroniza estado completo para todos |
-
-**Princípio:** updates em tempo real (`transform`) atualizam apenas `left/top/scaleX/scaleY/angle/flipX/flipY` in-place sem recriar o objeto (zero flicker). Ao finalizar qualquer ação, um `object:modify` ou `object:modify:commit` com o JSON completo garante que todos os clientes ficam em estado idêntico.
+| Evento | Quando | Comportamento |
+|--------|--------|---------------|
+| `object:add` | Objeto criado | Garantido + atualiza zorder |
+| `object:modify` | Posição/propriedade alterada | Garantido |
+| `object:modify:commit` | Fim de transformação | Garantido + pushUndo |
+| `object:transform` | Durante drag/scale | `volatile` — descartável |
+| `objects:transform` | Multi-seleção em movimento | `volatile` — batch |
+| `objects:batch` | Criação em lote (colar, duplicar) | Garantido + atualiza zorder |
+| `group:commit` | Agrupar | Atômico — 1 pushUndo, reutiliza objetos existentes |
+| `ungroup:commit` | Desagrupar | Atômico — 1 pushUndo, extrai via `toActiveSelection()` |
+| `zorder:sync` | Mudança de z-order explícita | Reordena canvas de todos |
+| `draw:end` + `zorder:sync` | Traço finalizado | Garante posição na camada correta |
+| `history:undo` / `redo` | Undo/Redo | Restaura estado completo (objetos + camadas + zorder) |
+| `board:sync` | Estado completo | Após undo/redo ou reconexão |
 
 ---
 
@@ -266,8 +262,6 @@ O sistema usa dois canais distintos para otimizar performance e fidelidade:
 | `PORT` | `3000` | Porta do servidor |
 | `BOARD_PASSWORD` | `live123` | Senha de acesso ao editor |
 
-Definidas nos arquivos `.env` (produção) e `.env-dev` (desenvolvimento).
-
 ---
 
 ## Dependências
@@ -275,19 +269,19 @@ Definidas nos arquivos `.env` (produção) e `.env-dev` (desenvolvimento).
 | Pacote | Versão | Uso |
 |--------|--------|-----|
 | `express` | ^4.18.2 | Servidor HTTP e rotas |
-| `socket.io` | ^4.6.1 | WebSocket para sincronização em tempo real |
-| `multer` | ^2.2.0 | Upload de imagens (multipart/form-data) |
-| `uuid` | ^9.0.0 | IDs únicos para objetos, usuários e sessões |
+| `socket.io` | ^4.6.1 | WebSocket em tempo real |
+| `multer` | ^2.2.0 | Upload de imagens |
+| `uuid` | ^9.0.0 | IDs únicos |
 
-No frontend: **Fabric.js 5.3.1** (canvas interativo) e **Socket.IO client** — ambos carregados via CDN, sem bundle step.
+Frontend: **Fabric.js 5.3.1** e **Socket.IO client** via CDN, sem build step.
 
 ---
 
-## Hospedagem (além da LAN)
+## Hospedagem além da LAN
 
-O projeto foi desenvolvido para uso local, mas pode ser hospedado normalmente em qualquer VPS com Node.js. Recomendações:
+O projeto foi desenvolvido para uso local, mas pode ser hospedado em qualquer VPS com Node.js:
 
-- Use um proxy reverso (nginx ou Caddy) com HTTPS
-- Configure `BOARD_PASSWORD` com uma senha forte via variável de ambiente
-- As pastas `uploads/` e `data/rooms/` precisam ter permissão de escrita pelo processo Node.js
-- Para múltiplos processos, o estado do board é in-memory — use pm2 com uma única instância ou adicione Redis para persistência entre reinicializações
+- Use nginx ou Caddy como proxy reverso com HTTPS
+- `BOARD_PASSWORD` forte via variável de ambiente
+- As pastas `uploads/` e `data/rooms/` precisam de permissão de escrita
+- Uma única instância Node.js (estado em memória — sem Redis necessário para uso típico)

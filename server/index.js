@@ -180,6 +180,7 @@ function snapState(room) {
   return {
     objects: JSON.parse(JSON.stringify(room.state.objects)),
     layers:  JSON.parse(JSON.stringify(room.state.layers)),
+    zorder:  (room.state.zorder || []).slice(),
   };
 }
 function pushUndo(room) {
@@ -271,6 +272,7 @@ io.on('connection', socket => {
 
   socket.emit('board:init', {
     state:    room.state,
+    zorder:   room.state.zorder || [],
     roomId,
     userId,
     userName,
@@ -294,6 +296,15 @@ io.on('connection', socket => {
   socket.on('object:add', obj => {
     pushUndo(room);
     room.state.objects[obj.id] = { ...obj, ts: Date.now() };
+    // Insere o id na posição correta do zorder (usando o zIndex do objeto)
+    if (!room.state.zorder) room.state.zorder = [];
+    const zorder = room.state.zorder;
+    const existingIdx = zorder.indexOf(obj.id);
+    if (existingIdx !== -1) zorder.splice(existingIdx, 1);
+    const targetIdx = (obj.zIndex !== undefined)
+      ? Math.min(obj.zIndex, zorder.length)
+      : zorder.length;
+    zorder.splice(targetIdx, 0, obj.id);
     bcast('object:add', obj);
     toRoom('history:update', { canUndo: true, canRedo: false });
     scheduleSave(roomId);
@@ -323,9 +334,11 @@ io.on('connection', socket => {
     pushUndo(room);
     const list = Array.isArray(ids) ? ids : [ids];
     list.forEach(id => {
-      // Não deletamos o arquivo físico aqui — seria um bug com undoStack.
-      // Uploads são limpos apenas no reinício do servidor.
       delete room.state.objects[id];
+      if (room.state.zorder) {
+        const i = room.state.zorder.indexOf(id);
+        if (i !== -1) room.state.zorder.splice(i, 1);
+      }
     });
     bcast('object:remove', list);
     toRoom('history:update', { canUndo: true, canRedo: false });
@@ -334,7 +347,17 @@ io.on('connection', socket => {
 
   socket.on('objects:batch', objects => {
     pushUndo(room);
-    objects.forEach(obj => { room.state.objects[obj.id] = { ...obj, ts: Date.now() }; });
+    if (!room.state.zorder) room.state.zorder = [];
+    objects.forEach(obj => {
+      room.state.objects[obj.id] = { ...obj, ts: Date.now() };
+      const zorder = room.state.zorder;
+      const existingIdx = zorder.indexOf(obj.id);
+      if (existingIdx !== -1) zorder.splice(existingIdx, 1);
+      const targetIdx = (obj.zIndex !== undefined)
+        ? Math.min(obj.zIndex, zorder.length)
+        : zorder.length;
+      zorder.splice(targetIdx, 0, obj.id);
+    });
     bcast('objects:batch', objects);
     toRoom('history:update', { canUndo: true, canRedo: false });
     scheduleSave(roomId);
@@ -406,6 +429,7 @@ io.on('connection', socket => {
     const prev = room.undoStack.pop();
     room.state.objects = prev.objects;
     room.state.layers  = prev.layers || room.state.layers;
+    if (prev.zorder)   room.state.zorder = prev.zorder;
     toRoom('board:sync', room.state);
     toRoom('history:update', { canUndo: room.undoStack.length > 0, canRedo: true });
     scheduleSave(roomId);
@@ -417,6 +441,7 @@ io.on('connection', socket => {
     const next = room.redoStack.pop();
     room.state.objects = next.objects;
     room.state.layers  = next.layers || room.state.layers;
+    if (next.zorder)   room.state.zorder = next.zorder;
     toRoom('board:sync', room.state);
     toRoom('history:update', { canUndo: true, canRedo: room.redoStack.length > 0 });
     scheduleSave(roomId);

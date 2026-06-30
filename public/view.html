@@ -425,10 +425,17 @@ function loadState(state) {
     if (gen !== _loadGen) return;
     o.selectable = false; o.evented = false;
     canvas.add(o);
-    if (++done === total) {
-      if (gen !== _loadGen) return;
-      canvas.renderAll();
+    if (++done < total) return;
+    if (gen !== _loadGen) return;
+
+    if (state.zorder && state.zorder.length) {
+      state.zorder.forEach((id, idx) => {
+        const obj = canvas.getObjects().find(x => x.id === id);
+        if (obj) canvas.moveTo(obj, idx);
+      });
     }
+
+    canvas.renderAll();
   }));
 }
 
