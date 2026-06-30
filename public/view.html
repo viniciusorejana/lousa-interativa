@@ -14,6 +14,86 @@
 <script src="/socket.io/socket.io.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.1/fabric.min.js"></script>
 <script>
+// ── Monkey-patch fabric.Image.fromURL ─────────────────────────────────────────
+(function patchFabricImageFromURL() {
+  const _imgCache = new Map();
+
+  function normalizeUrl(url) {
+    const u = url || '';
+    if (!u || u.startsWith('blob:') || u.startsWith('data:')) return u;
+    if (!u.startsWith('http')) {
+      return window.location.origin + (u.startsWith('/') ? u : '/' + u);
+    }
+    try {
+      const parsed = new URL(u);
+      if (parsed.pathname.startsWith('/uploads/')) {
+        return window.location.origin + parsed.pathname;
+      }
+    } catch(_) {}
+    return u;
+  }
+
+  const _orig = fabric.Image.fromURL;
+  fabric.Image.fromURL = function(url, callback, imgOptions) {
+    const absUrl = normalizeUrl(url);
+    const opts = Object.assign({}, imgOptions || {});
+    opts.crossOrigin = 'anonymous';
+
+    if (!absUrl || !absUrl.includes('/uploads/')) {
+      return _orig.call(this, absUrl, callback, opts);
+    }
+
+    const cached = _imgCache.get(absUrl);
+
+    if (cached && cached.el && cached.el.complete && cached.el.naturalWidth > 0) {
+      const clone = new Image();
+      clone.crossOrigin = 'anonymous';
+      clone.src = cached.el.src;
+      const finish = () => callback(new fabric.Image(clone, opts));
+      if (clone.complete && clone.naturalWidth > 0) { finish(); return; }
+      clone.onload = finish;
+      clone.onerror = () => _orig.call(this, absUrl, callback, opts);
+      return;
+    }
+
+    if (cached && cached.pending) {
+      cached.pending.push({ ctx: this, callback, opts });
+      return;
+    }
+
+    _imgCache.set(absUrl, { el: null, pending: [{ ctx: this, callback, opts }] });
+
+    fetch(absUrl, { mode: 'cors', credentials: 'omit' })
+      .catch(() => {})
+      .finally(() => {
+        const el = new Image();
+        el.crossOrigin = 'anonymous';
+        el.onload = () => {
+          const entry = _imgCache.get(absUrl) || {};
+          const pending = entry.pending || [];
+          _imgCache.set(absUrl, { el, pending: null });
+          pending.forEach(({ ctx, callback: cb, opts: o }) => {
+            const clone = new Image();
+            clone.crossOrigin = 'anonymous';
+            clone.src = el.src;
+            const finish = () => cb(new fabric.Image(clone, o));
+            if (clone.complete && clone.naturalWidth > 0) finish();
+            else { clone.onload = finish; clone.onerror = () => _orig.call(ctx, absUrl, cb, o); }
+          });
+        };
+        el.onerror = () => {
+          const entry = _imgCache.get(absUrl) || {};
+          const pending = entry.pending || [];
+          _imgCache.delete(absUrl);
+          pending.forEach(({ ctx, callback: cb, opts: o }) => _orig.call(ctx, absUrl, cb, o));
+        };
+        el.src = absUrl;
+      });
+  };
+
+  window._fabricImgCache = _imgCache;
+  window._normalizeImgUrl = normalizeUrl;
+})();
 // ── Canvas ────────────────────────────────────────────────────────────────────
 // O canvas da view é sempre do tamanho da janela (configurado no OBS como 1920x1080).
 // O viewport transform mapeia a região do board definida pelo editor para preencher
@@ -86,16 +166,70 @@ socket.on('objects:transform', updates    => { updates.forEach(d => applyTransfo
 socket.on('object:remove',    ids         => { ids.forEach(id => { const o = findById(id); if (o) canvas.remove(o); }); canvas.renderAll(); });
 socket.on('objects:batch',    objs        => { objs.forEach(d => applyFull(d, false)); canvas.renderAll(); });
 
-socket.on('group:commit', ({ group, childIds, zorder }) => {
-  childIds.forEach(id => { const o = findById(id); if (o) canvas.remove(o); });
-  applyFull(group, false);
+socket.on('group:commit', ({ group: groupData, childIds, zorder }) => {
+  const children = childIds.map(id => findById(id)).filter(Boolean);
+
+  if (children.length === 0) {
+    applyFull(groupData, false);
+    if (zorder) zorder.forEach((id, idx) => { const o = findById(id); if (o) canvas.moveTo(o, idx); });
+    canvas.renderAll();
+    return;
+  }
+
+  children.forEach(o => canvas.remove(o));
+  canvas.discardActiveObject();
+  const sel = new fabric.ActiveSelection(children, { canvas });
+  canvas.setActiveObject(sel);
+  const grp = sel.toGroup();
+  grp.id      = groupData.id;
+  grp.layerId = groupData.layerId;
+  grp.selectable = false; grp.evented = false;
+  grp.set({
+    left:    groupData.left    ?? grp.left,
+    top:     groupData.top     ?? grp.top,
+    scaleX:  groupData.scaleX  ?? grp.scaleX,
+    scaleY:  groupData.scaleY  ?? grp.scaleY,
+    angle:   groupData.angle   ?? grp.angle,
+    opacity: groupData.opacity ?? grp.opacity,
+  });
+  grp.setCoords();
+  canvas.discardActiveObject();
   if (zorder) zorder.forEach((id, idx) => { const o = findById(id); if (o) canvas.moveTo(o, idx); });
   canvas.renderAll();
 });
 
-socket.on('ungroup:commit', ({ groupId, children, zorder }) => {
-  const g = findById(groupId); if (g) canvas.remove(g);
-  children.forEach(d => applyFull(d, false));
+socket.on('ungroup:commit', ({ groupId, children: childrenData, zorder }) => {
+  const grp = findById(groupId);
+
+  if (!grp || grp.type !== 'group') {
+    childrenData.forEach(d => applyFull(d, false));
+    if (zorder) zorder.forEach((id, idx) => { const o = findById(id); if (o) canvas.moveTo(o, idx); });
+    canvas.renderAll();
+    return;
+  }
+
+  canvas.discardActiveObject();
+  canvas.setActiveObject(grp);
+  const activeSel = grp.toActiveSelection();
+
+  if (activeSel && activeSel.getObjects) {
+    activeSel.getObjects().forEach(o => {
+      const data = childrenData.find(d => d.id === o.id);
+      if (data) {
+        o.set({ layerId: data.layerId || o.layerId });
+        if (o.originX !== 'left' || o.originY !== 'top') {
+          const pt = o.translateToOriginPoint(
+            new fabric.Point(o.left, o.top), o.originX, o.originY
+          );
+          o.set({ originX: 'left', originY: 'top', left: pt.x, top: pt.y });
+        }
+        o.selectable = false; o.evented = false;
+        o.setCoords();
+      }
+    });
+  }
+
+  canvas.discardActiveObject();
   if (zorder) zorder.forEach((id, idx) => { const o = findById(id); if (o) canvas.moveTo(o, idx); });
   canvas.renderAll();
 });
@@ -263,27 +397,10 @@ function deser(data, cb) {
   if (data.type === 'path') { const o = new fabric.Path(data.path, data); o.id = data.id; cb(o); return; }
   if (data.type === 'line') { const o = new fabric.Line([data.x1, data.y1, data.x2, data.y2], data); o.id = data.id; cb(o); return; }
   if (data.type === 'group') {
-    const children = Array.isArray(data.objects) ? data.objects : [];
-    if (children.length === 0) {
-      const grp = new fabric.Group([], data);
-      grp.id = data.id;
-      if (data.layerId) grp.layerId = data.layerId;
-      cb(grp);
-      return;
-    }
-    const builtChildren = new Array(children.length);
-    let done = 0;
-    children.forEach((childData, i) => {
-      deser(childData, childObj => {
-        builtChildren[i] = childObj;
-        if (++done < children.length) return;
-        const opts = Object.assign({}, data);
-        delete opts.objects;
-        const grp = new fabric.Group(builtChildren, opts, true);
-        grp.id = data.id;
-        if (data.layerId) grp.layerId = data.layerId;
-        cb(grp);
-      });
+    fabric.Group.fromObject(data, o => {
+      o.id = data.id;
+      if (data.layerId) o.layerId = data.layerId;
+      cb(o);
     });
     return;
   }

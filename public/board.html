@@ -391,6 +391,97 @@
 <script src="/socket.io/socket.io.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.1/fabric.min.js"></script>
 <script>
+// ── Monkey-patch fabric.Image.fromURL ─────────────────────────────────────────
+// Intercepta TODA carga de imagem do Fabric (inclusive filhos de grupos via
+// fabric.Group.fromObject → fabric.util.enlivenObjects → fabric.Image.fromObject).
+// Garante: (1) crossOrigin='anonymous' sempre, (2) src normalizado para origin atual,
+// (3) cache de HTMLImageElement — zero re-downloads ao mover/modificar objetos.
+(function patchFabricImageFromURL() {
+  // url → { el: HTMLImageElement, pending: [{ctx,callback,opts}] | null }
+  const _imgCache = new Map();
+
+  function normalizeUrl(url) {
+    const u = url || '';
+    if (!u || u.startsWith('blob:') || u.startsWith('data:')) return u;
+    if (!u.startsWith('http')) {
+      return window.location.origin + (u.startsWith('/') ? u : '/' + u);
+    }
+    try {
+      const parsed = new URL(u);
+      if (parsed.pathname.startsWith('/uploads/')) {
+        return window.location.origin + parsed.pathname;
+      }
+    } catch(_) {}
+    return u;
+  }
+
+  const _orig = fabric.Image.fromURL;
+  fabric.Image.fromURL = function(url, callback, imgOptions) {
+    const absUrl = normalizeUrl(url);
+    const opts = Object.assign({}, imgOptions || {});
+    opts.crossOrigin = 'anonymous';
+
+    // Imagens que não são uploads passam direto (blobs, data:, SVG inline, etc)
+    if (!absUrl || !absUrl.includes('/uploads/')) {
+      return _orig.call(this, absUrl, callback, opts);
+    }
+
+    const cached = _imgCache.get(absUrl);
+
+    // Cache hit: elemento já carregado — entrega imediatamente via clone
+    if (cached && cached.el && cached.el.complete && cached.el.naturalWidth > 0) {
+      const clone = new Image();
+      clone.crossOrigin = 'anonymous';
+      clone.src = cached.el.src;
+      const finish = () => callback(new fabric.Image(clone, opts));
+      if (clone.complete && clone.naturalWidth > 0) { finish(); return; }
+      clone.onload = finish;
+      clone.onerror = () => _orig.call(this, absUrl, callback, opts);
+      return;
+    }
+
+    // Carga já em andamento — enfileira callback
+    if (cached && cached.pending) {
+      cached.pending.push({ ctx: this, callback, opts });
+      return;
+    }
+
+    // Cache miss: inicia carga
+    _imgCache.set(absUrl, { el: null, pending: [{ ctx: this, callback, opts }] });
+
+    // fetch primeiro para garantir CORS headers no cache HTTP antes do <img>
+    fetch(absUrl, { mode: 'cors', credentials: 'omit' })
+      .catch(() => {})
+      .finally(() => {
+        const el = new Image();
+        el.crossOrigin = 'anonymous';
+        el.onload = () => {
+          const entry = _imgCache.get(absUrl) || {};
+          const pending = entry.pending || [];
+          _imgCache.set(absUrl, { el, pending: null });
+          pending.forEach(({ ctx, callback: cb, opts: o }) => {
+            const clone = new Image();
+            clone.crossOrigin = 'anonymous';
+            clone.src = el.src;
+            const finish = () => cb(new fabric.Image(clone, o));
+            if (clone.complete && clone.naturalWidth > 0) finish();
+            else { clone.onload = finish; clone.onerror = () => _orig.call(ctx, absUrl, cb, o); }
+          });
+        };
+        el.onerror = () => {
+          const entry = _imgCache.get(absUrl) || {};
+          const pending = entry.pending || [];
+          _imgCache.delete(absUrl);
+          pending.forEach(({ ctx, callback: cb, opts: o }) => _orig.call(ctx, absUrl, cb, o));
+        };
+        el.src = absUrl;
+      });
+  };
+
+  // Expõe para pré-aquecimento no board:init
+  window._fabricImgCache = _imgCache;
+  window._normalizeImgUrl = normalizeUrl;
+})();
 // ═══════════════════════════════════════════════════════════════════════════════
 // CANVAS
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1577,24 +1668,92 @@ socket.on('object:remove', ids => {
 socket.on('objects:batch', objs => { objs.forEach(d => applyFull(d, false)); canvas.renderAll(); });
 
 // Operações atômicas de grupo — aplicadas por outros clientes
-socket.on('group:commit', ({ group, childIds, zorder }) => {
-  // Remove os filhos que foram agrupados
-  childIds.forEach(id => { const o = findById(id); if (o) canvas.remove(o); });
-  // Adiciona o grupo
-  applyFull(group, false);
-  // Aplica z-order
+socket.on('group:commit', ({ group: groupData, childIds, zorder }) => {
+  // Pega os objetos Fabric existentes no canvas pelos ids dos filhos.
+  // Eles já têm seus elementos DOM carregados — não precisamos recriar nada.
+  const children = childIds.map(id => findById(id)).filter(Boolean);
+
+  if (children.length === 0) {
+    // Nenhum filho encontrado no canvas (ex: cliente entrou depois do grupo)
+    // Cai no caminho lento de recriação via applyFull
+    applyFull(groupData, false);
+    if (zorder) zorder.forEach((id, idx) => { const o = findById(id); if (o) canvas.moveTo(o, idx); });
+    canvas.renderAll();
+    scheduleLayersUpdate();
+    return;
+  }
+
+  // Remove os filhos do canvas sem destruí-los
+  children.forEach(o => canvas.remove(o));
+
+  // Cria o grupo com os objetos existentes — equivalente ao sel.toGroup() do emitter.
+  // canvas.discardActiveObject() garante que nenhuma ActiveSelection interfira.
+  canvas.discardActiveObject();
+  const sel = new fabric.ActiveSelection(children, { canvas });
+  canvas.setActiveObject(sel);
+  const grp = sel.toGroup();
+
+  // Aplica os metadados do grupo vindos do emitter (posição, escala, id, layerId)
+  grp.id      = groupData.id;
+  grp.layerId = groupData.layerId || activeLayerId;
+  grp.set({
+    left:    groupData.left    ?? grp.left,
+    top:     groupData.top     ?? grp.top,
+    scaleX:  groupData.scaleX  ?? grp.scaleX,
+    scaleY:  groupData.scaleY  ?? grp.scaleY,
+    angle:   groupData.angle   ?? grp.angle,
+    opacity: groupData.opacity ?? grp.opacity,
+  });
+  grp.setCoords();
+
+  canvas.discardActiveObject();
+  if (vpRect) canvas.bringToFront(vpRect);
   if (zorder) zorder.forEach((id, idx) => { const o = findById(id); if (o) canvas.moveTo(o, idx); });
   canvas.renderAll();
+  scheduleLayersUpdate();
 });
 
-socket.on('ungroup:commit', ({ groupId, children, zorder }) => {
-  // Remove o grupo
-  const g = findById(groupId); if (g) canvas.remove(g);
-  // Adiciona os filhos
-  children.forEach(d => applyFull(d, false));
-  // Aplica z-order
+socket.on('ungroup:commit', ({ groupId, children: childrenData, zorder }) => {
+  const grp = findById(groupId);
+
+  if (!grp || grp.type !== 'group') {
+    childrenData.forEach(d => applyFull(d, false));
+    if (zorder) zorder.forEach((id, idx) => { const o = findById(id); if (o) canvas.moveTo(o, idx); });
+    canvas.renderAll();
+    scheduleLayersUpdate();
+    return;
+  }
+
+  canvas.discardActiveObject();
+  canvas.setActiveObject(grp);
+  // toActiveSelection() já faz o mesmo cálculo de matriz que ungroupSelected() faz
+  // para converter coordenadas relativas ao grupo → absolutas do canvas.
+  // NÃO re-aplicamos left/top do emitter em cima disso — causaria double-offset.
+  const activeSel = grp.toActiveSelection();
+
+  if (activeSel && activeSel.getObjects) {
+    activeSel.getObjects().forEach(o => {
+      const data = childrenData.find(d => d.id === o.id);
+      if (data) {
+        // Só metadados que toActiveSelection() não define
+        o.set({ layerId: data.layerId || o.layerId });
+        // Normaliza origin para 'left'/'top' (consistência com o estado do emitter)
+        if (o.originX !== 'left' || o.originY !== 'top') {
+          const pt = o.translateToOriginPoint(
+            new fabric.Point(o.left, o.top), o.originX, o.originY
+          );
+          o.set({ originX: 'left', originY: 'top', left: pt.x, top: pt.y });
+        }
+        o.setCoords();
+      }
+    });
+  }
+
+  canvas.discardActiveObject();
+  if (vpRect) canvas.bringToFront(vpRect);
   if (zorder) zorder.forEach((id, idx) => { const o = findById(id); if (o) canvas.moveTo(o, idx); });
   canvas.renderAll();
+  scheduleLayersUpdate();
 });
 socket.on('board:clear', () => {
   canvas.clear(); canvas.backgroundColor = '#1e1e2a'; canvas.renderAll();
@@ -2503,33 +2662,13 @@ function deser(data, cb) {
     o.id = data.id; cb(o); return;
   }
   if (data.type === 'group') {
-    const children = Array.isArray(data.objects) ? data.objects : [];
-    if (children.length === 0) {
-      // Grupo vazio — usa o caminho padrão do Fabric
-      const grp = new fabric.Group([], data);
-      grp.id = data.id;
-      if (data.layerId) grp.layerId = data.layerId;
-      cb(grp);
-      return;
-    }
-    const hasAsyncChild = children.some(c => c.type === 'image');
-    const builtChildren = new Array(children.length);
-    let done = 0;
-    children.forEach((childData, i) => {
-      deser(childData, childObj => {
-        builtChildren[i] = childObj;
-        if (++done < children.length) return;
-        // Reconstrói o grupo com os filhos já deserializados.
-        // O 3º argumento 'true' (isAlreadyGrouped) instrui o Fabric a NÃO
-        // recalcular bounds nem re-centrar — os filhos já têm coordenadas
-        // relativas ao centro do grupo, exatamente como foram serializados.
-        const opts = Object.assign({}, data);
-        delete opts.objects; // evita que o Fabric tente reprocessar os filhos
-        const grp = new fabric.Group(builtChildren, opts, true);
-        grp.id = data.id;
-        if (data.layerId) grp.layerId = data.layerId;
-        cb(grp);
-      });
+    // Usa o fabric.Group.fromObject nativo — ele chama fabric.Image.fromURL
+    // internamente para cada filho, que agora é interceptado pelo nosso patch:
+    // src é normalizado para o host atual e crossOrigin='anonymous' é garantido.
+    fabric.Group.fromObject(data, o => {
+      o.id = data.id;
+      if (data.layerId) o.layerId = data.layerId;
+      cb(o);
     });
     return;
   }
