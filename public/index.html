@@ -7,7 +7,7 @@
   <style>
     * { margin:0; padding:0; box-sizing:border-box; }
     body { min-height:100vh; background:#0f0f13; display:flex; align-items:center; justify-content:center; font-family:'Segoe UI',system-ui,sans-serif; color:#e8e8f0; }
-    .card { background:#1a1a24; border:1px solid #2d2d40; border-radius:16px; padding:48px 40px; width:380px; box-shadow:0 24px 48px rgba(0,0,0,.5); }
+    .card { background:#1a1a24; border:1px solid #2d2d40; border-radius:16px; padding:48px 40px; width:380px; box-shadow:0 24px 48px rgba(0,0,0,.5); position:relative; }
 
     .logo { display:flex; align-items:center; gap:10px; margin-bottom:8px; justify-content:center; }
     .logo span { font-size:24px; font-weight:700; background:linear-gradient(135deg,#7c5cff,#c95cff); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
@@ -68,6 +68,102 @@
     .obs-link a { color:#7c5cff; text-decoration:none; }
     .obs-link a:hover { text-decoration:underline; }
     .obs-url { font-family:monospace; font-size:11px; }
+
+    .btn-back {
+      width:100%; margin-top:8px;
+      background:transparent; border:1px solid #2d2d40; border-radius:10px; padding:11px;
+      font-size:14px; font-weight:500; color:#6b6b80; cursor:pointer; transition:all .15s;
+    }
+    .btn-back:hover { border-color:#7c5cff; color:#7c5cff; }
+
+    /* Tutorial button — fixed bottom right of card */
+    .tutorial-btn {
+      position:absolute; bottom:-20px; right:0;
+      display:flex; align-items:center; gap:6px;
+      background:rgba(124,92,255,.12); border:1px solid rgba(124,92,255,.3); border-radius:20px;
+      padding:7px 14px; font-size:12px; font-weight:600; color:#7c5cff;
+      cursor:pointer; transition:all .2s; white-space:nowrap;
+    }
+    .tutorial-btn:hover { background:rgba(124,92,255,.22); border-color:#7c5cff; }
+    .tutorial-btn svg { flex-shrink:0; }
+
+    /* ── Tutorial overlay ── */
+    #tutorial-overlay {
+      display:none; position:fixed; inset:0; z-index:9999;
+      background:rgba(0,0,0,.85); backdrop-filter:blur(6px);
+      align-items:center; justify-content:center;
+    }
+    #tutorial-overlay.show { display:flex; }
+
+    .tut-card {
+      background:#1a1a24; border:1px solid #2d2d40; border-radius:20px;
+      width:min(520px, 95vw); max-height:90vh; overflow:hidden;
+      display:flex; flex-direction:column;
+      box-shadow:0 32px 64px rgba(0,0,0,.7);
+      animation:tut-in .3s cubic-bezier(.34,1.56,.64,1);
+    }
+    @keyframes tut-in { from { opacity:0; transform:scale(.92) translateY(12px); } to { opacity:1; transform:none; } }
+
+    .tut-header {
+      padding:24px 28px 20px; border-bottom:1px solid #2d2d40;
+      display:flex; align-items:center; justify-content:space-between;
+    }
+    .tut-title { font-size:18px; font-weight:700; color:#e8e8f0; }
+    .tut-close {
+      width:32px; height:32px; border-radius:8px; border:1px solid #2d2d40;
+      background:transparent; color:#6b6b80; cursor:pointer; font-size:16px;
+      display:flex; align-items:center; justify-content:center; transition:all .15s;
+    }
+    .tut-close:hover { border-color:#ff6060; color:#ff6060; }
+
+    .tut-progress {
+      padding:12px 28px 0; display:flex; gap:6px;
+    }
+    .tut-dot {
+      flex:1; height:3px; border-radius:2px; background:#2d2d40; transition:background .3s;
+    }
+    .tut-dot.active { background:#7c5cff; }
+    .tut-dot.done   { background:#4ade80; }
+
+    .tut-slides { overflow:hidden; position:relative; }
+    .tut-slide {
+      padding:24px 28px 28px; display:none;
+      animation:slide-in .25s ease;
+    }
+    .tut-slide.active { display:block; }
+    @keyframes slide-in { from { opacity:0; transform:translateX(18px); } to { opacity:1; transform:none; } }
+
+    .tut-icon {
+      width:52px; height:52px; border-radius:14px;
+      background:linear-gradient(135deg,rgba(124,92,255,.2),rgba(201,92,255,.2));
+      border:1px solid rgba(124,92,255,.3);
+      display:flex; align-items:center; justify-content:center;
+      font-size:26px; margin-bottom:16px;
+    }
+    .tut-slide h3 { font-size:16px; font-weight:700; color:#e8e8f0; margin-bottom:8px; }
+    .tut-slide p  { font-size:13px; color:#9090aa; line-height:1.6; margin-bottom:0; }
+    .tut-slide p strong { color:#c8c8e0; }
+    .tut-slide .tut-keys { display:flex; flex-wrap:wrap; gap:6px; margin-top:12px; }
+    .tut-key {
+      background:#0f0f13; border:1px solid #3d3d50; border-radius:6px;
+      padding:3px 9px; font-size:11px; font-family:monospace; color:#9090aa;
+    }
+    .tut-key span { color:#7c5cff; }
+
+    .tut-footer {
+      padding:16px 28px 20px; border-top:1px solid #2d2d40;
+      display:flex; align-items:center; justify-content:space-between;
+    }
+    .tut-counter { font-size:12px; color:#555568; }
+    .tut-nav { display:flex; gap:8px; }
+    .tut-btn {
+      padding:9px 20px; border-radius:8px; font-size:13px; font-weight:600;
+      cursor:pointer; transition:all .15s; border:none;
+    }
+    .tut-btn.secondary { background:#22222e; color:#9090aa; border:1px solid #2d2d40; }
+    .tut-btn.secondary:hover { color:#e8e8f0; border-color:#555568; }
+    .tut-btn.primary   { background:linear-gradient(135deg,#7c5cff,#c95cff); color:white; }
+    .tut-btn.primary:hover { opacity:.9; }
   </style>
 </head>
 <body>
@@ -116,6 +212,7 @@
       <p class="hint slug" id="slug-hint"></p>
     </div>
     <button class="btn" id="btn2" onclick="chooseRoom()">Continuar</button>
+    <button class="btn-back" onclick="goStep(1)">← Voltar</button>
     <p class="error-msg" id="err2"></p>
   </div>
 
@@ -135,6 +232,7 @@
       <p class="hint">Visível para todos no board</p>
     </div>
     <button class="btn" id="btn3" onclick="enterBoard()">Entrar no Board</button>
+    <button class="btn-back" onclick="goBackToStep2()">← Trocar de sala</button>
     <p class="error-msg" id="err3"></p>
   </div>
 
@@ -145,6 +243,35 @@
       <span class="obs-url" id="obs-url-display">/view</span>
     </a>
   </p>
+</div>
+
+<!-- Tutorial trigger button on card -->
+<script>document.querySelector('.card').insertAdjacentHTML('beforeend', `
+  <button class="tutorial-btn" onclick="openTutorial()">
+    <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+      <circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/>
+    </svg>
+    Como usar
+  </button>
+`);</script>
+
+<!-- Tutorial overlay -->
+<div id="tutorial-overlay">
+  <div class="tut-card">
+    <div class="tut-header">
+      <div class="tut-title">✦ Tutorial LiveBoard</div>
+      <button class="tut-close" onclick="closeTutorial()">✕</button>
+    </div>
+    <div class="tut-progress" id="tut-progress"></div>
+    <div class="tut-slides" id="tut-slides"></div>
+    <div class="tut-footer">
+      <span class="tut-counter" id="tut-counter"></span>
+      <div class="tut-nav">
+        <button class="tut-btn secondary" id="tut-prev" onclick="tutNav(-1)">← Anterior</button>
+        <button class="tut-btn primary"   id="tut-next" onclick="tutNav(1)">Próximo →</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -290,6 +417,135 @@
   document.getElementById('uname').addEventListener('input', e => {
     document.getElementById('err3').textContent = '';
     e.currentTarget.classList.toggle('valid', e.currentTarget.value.trim().length > 0);
+  });
+
+  // ── Voltar do passo 3 para o passo 2 ─────────────────────────────────────
+  function goBackToStep2() {
+    // Limpa a sala escolhida para forçar nova seleção
+    chosenRoomId = ''; chosenRoomName = '';
+    document.getElementById('err3').textContent = '';
+    goStep(2);
+  }
+
+  // ── Tutorial ──────────────────────────────────────────────────────────────
+  const TUT_SLIDES = [
+    {
+      icon: '🎨',
+      title: 'Bem-vindo ao LiveBoard',
+      body: `O LiveBoard é um <strong>quadro colaborativo ao vivo</strong> para streams. Tudo que você desenhar aparece em tempo real para todos os editores e também para o OBS — sem delay, sem complicação.`,
+    },
+    {
+      icon: '🔐',
+      title: 'Passo 1 — Senha',
+      body: `Digite a <strong>senha do quadro</strong> para ter acesso. Quem tiver a senha pode editar. Quem for só <em>assistir</em> acessa direto pela URL da view, sem precisar de senha.`,
+    },
+    {
+      icon: '📋',
+      title: 'Passo 2 — Escolha a Sala',
+      body: `Cada sala é um quadro independente com seus próprios objetos, camadas e histórico. Digite qualquer nome — a URL da sala é gerada automaticamente e mostrada abaixo do campo. <strong>Você pode ter várias salas rodando ao mesmo tempo.</strong>`,
+    },
+    {
+      icon: '👤',
+      title: 'Passo 3 — Seu Nome',
+      body: `Escolha como você vai aparecer para os outros editores. Seu cursor e suas ações ficam identificados por esse nome. Você pode trocar de sala clicando em <strong>"Trocar de sala"</strong> sem precisar redigitar a senha.`,
+    },
+    {
+      icon: '📺',
+      title: 'Configurar o OBS',
+      body: `No OBS, adicione uma source do tipo <strong>Browser</strong> apontando para a URL da view:<br><br><code style="background:#0f0f13;padding:3px 8px;border-radius:6px;font-size:12px;color:#7c5cff">/view/nome-da-sala</code><br><br>Defina largura e altura iguais à resolução do stream (ex: 1920×1080). O fundo é <strong>transparente</strong> — funciona direto como overlay.`,
+    },
+    {
+      icon: '🖌️',
+      title: 'Ferramentas de Desenho',
+      body: `No editor você tem: caneta, borracha, retângulo, elipse, linha, seta e texto. Cada ferramenta tem um atalho de teclado:`,
+      keys: ['V Selecionar', 'P Caneta', 'E Borracha', 'R Retângulo', 'C Elipse', 'L Linha', 'A Seta', 'T Texto'],
+    },
+    {
+      icon: '🖼️',
+      title: 'Imagens e GIFs',
+      body: `Clique no ícone de imagem na toolbar para fazer upload, ou simplesmente <strong>Ctrl+V</strong> para colar da área de transferência. GIFs são animados no canvas — decodificados em background para não travar a live.`,
+    },
+    {
+      icon: '📁',
+      title: 'Camadas e Grupos',
+      body: `Use o <strong>painel de Camadas</strong> (direita) para organizar os objetos. Você pode reordenar por drag, ocultar e criar quantas camadas quiser. Selecione múltiplos objetos e use o painel para <strong>Agrupar</strong> — mas GIFs não entram em grupos.`,
+    },
+    {
+      icon: '📤',
+      title: 'Copiar, Colar e Exportar',
+      body: `<strong>Ctrl+C / Ctrl+V</strong> copia e cola qualquer seleção (inclusive para outros editores). O botão <strong>Exportar PNG</strong> gera uma imagem transparente da seleção atual, ou do board inteiro se nada estiver selecionado.`,
+    },
+    {
+      icon: '⏱️',
+      title: 'Histórico e Atalhos Gerais',
+      body: `Tudo tem undo/redo sincronizado para todos:`,
+      keys: ['Ctrl+Z Desfazer', 'Ctrl+Y Refazer', 'Ctrl+D Duplicar', 'Ctrl+A Selecionar tudo', 'F Centralizar', '0 Zoom 100%', 'Del Excluir'],
+    },
+  ];
+
+  let tutIdx = 0;
+
+  function openTutorial() {
+    tutIdx = 0;
+    renderTutorial();
+    document.getElementById('tutorial-overlay').classList.add('show');
+  }
+  function closeTutorial() {
+    document.getElementById('tutorial-overlay').classList.remove('show');
+  }
+  function tutNav(dir) {
+    tutIdx = Math.max(0, Math.min(TUT_SLIDES.length - 1, tutIdx + dir));
+    renderTutorial();
+  }
+  function renderTutorial() {
+    const slide = TUT_SLIDES[tutIdx];
+    const total = TUT_SLIDES.length;
+
+    // Progress dots
+    const prog = document.getElementById('tut-progress');
+    prog.innerHTML = TUT_SLIDES.map((_, i) =>
+      `<div class="tut-dot ${i < tutIdx ? 'done' : i === tutIdx ? 'active' : ''}"></div>`
+    ).join('');
+
+    // Slide content
+    const keysHtml = slide.keys
+      ? `<div class="tut-keys">${slide.keys.map(k => {
+          const [key, ...rest] = k.split(' ');
+          return `<div class="tut-key"><span>${key}</span> ${rest.join(' ')}</div>`;
+        }).join('')}</div>`
+      : '';
+
+    document.getElementById('tut-slides').innerHTML = `
+      <div class="tut-slide active">
+        <div class="tut-icon">${slide.icon}</div>
+        <h3>${slide.title}</h3>
+        <p>${slide.body}</p>
+        ${keysHtml}
+      </div>`;
+
+    // Counter & buttons
+    document.getElementById('tut-counter').textContent = `${tutIdx + 1} de ${total}`;
+    document.getElementById('tut-prev').style.display = tutIdx === 0 ? 'none' : '';
+    const nextBtn = document.getElementById('tut-next');
+    if (tutIdx === total - 1) {
+      nextBtn.textContent = 'Fechar ✓';
+      nextBtn.onclick = closeTutorial;
+    } else {
+      nextBtn.textContent = 'Próximo →';
+      nextBtn.onclick = () => tutNav(1);
+    }
+  }
+
+  // Fecha com Escape ou clicando fora
+  document.getElementById('tutorial-overlay').addEventListener('click', e => {
+    if (e.target === e.currentTarget) closeTutorial();
+  });
+  document.addEventListener('keydown', e => {
+    const ov = document.getElementById('tutorial-overlay');
+    if (!ov.classList.contains('show')) return;
+    if (e.key === 'Escape') closeTutorial();
+    if (e.key === 'ArrowRight') tutNav(1);
+    if (e.key === 'ArrowLeft')  tutNav(-1);
   });
 </script>
 </body>

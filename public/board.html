@@ -50,6 +50,33 @@
     .sdot.blink { background:#fbbf24; animation:pulse 1s infinite; }
     @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
 
+    /* ── Painel superior direito (View + Tutorial) ── */
+    #top-right-panel {
+      position:fixed; top:62px; right:10px; z-index:1000;
+      display:flex; align-items:center; gap:6px;
+    }
+    /* Desktop: fica ao lado da toolbar no topo */
+    @media (min-width: 640px) {
+      #top-right-panel { top:14px; right:14px; }
+    }
+    .trp-btn {
+      display:flex; align-items:center; gap:6px;
+      background:var(--surface); border:1px solid var(--border); border-radius:10px;
+      padding:6px 10px; font-size:12px; color:var(--muted);
+      cursor:pointer; transition:all .18s; white-space:nowrap; font-family:inherit;
+    }
+    .trp-btn:hover { border-color:#555568; color:var(--text); }
+    .trp-btn.view { color:#4ade80; border-color:rgba(74,222,128,.25); }
+    .trp-btn.view:hover { background:rgba(74,222,128,.08); border-color:#4ade80; }
+    .trp-btn.help { color:#7c5cff; border-color:rgba(124,92,255,.25); }
+    .trp-btn.help:hover { background:rgba(124,92,255,.08); border-color:#7c5cff; }
+    .trp-dot { width:6px; height:6px; border-radius:50%; background:#4ade80; flex-shrink:0; }
+    /* Mobile: esconde o texto, mostra só ícone + dot */
+    @media (max-width: 639px) {
+      .trp-btn .trp-label { display:none; }
+      .trp-btn { padding:6px 8px; }
+    }
+
     /* ── Zoom info ── */
     #zoom-info { position:fixed; bottom:14px; left:50%; transform:translateX(-50%); z-index:1000; background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:4px 10px; font-size:11px; color:var(--muted); pointer-events:none; }
 
@@ -386,6 +413,26 @@
 <div id="toast"><div class="spinner"></div><span id="toast-msg">Enviando imagem...</span></div>
 <div id="users"><div class="udot" id="mydot" style="background:#7c5cff"></div><span id="myname" style="font-weight:600;color:var(--text)"></span><span id="ucnt" style="color:var(--muted)"></span><span id="roomlabel" style="color:#555568;font-size:10px;margin-left:6px;padding:2px 7px;background:rgba(124,92,255,.12);border-radius:5px;border:1px solid rgba(124,92,255,.2)"></span></div>
 <div id="status"><div class="sdot blink" id="sdot"></div><span id="stxt">Conectando...</span></div>
+
+<!-- Painel superior direito -->
+<div id="top-right-panel">
+  <button class="trp-btn view" id="trp-view" title="Abrir view do OBS para esta sala">
+    <div class="trp-dot"></div>
+    <span class="trp-label" id="view-btn-label">Ver ao vivo</span>
+    <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+      <path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6" stroke-linecap="round"/>
+      <polyline points="15 3 21 3 21 9" stroke-linecap="round" stroke-linejoin="round"/>
+      <line x1="10" y1="14" x2="21" y2="3" stroke-linecap="round"/>
+    </svg>
+  </button>
+  <button class="trp-btn help" id="trp-help" title="Como usar o LiveBoard">
+    <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+      <circle cx="12" cy="12" r="10"/>
+      <path d="M12 16v-4M12 8h.01" stroke-linecap="round"/>
+    </svg>
+    <span class="trp-label">Como usar</span>
+  </button>
+</div>
 <div id="zoom-info">100%</div>
 
 <canvas id="board"></canvas>
@@ -3009,6 +3056,143 @@ async function pasteSel() {
 
 // Init
 setTool('select');
+</script>
+
+<!-- Board Tutorial overlay -->
+<div id="board-tutorial-overlay" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.88);backdrop-filter:blur(6px);align-items:center;justify-content:center;">
+  <div style="background:#1a1a24;border:1px solid #2d2d40;border-radius:20px;width:min(540px,95vw);max-height:90vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 32px 64px rgba(0,0,0,.8);animation:btut-in .3s cubic-bezier(.34,1.56,.64,1)">
+    <style>
+      @keyframes btut-in{from{opacity:0;transform:scale(.92) translateY(12px)}to{opacity:1;transform:none}}
+      @keyframes btut-slide{from{opacity:0;transform:translateX(16px)}to{opacity:1;transform:none}}
+      .btut-anim{animation:btut-slide .22s ease}
+      #btut-progress{padding:10px 26px 0;display:flex;gap:5px}
+      .btut-dot{flex:1;height:3px;border-radius:2px;background:#2d2d40;transition:background .3s}
+      .btut-dot.done{background:#4ade80}.btut-dot.active{background:#7c5cff}
+      #btut-body{padding:22px 26px 26px}
+      .btut-icon{width:48px;height:48px;border-radius:13px;background:linear-gradient(135deg,rgba(124,92,255,.18),rgba(201,92,255,.18));border:1px solid rgba(124,92,255,.28);display:flex;align-items:center;justify-content:center;font-size:24px;margin-bottom:14px}
+      .btut-h{font-size:15px;font-weight:700;color:#e8e8f0;margin:0 0 8px}
+      .btut-p{font-size:13px;color:#9090aa;line-height:1.65;margin:0}
+      .btut-p strong{color:#c8c8e0}
+      .btut-keys{display:flex;flex-wrap:wrap;gap:5px;margin-top:10px}
+      .btut-key{background:#0f0f13;border:1px solid #3d3d50;border-radius:6px;padding:3px 9px;font-size:11px;font-family:monospace;color:#9090aa}
+      .btut-key b{color:#7c5cff;font-weight:700}
+      .btut-footer{padding:14px 26px 18px;border-top:1px solid #2d2d40;display:flex;align-items:center;justify-content:space-between}
+      .btut-counter{font-size:12px;color:#555568}
+      .btut-nav{display:flex;gap:8px}
+      .btut-btn{padding:8px 18px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;transition:all .15s;border:none;font-family:inherit}
+      .btut-btn.sec{background:#22222e;color:#9090aa;border:1px solid #2d2d40}
+      .btut-btn.sec:hover{color:#e8e8f0;border-color:#555568}
+      .btut-btn.pri{background:linear-gradient(135deg,#7c5cff,#c95cff);color:white}
+      .btut-btn.pri:hover{opacity:.9}
+    </style>
+    <div style="padding:22px 26px 18px;border-bottom:1px solid #2d2d40;display:flex;align-items:center;justify-content:space-between">
+      <span style="font-size:17px;font-weight:700;color:#e8e8f0">✦ Como usar o LiveBoard</span>
+      <button onclick="closeBoardTutorial()" style="width:30px;height:30px;border-radius:8px;border:1px solid #2d2d40;background:transparent;color:#6b6b80;cursor:pointer;font-size:15px;display:flex;align-items:center;justify-content:center;transition:all .15s" onmouseover="this.style.borderColor='#ff6060';this.style.color='#ff6060'" onmouseout="this.style.borderColor='#2d2d40';this.style.color='#6b6b80'">✕</button>
+    </div>
+    <div id="btut-progress"></div>
+    <div id="btut-body"></div>
+    <div class="btut-footer">
+      <span class="btut-counter" id="btut-counter"></span>
+      <div class="btut-nav">
+        <button class="btut-btn sec" id="btut-prev" onclick="btutNav(-1)">← Anterior</button>
+        <button class="btut-btn pri" id="btut-next">Próximo →</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── Ver ao vivo ───────────────────────────────────────────────────────────────
+function openViewUrl() {
+  window.open(window.location.origin + '/view/' + (myRoomId || 'default'), '_blank');
+}
+
+// Liga os botões do painel superior direito
+(function bindPanelButtons() {
+  var vBtn = document.getElementById('trp-view');
+  var hBtn = document.getElementById('trp-help');
+  if (vBtn) vBtn.addEventListener('click', openViewUrl);
+  if (hBtn) hBtn.addEventListener('click', openBoardTutorial);
+
+  // Atualiza label com nome da sala
+  var name = myRoomName || myRoomId || '';
+  var lbl  = document.getElementById('view-btn-label');
+  if (lbl && name) lbl.textContent = name.length > 18 ? name.slice(0, 16) + '…' : name;
+})();
+
+// ── Tutorial do board ─────────────────────────────────────────────────────────
+const BTUT = [
+  { icon:'🖌️', title:'Ferramentas de desenho',
+    body:'A toolbar no topo tem todas as ferramentas. Cada uma tem um <strong>atalho de teclado</strong> para trabalhar rápido durante a live.',
+    keys:['V Selecionar','H Pan','P Caneta','E Borracha','R Retângulo','C Elipse','L Linha','A Seta','T Texto'] },
+  { icon:'🎨', title:'Cor, espessura e opacidade',
+    body:'Ao selecionar uma ferramenta de desenho, aparece um painel abaixo da toolbar com <strong>paleta de cores</strong>, <strong>espessura</strong> (1–60px), <strong>opacidade</strong> e <strong>preenchimento</strong> para formas.' },
+  { icon:'🖼️', title:'Imagens e GIFs animados',
+    body:'Clique no ícone de imagem para fazer upload ou <strong>Ctrl+V</strong> para colar da área de transferência. GIFs são <strong>totalmente animados</strong> no canvas e na view do OBS. Suporte a JPG, PNG, GIF, WebP e SVG.' },
+  { icon:'📋', title:'Copiar, colar e duplicar',
+    body:'Selecione qualquer objeto (ou vários) e use:',
+    keys:['Ctrl+C Copiar','Ctrl+V Colar','Ctrl+D Duplicar','Ctrl+A Selecionar tudo','Del Excluir'] },
+  { icon:'📁', title:'Camadas',
+    body:'O <strong>painel de Camadas</strong> fica na direita. Crie quantas camadas quiser, reordene por drag-and-drop e oculte camadas inteiras. Novos objetos vão sempre para a <strong>camada ativa</strong>.' },
+  { icon:'🔗', title:'Agrupar e desagrupar',
+    body:'Selecione 2+ objetos e use o botão <strong>Grupo</strong> no painel de camadas. Grupos se movem e escalam juntos. <em>GIFs animados não podem ser agrupados</em> — o botão fica desabilitado automaticamente.' },
+  { icon:'📤', title:'Exportar PNG',
+    body:'O botão <strong>Exportar PNG</strong> gera uma imagem com fundo transparente:<br><br>• <strong>Nada selecionado</strong> → board inteiro no tamanho do viewport<br>• <strong>1 objeto</strong> → aquele objeto<br>• <strong>2+ objetos ou grupo</strong> → bounding box da seleção' },
+  { icon:'⏱️', title:'Histórico e sincronização',
+    body:'Tudo é sincronizado em tempo real para todos. O <strong>Ctrl+Z / Ctrl+Y</strong> desfaz e refaz para todos ao mesmo tempo.',
+    keys:['Ctrl+Z Desfazer','Ctrl+Y Refazer','F Centralizar viewport','0 Zoom 100%'] },
+  { icon:'📺', title:'Ver ao vivo (OBS)',
+    body:'Clique em <strong>"Ver ao vivo"</strong> no canto superior direito para abrir a URL desta sala em nova aba. Configure no OBS como source <strong>Browser</strong> com o tamanho do stream — fundo transparente, pronto para overlay.' },
+];
+
+let btutIdx = 0;
+
+function openBoardTutorial() {
+  btutIdx = 0; renderBtut();
+  document.getElementById('board-tutorial-overlay').style.display = 'flex';
+}
+function closeBoardTutorial() {
+  document.getElementById('board-tutorial-overlay').style.display = 'none';
+}
+function btutNav(dir) {
+  btutIdx = Math.max(0, Math.min(BTUT.length - 1, btutIdx + dir));
+  renderBtut();
+}
+function renderBtut() {
+  const s = BTUT[btutIdx], total = BTUT.length;
+  document.getElementById('btut-progress').innerHTML =
+    BTUT.map((_, i) => `<div class="btut-dot ${i < btutIdx ? 'done' : i === btutIdx ? 'active' : ''}"></div>`).join('');
+  const keysHtml = s.keys
+    ? `<div class="btut-keys">${s.keys.map(k => {
+        const [key, ...rest] = k.split(' ');
+        return `<div class="btut-key"><b>${key}</b> ${rest.join(' ')}</div>`;
+      }).join('')}</div>` : '';
+  document.getElementById('btut-body').innerHTML = `
+    <div class="btut-anim">
+      <div class="btut-icon">${s.icon}</div>
+      <p class="btut-h">${s.title}</p>
+      <p class="btut-p">${s.body}</p>
+      ${keysHtml}
+    </div>`;
+  document.getElementById('btut-counter').textContent = `${btutIdx + 1} de ${total}`;
+  document.getElementById('btut-prev').style.display = btutIdx === 0 ? 'none' : '';
+  const next = document.getElementById('btut-next');
+  if (btutIdx === total - 1) {
+    next.textContent = 'Fechar ✓'; next.onclick = closeBoardTutorial;
+  } else {
+    next.textContent = 'Próximo →'; next.onclick = () => btutNav(1);
+  }
+}
+
+document.getElementById('board-tutorial-overlay').addEventListener('click', e => {
+  if (e.target === e.currentTarget) closeBoardTutorial();
+});
+document.addEventListener('keydown', e => {
+  if (document.getElementById('board-tutorial-overlay').style.display === 'none') return;
+  if (e.key === 'Escape')      closeBoardTutorial();
+  if (e.key === 'ArrowRight')  btutNav(1);
+  if (e.key === 'ArrowLeft')   btutNav(-1);
+});
 </script>
 </body>
 </html>
