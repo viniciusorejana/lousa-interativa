@@ -784,9 +784,15 @@ function createViewportRect() {
     strokeWidth: 2,
     strokeDashArray: [12, 6],
     selectable: false,
-    evented: false,        // nunca intercepta cliques/toques
+    evented: false,
     hasControls: false,
     hasBorders: false,
+    lockMovementX: true,
+    lockMovementY: true,
+    lockScalingX: true,
+    lockScalingY: true,
+    lockRotation: true,
+    excludeFromExport: true,
     _isViewportRect: true,
   });
   canvas.add(vpRect);
@@ -2073,11 +2079,18 @@ function applyFull(data, render = true) {
     if (data._layerHidden) { o.set({ opacity: 0, visible: false }); }
 
     canvas.add(o);
+
+    // Aplica z-order: usa zIndex do objeto se disponível, depois reforça a ordem de camadas.
+    // Isso garante que um objeto adicionado numa camada inferior fique abaixo de objetos
+    // em camadas superiores, independente da ordem de chegada.
     if (data.zIndex !== undefined) {
       const contentObjs = canvas.getObjects().filter(x => !x._isViewportRect);
       const tgt = Math.min(data.zIndex, contentObjs.length - 1);
       canvas.moveTo(o, tgt);
     }
+    // Reforça a ordem entre camadas (corrige casos onde zIndex está desatualizado)
+    applyLayerZOrder();
+
     if (vpRect) canvas.bringToFront(vpRect);
     if (render) canvas.renderAll();
 
@@ -2143,6 +2156,14 @@ function emitFull(obj) {
   if (s) socket.emit('object:add', s);
 }
 
+// Wrapper para canvas.add que sempre reforça a ordem de camadas depois.
+// Usar em todo lugar que adiciona um objeto localmente (não via applyFull).
+function addToCanvas(obj) {
+  canvas.add(obj);
+  applyLayerZOrder();
+  if (vpRect) canvas.bringToFront(vpRect);
+}
+
 function emitModify(obj) {
   if (obj._isViewportRect || !obj.id) return;
   const s = ser(obj);
@@ -2191,7 +2212,10 @@ canvas.on('object:modified', opt => {
 canvas.on('path:created', opt => {
   const path = opt.path; path.id = genId();
   path.layerId = activeLayerId;
-  if (vpRect) canvas.bringToFront(vpRect); emitFull(path);
+  // O Fabric já adicionou o path ao canvas automaticamente (no topo) — reforça
+  // a ordem de camadas para que ele respeite a hierarquia correta.
+  applyLayerZOrder();
+  emitFull(path);
   socket.emit('draw:end', { object: ser(path) });
   // Sincroniza z-order para que o traço apareça na camada correta nos clientes remotos
   socket.emit('zorder:sync', canvas.getObjects().filter(o => o.id && !o._isViewportRect).map(o => o.id));
@@ -2267,8 +2291,7 @@ function handlePointerUp(p) {
   if (dx > 3 || dy > 3) {
     const sh = mkShape(tool, drawStart, p, tmpShapeId);
     if (sh) {
-      canvas.add(sh);
-      if (vpRect) canvas.bringToFront(vpRect);
+      addToCanvas(sh);
       canvas.renderAll();
       emitFull(sh);
     }
@@ -2506,8 +2529,7 @@ function addText(pos) {
     fill: color, fontSize: Math.max(16, sz * 4),
     fontFamily: 'Segoe UI, system-ui, sans-serif',
     selectable: true, editable: true
-  }); canvas.add(t);
-  if (vpRect) canvas.bringToFront(vpRect);
+  }); addToCanvas(t);
   canvas.setActiveObject(t); t.enterEditing(); canvas.renderAll();
   t.on('editing:exited', () => emitFull(t));
   t.on('changed', () => socket.volatile.emit('object:transform', {
@@ -2750,26 +2772,132 @@ async function insertImg(inp) {
   try {
     const url = await uploadFile(file);
     const img = await placeImageFromUrl(url);  // placeImageFromUrl já trata GIFs
-    canvas.add(img);
-    if (vpRect) canvas.bringToFront(vpRect);
+    addToCanvas(img);
     canvas.setActiveObject(img); canvas.renderAll(); emitFull(img); hideToast();
   } catch (e) { hideToast(); alert('Erro: ' + e.message); }
 }
 
-window.addEventListener('paste', async e => {
-  const items = e.clipboardData?.items; if (!items) return;
-  for (const item of items) {
-    if (item.type.startsWith('image/')) {
-      e.preventDefault();
-      try {
-        const url = await uploadFile(item.getAsFile());
-        const img = await placeImageFromUrl(url);  // trata GIFs automaticamente
-        canvas.add(img);
-        if (vpRect) canvas.bringToFront(vpRect);
-        canvas.setActiveObject(img); canvas.renderAll(); emitFull(img); hideToast();
-      } catch (err) { hideToast(); alert('Erro: ' + err.message); }
-      break;
+// ── Helpers de inserção de imagem externa ─────────────────────────────────────
+async function insertFromExternalUrl(rawUrl, dropPos) {
+  const url = rawUrl.trim();
+  const imgUrlRe = /^https?:\/\/.+\.(png|jpe?g|gif|webp|svg|bmp)(\?.*)?$/i;
+  if (!imgUrlRe.test(url) && !dropPos) return false; // só exige extensão no paste; drop tenta qualquer src
+
+  showToast('Carregando imagem...');
+  try {
+    const proxyUrl = '/api/img-proxy?url=' + encodeURIComponent(url);
+    if (isGifUrl(url)) {
+      const gif = await placeGif(proxyUrl, dropPos || null);
+      if (dropPos) {
+        gif.set({ left: dropPos.x - gif.getScaledWidth()/2, top: dropPos.y - gif.getScaledHeight()/2 });
+        gif.setCoords();
+      }
+      addToCanvas(gif);
+      canvas.setActiveObject(gif); canvas.renderAll(); emitFull(gif); hideToast();
+    } else {
+      const r = await fetch(proxyUrl);
+      if (!r.ok) throw new Error('Status ' + r.status);
+      const blob = await r.blob();
+      if (!blob.type.startsWith('image/')) throw new Error('Não é uma imagem');
+      const ext  = url.split('?')[0].split('.').pop().toLowerCase() || 'png';
+      const file = new File([blob], 'imagem.' + ext, { type: blob.type });
+      const uploadUrl = await uploadFile(file);
+      const img = await placeImageFromUrl(uploadUrl);
+      if (dropPos) {
+        img.set({ left: dropPos.x - img.getScaledWidth()/2, top: dropPos.y - img.getScaledHeight()/2 });
+        img.setCoords();
+      }
+      addToCanvas(img);
+      canvas.setActiveObject(img); canvas.renderAll(); emitFull(img); hideToast();
     }
+    return true;
+  } catch (err) {
+    hideToast();
+    alert('Erro ao carregar imagem: ' + err.message);
+    return false;
+  }
+}
+
+// ── Paste ─────────────────────────────────────────────────────────────────────
+window.addEventListener('paste', async e => {
+  const items = Array.from(e.clipboardData?.items || []);
+
+  // 1. Arquivo de imagem no clipboard (screenshot ou Ctrl+C de imagem)
+  const imgFile = items.find(i => i.type.startsWith('image/'));
+  if (imgFile) {
+    e.preventDefault();
+    try {
+      const url = await uploadFile(imgFile.getAsFile());
+      const img = await placeImageFromUrl(url);
+      addToCanvas(img);
+      canvas.setActiveObject(img); canvas.renderAll(); emitFull(img); hideToast();
+    } catch (err) { hideToast(); alert('Erro: ' + err.message); }
+    return;
+  }
+
+  // 2. URL de imagem colada como texto (colar link)
+  const imgUrlRe = /^https?:\/\/.+\.(png|jpe?g|gif|webp|svg|bmp)(\?.*)?$/i;
+  const text = (e.clipboardData.getData('text/plain') || '').trim();
+  if (imgUrlRe.test(text)) {
+    e.preventDefault();
+    await insertFromExternalUrl(text, null);
+  }
+});
+
+// ── Drag-and-drop ─────────────────────────────────────────────────────────────
+// IMPORTANTE: o Fabric.js envolve o <canvas> original num wrapperEl e cria um
+// upper-canvas por cima dele — é o upper-canvas que recebe todos os eventos de
+// ponteiro. Ligar dragover/drop no elemento <canvas> original nunca funciona;
+// precisa ser no wrapperEl (contêiner pai comum a lower e upper canvas).
+const _boardEl = canvas.wrapperEl;
+
+// Proteção global: impede que o browser abra a imagem em nova aba/navegue caso
+// o usuário solte fora da área exata do canvas (fora do wrapperEl).
+window.addEventListener('dragover', e => e.preventDefault());
+window.addEventListener('drop', e => { if (e.target !== _boardEl && !_boardEl.contains(e.target)) e.preventDefault(); });
+
+_boardEl.addEventListener('dragover', e => {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'copy';
+});
+
+_boardEl.addEventListener('drop', async e => {
+  e.preventDefault();
+  e.stopPropagation();
+
+  const rect = _boardEl.getBoundingClientRect();
+  const zoom = canvas.getZoom();
+  const vpt  = canvas.viewportTransform;
+  const dropPos = {
+    x: (e.clientX - rect.left - vpt[4]) / zoom,
+    y: (e.clientY - rect.top  - vpt[5]) / zoom,
+  };
+
+  // 1. Arquivo(s) do sistema operacional
+  const files = Array.from(e.dataTransfer.files || []).filter(f => f.type.startsWith('image/'));
+  if (files.length) {
+    for (const file of files) {
+      try {
+        showToast('Enviando...');
+        const url = await uploadFile(file);
+        const img = await placeImageFromUrl(url);
+        img.set({ left: dropPos.x - img.getScaledWidth()/2, top: dropPos.y - img.getScaledHeight()/2 });
+        img.setCoords();
+        addToCanvas(img); canvas.setActiveObject(img); canvas.renderAll(); emitFull(img); hideToast();
+      } catch (err) { hideToast(); alert('Erro: ' + err.message); }
+    }
+    return;
+  }
+
+  // 2. Imagem arrastada de outra aba — extrai src do HTML ou URI
+  const html    = e.dataTransfer.getData('text/html') || '';
+  const srcMatch = html.match(/src=["']([^"']+)["']/i);
+  const uriList  = e.dataTransfer.getData('text/uri-list') || '';
+  const plainUrl = e.dataTransfer.getData('text/plain') || '';
+  const srcUrl   = (srcMatch && srcMatch[1]) || uriList.split('\n')[0].trim() || plainUrl.trim();
+
+  if (srcUrl && srcUrl.startsWith('http')) {
+    await insertFromExternalUrl(srcUrl, dropPos);
   }
 });
 
@@ -2924,8 +3052,20 @@ window.addEventListener('keydown', e => {
     else if (e.key === 'y') { e.preventDefault(); redo(); }
     else if (e.key === 'd') { e.preventDefault(); dupSel(); }
     else if (e.key === 'c') { e.preventDefault(); copySel(); }
-    else if (e.key === 'v') { e.preventDefault(); pasteSel(); }
-    else if (e.key === 'a') { e.preventDefault(); canvas.setActiveObject(new fabric.ActiveSelection(canvas.getObjects().filter(o => !o._isViewportRect), { canvas })); canvas.renderAll(); }
+    else if (e.key === 'v') {
+      // Só intercepta se houver objetos do board no clipboard interno.
+      // Caso contrário, deixa o evento 'paste' tratar (imagens externas, URLs, etc).
+      if (_clipboard.length) { e.preventDefault(); pasteSel(); }
+    }
+    else if (e.key === 'a') {
+      e.preventDefault();
+      canvas.discardActiveObject();
+      const sel = canvas.getObjects().filter(o => !o._isViewportRect && o.selectable !== false);
+      if (sel.length) {
+        canvas.setActiveObject(new fabric.ActiveSelection(sel, { canvas }));
+        canvas.renderAll();
+      }
+    }
     return;
   }
   switch (e.key) {
@@ -2974,7 +3114,7 @@ function dupSel() {
     cl.id = genId(); cl.set({ left: o.left + 20, top: o.top + 20 });
     canvas.add(cl); clones.push(cl);
     if (++done === objs.length) {
-      if (vpRect) canvas.bringToFront(vpRect);
+      applyLayerZOrder();
       canvas.setActiveObject(new fabric.ActiveSelection(clones, { canvas }));
       canvas.renderAll();
       socket.emit('objects:batch', clones.map(ser).filter(Boolean));
@@ -3019,7 +3159,7 @@ async function pasteSel() {
       data.left = newLeft; data.top = newTop;
       try {
         const gifObj = await placeGif(data._gifUrl || data.src, data);
-        canvas.add(gifObj);
+        addToCanvas(gifObj);
         pasted.push(gifObj);
       } catch (_) { /* ignora gif que falhou ao colar */ }
       continue;
@@ -3034,7 +3174,7 @@ async function pasteSel() {
 
     await new Promise(resolve => {
       deser(data, obj => {
-        canvas.add(obj);
+        addToCanvas(obj);
         pasted.push(obj);
         resolve();
       });

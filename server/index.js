@@ -226,6 +226,27 @@ app.post('/upload', upload.single('image'), (req, res) => {
   res.json({ url: '/uploads/' + req.file.filename });
 });
 
+// Proxy de imagens externas — evita problemas de CORS ao arrastar/colar imagens da internet
+app.get('/api/img-proxy', (req, res) => {
+  if (!isAuth(req)) return res.status(401).send('Não autenticado');
+  const url = req.query.url;
+  if (!url || !/^https?:\/\//i.test(url)) return res.status(400).send('URL inválida');
+  try {
+    const parsed = new URL(url);
+    const mod = parsed.protocol === 'https:' ? require('https') : require('http');
+    const request = mod.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, r => {
+      if (r.statusCode >= 400) return res.status(r.statusCode).send('Erro ao buscar imagem');
+      res.setHeader('Content-Type', r.headers['content-type'] || 'image/png');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      r.pipe(res);
+    });
+    request.on('error', err => res.status(500).send('Proxy error: ' + err.message));
+    request.setTimeout(10000, () => { request.destroy(); res.status(504).send('Timeout'); });
+  } catch (err) {
+    res.status(500).send('Proxy error: ' + err.message);
+  }
+});
+
 // API: lista salas ativas (para UI de escolha de sala)
 app.get('/api/rooms', (req, res) => {
   // Salas em RAM
