@@ -273,6 +273,61 @@ socket.on('draw:end', ({ userId, object }) => {
   if (object) applyFull(object); else canvas.renderAll();
 });
 
+// ── Streaming de formas em tempo real (retângulo, elipse, linha, seta) ───────
+// Construtor de forma standalone — a view não tem estado de ferramenta/cor
+// ativa, então sempre recebe o estilo explícito de quem está desenhando.
+function mkShapeLive(t, s, e, style) {
+  const base = {
+    stroke: style.color, strokeWidth: style.sz, fill: 'transparent',
+    opacity: style.op, selectable: false, evented: false,
+    strokeLineCap: 'round', strokeLineJoin: 'round',
+  };
+  if (t === 'rect')   return new fabric.Rect({ ...base, fill: style.fillShape ? style.color : 'transparent', left: Math.min(s.x,e.x), top: Math.min(s.y,e.y), width: Math.abs(e.x-s.x)||1, height: Math.abs(e.y-s.y)||1 });
+  if (t === 'circle') return new fabric.Ellipse({ ...base, fill: style.fillShape ? style.color : 'transparent', left: Math.min(s.x,e.x), top: Math.min(s.y,e.y), rx: Math.abs(e.x-s.x)/2||1, ry: Math.abs(e.y-s.y)/2||1 });
+  if (t === 'line')   return new fabric.Line([s.x, s.y, e.x, e.y], { ...base, fill: null });
+  if (t === 'arrow') {
+    const dx = e.x - s.x, dy = e.y - s.y;
+    const ang = Math.atan2(dy, dx);
+    const hl = Math.max(16, style.sz * 4), hw = Math.max(10, style.sz * 2.5);
+    const ex2 = e.x - Math.cos(ang) * hl * 0.6, ey2 = e.y - Math.sin(ang) * hl * 0.6;
+    const cos = Math.cos(ang), sin = Math.sin(ang);
+    const lx = e.x - hl*cos + hw*sin, ly = e.y - hl*sin - hw*cos;
+    const rx = e.x - hl*cos - hw*sin, ry = e.y - hl*sin + hw*cos;
+    const pathStr = `M ${s.x} ${s.y} L ${ex2} ${ey2} M ${e.x} ${e.y} L ${lx} ${ly} L ${rx} ${ry} Z`;
+    return new fabric.Path(pathStr, { ...base, fill: style.color, stroke: style.color });
+  }
+}
+
+const liveShapes = {};
+
+socket.on('shape:start', ({ userId, tool: t, x, y, color: c, width: w, opacity: opa, fillShape: fs }) => {
+  const style = { color: c, sz: w, op: opa, fillShape: fs };
+  const sh = mkShapeLive(t, { x, y }, { x, y }, style);
+  if (!sh) return;
+  liveShapes[userId] = { tool: t, start: { x, y }, style, obj: sh };
+  canvas.add(sh); canvas.renderAll();
+});
+
+socket.on('shape:move', ({ userId, x, y }) => {
+  const rs = liveShapes[userId]; if (!rs) return;
+  canvas.remove(rs.obj);
+  const sh = mkShapeLive(rs.tool, rs.start, { x, y }, rs.style);
+  if (!sh) return;
+  rs.obj = sh;
+  canvas.add(sh); canvas.requestRenderAll();
+});
+
+socket.on('shape:end', ({ userId, object }) => {
+  const rs = liveShapes[userId];
+  if (rs) { canvas.remove(rs.obj); delete liveShapes[userId]; }
+  if (object) applyFull(object); else canvas.renderAll();
+});
+
+socket.on('shape:cancel', ({ userId }) => {
+  const rs = liveShapes[userId];
+  if (rs) { canvas.remove(rs.obj); delete liveShapes[userId]; canvas.renderAll(); }
+});
+
 // ── applyFull ─────────────────────────────────────────────────────────────────
 // gifId → AbortController token — cancela aplicações pendentes do mesmo GIF
 // quando um update mais novo chega antes do fetch/decode completar.

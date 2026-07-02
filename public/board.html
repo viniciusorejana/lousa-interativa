@@ -1620,14 +1620,18 @@ function updateLayersPanel() {
 
 function toggleObjVisibility(id) {
   const obj = findById(id); if (!obj) return;
+  let data;
   if (hiddenObjects.has(id)) {
     hiddenObjects.delete(id);
     obj.set({ opacity: obj._savedOpacity ?? 1, visible: true }); delete obj._savedOpacity;
+    data = { ...ser(obj), _visibilityChange: true };
   } else {
-    hiddenObjects.add(id); obj._savedOpacity = obj.opacity; obj.set({ opacity:0, visible:false });
+    const prevOpacity = obj.opacity;
+    hiddenObjects.add(id); obj._savedOpacity = prevOpacity; obj.set({ opacity:0, visible:false });
+    // Envia a opacidade original junto — sem isso, outros clientes que também
+    // recebam este objeto não têm como saber para qual opacidade restaurar depois.
+    data = { ...ser(obj), _visibilityChange: true, _prevOpacity: prevOpacity };
   }
-  // Emite para a view também
-  const data = { ...ser(obj), _visibilityChange: true };
   socket.emit('object:modify', data);
   canvas.renderAll(); scheduleLayersUpdate();
 }
@@ -1637,15 +1641,20 @@ function togglePathGroup(ids) {
   const allHidden = ids.every(id => hiddenObjects.has(id));
   ids.forEach(id => {
     const obj = findById(id); if (!obj) return;
+    let data;
     if (allHidden) {
       hiddenObjects.delete(id);
       obj.set({ opacity: obj._savedOpacity ?? 1, visible: true }); delete obj._savedOpacity;
+      data = { ...ser(obj), _visibilityChange: true };
     } else {
       if (!hiddenObjects.has(id)) {
-        hiddenObjects.add(id); obj._savedOpacity = obj.opacity; obj.set({ opacity: 0, visible: false });
+        const prevOpacity = obj.opacity;
+        hiddenObjects.add(id); obj._savedOpacity = prevOpacity; obj.set({ opacity: 0, visible: false });
+        data = { ...ser(obj), _visibilityChange: true, _prevOpacity: prevOpacity };
+      } else {
+        data = { ...ser(obj), _visibilityChange: true };
       }
     }
-    const data = { ...ser(obj), _visibilityChange: true };
     socket.emit('object:modify', data);
   });
   canvas.renderAll(); scheduleLayersUpdate();
@@ -2024,6 +2033,49 @@ socket.on('draw:end', ({ userId, object }) => {
   if (object) applyFull(object); else canvas.renderAll();
 });
 
+// ── Streaming de formas (retângulo, elipse, linha, seta) em tempo real ───────
+// Mesmo padrão do draw:start/move/end: cada usuário remoto tem no máximo um
+// preview temporário em andamento por vez, guardado em remoteShapes[userId].
+const remoteShapes = {};
+
+socket.on('shape:start', ({ userId, shapeId, tool: t, x, y, color: c, width: w, opacity: opa, fillShape: fs }) => {
+  if (userId === myId) return;
+  const style = { color: c, sz: w, op: opa, fillShape: fs };
+  const sh = mkShape(t, { x, y }, { x, y }, null, style);
+  if (!sh) return;
+  sh.selectable = false; sh.evented = false;
+  remoteShapes[userId] = { shapeId, tool: t, start: { x, y }, style, obj: sh };
+  canvas.add(sh);
+  if (vpRect) canvas.bringToFront(vpRect);
+  canvas.renderAll();
+});
+
+socket.on('shape:move', ({ userId, x, y }) => {
+  if (userId === myId) return;
+  const rs = remoteShapes[userId]; if (!rs) return;
+  canvas.remove(rs.obj);
+  const sh = mkShape(rs.tool, rs.start, { x, y }, null, rs.style);
+  if (!sh) return;
+  sh.selectable = false; sh.evented = false;
+  rs.obj = sh;
+  canvas.add(sh);
+  if (vpRect) canvas.bringToFront(vpRect);
+  canvas.requestRenderAll();
+});
+
+socket.on('shape:end', ({ userId, object }) => {
+  if (userId === myId) return;
+  const rs = remoteShapes[userId];
+  if (rs) { canvas.remove(rs.obj); delete remoteShapes[userId]; }
+  if (object) applyFull(object); else canvas.renderAll();
+});
+
+socket.on('shape:cancel', ({ userId }) => {
+  if (userId === myId) return;
+  const rs = remoteShapes[userId];
+  if (rs) { canvas.remove(rs.obj); delete remoteShapes[userId]; canvas.renderAll(); }
+});
+
 // Cursores remotos — recebidos em coordenadas do board, convertidos para tela
 socket.on('cursor:move', ({ userId, userName: uName, color: c, x, y }) => {
   if (userId === myId) return;
@@ -2079,6 +2131,22 @@ function applyFull(data, render = true) {
     if (data._layerHidden) { o.set({ opacity: 0, visible: false }); }
 
     canvas.add(o);
+
+    // Sincroniza o Set local hiddenObjects com o estado real do objeto recebido.
+    // Sem isso, o ícone de olho e o toggle de visibilidade ficam dessincronizados
+    // em qualquer cliente que não foi quem escondeu o objeto originalmente —
+    // o clique local passaria a repetir a ação errada (esconder de novo, por ex).
+    const isHiddenNow = data._layerHidden === true ||
+      (data.opacity === 0 && data.visible === false);
+    if (isHiddenNow) {
+      hiddenObjects.add(o.id);
+      // _prevOpacity viaja no payload quando quem escondeu tinha opacidade != 1;
+      // sem isso não temos como saber para qual valor restaurar depois.
+      o._savedOpacity = (data._prevOpacity !== undefined) ? data._prevOpacity : (o._savedOpacity ?? 1);
+    } else {
+      hiddenObjects.delete(o.id);
+      delete o._savedOpacity;
+    }
 
     // Aplica z-order: usa zIndex do objeto se disponível, depois reforça a ordem de camadas.
     // Isso garante que um objeto adicionado numa camada inferior fique abaixo de objetos
@@ -2263,6 +2331,13 @@ function handlePointerDown(p, target) {
     isDrawing = true;
     drawStart = { x: p.x, y: p.y };
     tmpShapeId = genId();
+    // Notifica outros clientes que uma forma começou a ser desenhada — eles vão
+    // criar um preview local que acompanha o arraste em tempo real (mesmo
+    // mecanismo do draw:start/move/end usado pela caneta livre).
+    socket.emit('shape:start', {
+      shapeId: tmpShapeId, tool, x: p.x, y: p.y,
+      color, width: sz, opacity: op, fillShape,
+    });
   }
 }
 
@@ -2276,8 +2351,7 @@ function updateTmpShape(p) {
   if (vpRect) canvas.bringToFront(vpRect);
   canvas.requestRenderAll();
   throttle60(() => {
-    const prev2 = findById(tmpShapeId);
-    if (prev2) socket.volatile.emit('object:transform', serTransform(prev2));
+    socket.volatile.emit('shape:move', { shapeId: tmpShapeId, x: p.x, y: p.y });
   });
 }
 
@@ -2294,9 +2368,12 @@ function handlePointerUp(p) {
       addToCanvas(sh);
       canvas.renderAll();
       emitFull(sh);
+      // Avisa os outros clientes para removerem o preview temporário e mostra
+      // o objeto final (mesmo padrão do draw:end da caneta livre).
+      socket.emit('shape:end', { shapeId: tmpShapeId, object: ser(sh) });
     }
   } else {
-    socket.emit('object:remove', [tmpShapeId]);
+    socket.emit('shape:cancel', { shapeId: tmpShapeId });
   }
   drawStart = null; tmpShapeId = null;
 }
@@ -2314,7 +2391,7 @@ function setTool(t) {
   const opts = document.getElementById('opts');
   isDrawing = false; drawStart = null;
   const prev = findById(tmpShapeId);
-  if (prev) { canvas.remove(prev); canvas.renderAll(); socket.emit('object:remove', [tmpShapeId]); }
+  if (prev) { canvas.remove(prev); canvas.renderAll(); socket.emit('shape:cancel', { shapeId: tmpShapeId }); }
   tmpShapeId = null;
 
   if (t === 'pan') {
@@ -2476,23 +2553,24 @@ function delSel() {
 // ═══════════════════════════════════════════════════════════════════════════════
 // CRIAÇÃO DE FORMAS
 // ═══════════════════════════════════════════════════════════════════════════════
-function mkShape(t, s, e, id) {
+function mkShape(t, s, e, id, style) {
+  const st   = style || { color, sz, op, fillShape };
   const oid  = id || genId();
   const base = {
-    stroke: color, strokeWidth: sz, fill: 'transparent',
-    opacity: op, selectable: true, evented: true,
+    stroke: st.color, strokeWidth: st.sz, fill: 'transparent',
+    opacity: st.op, selectable: true, evented: true,
     strokeLineCap: 'round', strokeLineJoin: 'round', id: oid
   };
-  if (t === 'rect')   return new fabric.Rect({ ...base, fill: fillShape ? color : 'transparent', left: Math.min(s.x,e.x), top: Math.min(s.y,e.y), width: Math.abs(e.x-s.x)||1, height: Math.abs(e.y-s.y)||1 });
-  if (t === 'circle') return new fabric.Ellipse({ ...base, fill: fillShape ? color : 'transparent', left: Math.min(s.x,e.x), top: Math.min(s.y,e.y), rx: Math.abs(e.x-s.x)/2||1, ry: Math.abs(e.y-s.y)/2||1 });
+  if (t === 'rect')   return new fabric.Rect({ ...base, fill: st.fillShape ? st.color : 'transparent', left: Math.min(s.x,e.x), top: Math.min(s.y,e.y), width: Math.abs(e.x-s.x)||1, height: Math.abs(e.y-s.y)||1 });
+  if (t === 'circle') return new fabric.Ellipse({ ...base, fill: st.fillShape ? st.color : 'transparent', left: Math.min(s.x,e.x), top: Math.min(s.y,e.y), rx: Math.abs(e.x-s.x)/2||1, ry: Math.abs(e.y-s.y)/2||1 });
   if (t === 'line')   return new fabric.Line([s.x, s.y, e.x, e.y], { ...base, fill: null });
   if (t === 'arrow') {
     const dx  = e.x - s.x, dy = e.y - s.y;
     const len = Math.hypot(dx, dy) || 1;
     const ang = Math.atan2(dy, dx);
     // Tamanho da cabeça proporcional à espessura, mínimo razoável
-    const hl  = Math.max(16, sz * 4);
-    const hw  = Math.max(10, sz * 2.5);
+    const hl  = Math.max(16, st.sz * 4);
+    const hw  = Math.max(10, st.sz * 2.5);
     // Recua o fim da linha para não passar pela cabeça
     const ex2 = e.x - Math.cos(ang) * hl * 0.6;
     const ey2 = e.y - Math.sin(ang) * hl * 0.6;
@@ -2510,9 +2588,9 @@ function mkShape(t, s, e, id) {
     ].join(' ');
     return new fabric.Path(pathStr, {
       ...base,
-      fill: color,          // cabeça preenchida
-      stroke: color,
-      strokeWidth: sz,
+      fill: st.color,          // cabeça preenchida
+      stroke: st.color,
+      strokeWidth: st.sz,
       strokeLineCap: 'round',
       strokeLineJoin: 'round',
       _isArrow: true,       // marcador para saber que é seta
@@ -2910,12 +2988,20 @@ _boardEl.addEventListener('drop', async e => {
 function undo() { socket.emit('history:undo'); }
 function redo() { socket.emit('history:redo'); }
 
-// Atualiza botões de undo/redo baseado no estado do servidor
+// Atualiza botões de undo/redo baseado no estado do servidor (por usuário)
 socket.on('history:update', ({ canUndo, canRedo }) => {
   const btnU = document.querySelector('[onclick="undo()"]');
   const btnR = document.querySelector('[onclick="redo()"]');
   if (btnU) btnU.style.opacity = canUndo ? '1' : '0.35';
   if (btnR) btnR.style.opacity = canRedo ? '1' : '0.35';
+});
+
+// Avisa quando um undo/redo não pôde ser aplicado por completo porque outro
+// usuário alterou o(s) mesmo(s) objeto(s) depois da ação original.
+socket.on('history:conflict', ({ count, action }) => {
+  const verbo = action === 'undo' ? 'desfazer' : 'refazer';
+  showToast(`Não foi possível ${verbo} ${count} item(ns) — outro usuário alterou depois.`);
+  setTimeout(hideToast, 3500);
 });
 function changeRoom() {
   // Volta para a tela de login direto no passo 2 (escolha de sala).

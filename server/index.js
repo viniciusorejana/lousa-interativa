@@ -105,7 +105,7 @@ function defaultRoomState() {
 }
 
 // ─── Registro de salas em memória ─────────────────────────────────────────────
-// rooms[roomId] = { state, undoStack, redoStack, users, saveTimer, lastEmpty }
+// rooms[roomId] = { state, userHistory, users, saveTimer, lastEmpty }
 const rooms = {};
 
 function getRoom(roomId) {
@@ -114,12 +114,11 @@ function getRoom(roomId) {
   // Tenta carregar do disco; se não existe, cria nova
   const saved = loadRoomFromDisk(roomId);
   rooms[roomId] = {
-    state:      saved ? saved.state      : defaultRoomState(),
-    undoStack:  saved ? (saved.undoStack || []) : [],
-    redoStack:  [],
-    users:      {},    // userId → { id, name, color }
-    saveTimer:  null,
-    lastEmpty:  null,  // timestamp em que a sala ficou vazia (para eviction)
+    state:       saved ? saved.state : defaultRoomState(),
+    userHistory: {},    // userId → { undoStack: [...], redoStack: [...] } — não persiste no disco (é por sessão)
+    users:       {},    // userId → { id, name, color }
+    saveTimer:   null,
+    lastEmpty:   null,  // timestamp em que a sala ficou vazia (para eviction)
   };
   console.log(`[room] Na memória: ${roomId} (${saved ? 'restaurado' : 'novo'})`);
   return rooms[roomId];
@@ -131,8 +130,7 @@ function scheduleSave(roomId) {
   clearTimeout(room.saveTimer);
   room.saveTimer = setTimeout(() => {
     const payload = JSON.stringify({
-      state:     room.state,
-      undoStack: room.undoStack,   // persiste histórico também
+      state: room.state,   // histórico de undo/redo é por sessão, não persiste no disco
     });
     fs.writeFile(roomFile(roomId), payload, err => {
       if (err) console.error(`[room] Erro ao salvar ${roomId}:`, err.message);
@@ -175,18 +173,71 @@ setInterval(() => {
   }
 }, 60 * 1000);  // checa a cada 1 minuto
 
-// ─── Helpers de história por sala ─────────────────────────────────────────────
-function snapState(room) {
-  return {
-    objects: JSON.parse(JSON.stringify(room.state.objects)),
-    layers:  JSON.parse(JSON.stringify(room.state.layers)),
-    zorder:  (room.state.zorder || []).slice(),
-  };
+// ─── Helpers de história por sala (undo/redo por usuário) ────────────────────
+// Cada usuário tem sua própria pilha de undo/redo (room.userHistory[userId]).
+// Cada entrada é um PATCH (não um snapshot completo): guarda o valor "antes" e
+// "depois" apenas dos objetos/zorder/layers realmente afetados pela ação.
+// Isso permite que o Ctrl+Z de um usuário desfaça só a própria última ação,
+// mesmo que outros usuários tenham feito coisas depois.
+function pushUserAction(room, userId, patch) {
+  if (!room.userHistory) room.userHistory = {};
+  if (!room.userHistory[userId]) room.userHistory[userId] = { undoStack: [], redoStack: [] };
+  const uh = room.userHistory[userId];
+  uh.undoStack.push({
+    id: uuidv4(), ts: Date.now(),
+    objectsBefore: patch.objectsBefore || null,
+    objectsAfter:  patch.objectsAfter  || null,
+    layersBefore:  patch.layersBefore  || null,
+    layersAfter:   patch.layersAfter   || null,
+    zorderBefore:  patch.zorderBefore  || null,
+    zorderAfter:   patch.zorderAfter   || null,
+  });
+  if (uh.undoStack.length > MAX_HISTORY) uh.undoStack.shift();
+  uh.redoStack = []; // nova ação invalida qualquer redo pendente deste usuário
 }
-function pushUndo(room) {
-  room.undoStack.push(snapState(room));
-  if (room.undoStack.length > MAX_HISTORY) room.undoStack.shift();
-  room.redoStack = [];
+
+// Aplica um patch (before ou after) no estado da sala.
+// Verifica conflito: só sobrescreve um objeto se o valor atual ainda bate com
+// o que a ação esperava encontrar (ninguém mexeu nele depois). Isso evita que
+// um undo/redo tardio apague a edição mais recente de outra pessoa.
+function applyActionPatch(room, action, direction) {
+  const objMap    = direction === 'before' ? action.objectsBefore : action.objectsAfter;
+  const expectMap = direction === 'before' ? action.objectsAfter  : action.objectsBefore;
+  let conflicts = 0;
+  if (objMap) {
+    Object.entries(objMap).forEach(([id, targetVal]) => {
+      const expected = expectMap ? (expectMap[id] ?? null) : undefined;
+      const current  = room.state.objects[id] || null;
+      if (expected !== undefined && JSON.stringify(current) !== JSON.stringify(expected)) {
+        conflicts++; return; // outro usuário alterou este objeto depois — não sobrescreve
+      }
+      if (targetVal === null) delete room.state.objects[id];
+      else room.state.objects[id] = targetVal;
+    });
+  }
+  const layers = direction === 'before' ? action.layersBefore : action.layersAfter;
+  if (layers) room.state.layers = layers;
+  const zorder = direction === 'before' ? action.zorderBefore : action.zorderAfter;
+  if (zorder) room.state.zorder = zorder;
+  return conflicts;
+}
+
+function historyFlagsFor(room, userId) {
+  const uh = (room.userHistory || {})[userId];
+  return { canUndo: !!(uh && uh.undoStack.length), canRedo: !!(uh && uh.redoStack.length) };
+}
+
+// Envia canUndo/canRedo PERSONALIZADOS para cada socket conectado na sala —
+// cada usuário só pode desfazer/refazer as próprias ações, então o estado do
+// botão precisa ser individual, não compartilhado.
+function broadcastHistoryFlags(io, roomId, room) {
+  const socketsInRoom = io.sockets.adapter.rooms.get(roomId);
+  if (!socketsInRoom) return;
+  socketsInRoom.forEach(socketId => {
+    const s = io.sockets.sockets.get(socketId);
+    if (!s || !s._lbUserId) return;
+    s.emit('history:update', historyFlagsFor(room, s._lbUserId));
+  });
 }
 
 // ─── Helpers de imagem ────────────────────────────────────────────────────────
@@ -288,6 +339,7 @@ io.on('connection', socket => {
 
   const room = getRoom(roomId);
   socket.join(roomId);  // Socket.IO room para broadcast isolado
+  socket._lbUserId = userId; // usado por broadcastHistoryFlags para achar o socket de cada usuário
 
   console.log(`[${new Date().toLocaleTimeString()}] ${clientType} +${userName} → [${roomId}]`);
 
@@ -298,8 +350,7 @@ io.on('connection', socket => {
     userId,
     userName,
     userColor,
-    canUndo:  room.undoStack.length > 0,
-    canRedo:  room.redoStack.length > 0,
+    ...historyFlagsFor(room, userId), // sempre {canUndo:false, canRedo:false} numa conexão nova
   });
 
   if (clientType === 'editor') {
@@ -315,10 +366,10 @@ io.on('connection', socket => {
 
   // ── Objects ────────────────────────────────────────────────────────────────
   socket.on('object:add', obj => {
-    pushUndo(room);
+    const before = { [obj.id]: room.state.objects[obj.id] || null };
     room.state.objects[obj.id] = { ...obj, ts: Date.now() };
-    // Insere o id na posição correta do zorder (usando o zIndex do objeto)
     if (!room.state.zorder) room.state.zorder = [];
+    const zorderBefore = room.state.zorder.slice();
     const zorder = room.state.zorder;
     const existingIdx = zorder.indexOf(obj.id);
     if (existingIdx !== -1) zorder.splice(existingIdx, 1);
@@ -326,8 +377,10 @@ io.on('connection', socket => {
       ? Math.min(obj.zIndex, zorder.length)
       : zorder.length;
     zorder.splice(targetIdx, 0, obj.id);
+    const after = { [obj.id]: room.state.objects[obj.id] };
+    pushUserAction(room, userId, { objectsBefore: before, objectsAfter: after, zorderBefore, zorderAfter: zorder.slice() });
     bcast('object:add', obj);
-    toRoom('history:update', { canUndo: true, canRedo: false });
+    broadcastHistoryFlags(io, roomId, room);
     scheduleSave(roomId);
   });
 
@@ -344,33 +397,42 @@ io.on('connection', socket => {
   });
 
   socket.on('object:modify:commit', data => {
-    pushUndo(room);
+    const before = { [data.id]: room.state.objects[data.id] || null };
     room.state.objects[data.id] = { ...data, ts: Date.now() };
+    const after = { [data.id]: room.state.objects[data.id] };
+    pushUserAction(room, userId, { objectsBefore: before, objectsAfter: after });
     bcast('object:modify', data);
-    toRoom('history:update', { canUndo: true, canRedo: false });
+    broadcastHistoryFlags(io, roomId, room);
     scheduleSave(roomId);
   });
 
   socket.on('object:remove', ids => {
-    pushUndo(room);
     const list = Array.isArray(ids) ? ids : [ids];
+    const before = {}, after = {};
+    const zorderBefore = (room.state.zorder || []).slice();
     list.forEach(id => {
+      before[id] = room.state.objects[id] || null;
+      after[id]  = null;
       delete room.state.objects[id];
       if (room.state.zorder) {
         const i = room.state.zorder.indexOf(id);
         if (i !== -1) room.state.zorder.splice(i, 1);
       }
     });
+    pushUserAction(room, userId, { objectsBefore: before, objectsAfter: after, zorderBefore, zorderAfter: (room.state.zorder || []).slice() });
     bcast('object:remove', list);
-    toRoom('history:update', { canUndo: true, canRedo: false });
+    broadcastHistoryFlags(io, roomId, room);
     scheduleSave(roomId);
   });
 
   socket.on('objects:batch', objects => {
-    pushUndo(room);
     if (!room.state.zorder) room.state.zorder = [];
+    const zorderBefore = room.state.zorder.slice();
+    const before = {}, after = {};
     objects.forEach(obj => {
+      before[obj.id] = room.state.objects[obj.id] || null;
       room.state.objects[obj.id] = { ...obj, ts: Date.now() };
+      after[obj.id] = room.state.objects[obj.id];
       const zorder = room.state.zorder;
       const existingIdx = zorder.indexOf(obj.id);
       if (existingIdx !== -1) zorder.splice(existingIdx, 1);
@@ -379,30 +441,47 @@ io.on('connection', socket => {
         : zorder.length;
       zorder.splice(targetIdx, 0, obj.id);
     });
+    pushUserAction(room, userId, { objectsBefore: before, objectsAfter: after, zorderBefore, zorderAfter: room.state.zorder.slice() });
     bcast('objects:batch', objects);
-    toRoom('history:update', { canUndo: true, canRedo: false });
+    broadcastHistoryFlags(io, roomId, room);
     scheduleSave(roomId);
   });
 
-  // Operação atômica: adiciona grupo, remove filhos, atualiza zorder — 1 único pushUndo
+  // Operação atômica: adiciona grupo, remove filhos, atualiza zorder — 1 única ação
   socket.on('group:commit', ({ group, childIds, zorder }) => {
-    pushUndo(room);
+    const before = { [group.id]: room.state.objects[group.id] || null };
+    childIds.forEach(id => { before[id] = room.state.objects[id] || null; });
+    const zorderBefore = (room.state.zorder || []).slice();
+
     room.state.objects[group.id] = { ...group, ts: Date.now() };
     childIds.forEach(id => delete room.state.objects[id]);
     if (zorder) room.state.zorder = zorder;
+
+    const after = { [group.id]: room.state.objects[group.id] };
+    childIds.forEach(id => { after[id] = null; });
+
+    pushUserAction(room, userId, { objectsBefore: before, objectsAfter: after, zorderBefore, zorderAfter: (room.state.zorder || []).slice() });
     bcast('group:commit', { group, childIds, zorder });
-    toRoom('history:update', { canUndo: true, canRedo: false });
+    broadcastHistoryFlags(io, roomId, room);
     scheduleSave(roomId);
   });
 
-  // Operação atômica: remove grupo, adiciona filhos, atualiza zorder — 1 único pushUndo
+  // Operação atômica: remove grupo, adiciona filhos, atualiza zorder — 1 única ação
   socket.on('ungroup:commit', ({ groupId, children, zorder }) => {
-    pushUndo(room);
+    const before = { [groupId]: room.state.objects[groupId] || null };
+    children.forEach(ch => { before[ch.id] = room.state.objects[ch.id] || null; });
+    const zorderBefore = (room.state.zorder || []).slice();
+
     delete room.state.objects[groupId];
     children.forEach(ch => { room.state.objects[ch.id] = { ...ch, ts: Date.now() }; });
     if (zorder) room.state.zorder = zorder;
+
+    const after = { [groupId]: null };
+    children.forEach(ch => { after[ch.id] = room.state.objects[ch.id]; });
+
+    pushUserAction(room, userId, { objectsBefore: before, objectsAfter: after, zorderBefore, zorderAfter: (room.state.zorder || []).slice() });
     bcast('ungroup:commit', { groupId, children, zorder });
-    toRoom('history:update', { canUndo: true, canRedo: false });
+    broadcastHistoryFlags(io, roomId, room);
     scheduleSave(roomId);
   });
 
@@ -443,43 +522,54 @@ io.on('connection', socket => {
     scheduleSave(roomId);
   });
 
-  // ── Undo / Redo ───────────────────────────────────────────────────────────
+  // ── Undo / Redo (por usuário) ────────────────────────────────────────────────
   socket.on('history:undo', () => {
-    if (!room.undoStack.length) return;
-    room.redoStack.push(snapState(room));
-    const prev = room.undoStack.pop();
-    room.state.objects = prev.objects;
-    room.state.layers  = prev.layers || room.state.layers;
-    if (prev.zorder)   room.state.zorder = prev.zorder;
+    const uh = (room.userHistory || {})[userId];
+    if (!uh || !uh.undoStack.length) return;
+    const action = uh.undoStack.pop();
+    const conflicts = applyActionPatch(room, action, 'before');
+    uh.redoStack.push(action);
     toRoom('board:sync', room.state);
-    toRoom('history:update', { canUndo: room.undoStack.length > 0, canRedo: true });
+    broadcastHistoryFlags(io, roomId, room);
     scheduleSave(roomId);
+    if (conflicts) socket.emit('history:conflict', { count: conflicts, action: 'undo' });
   });
 
   socket.on('history:redo', () => {
-    if (!room.redoStack.length) return;
-    room.undoStack.push(snapState(room));
-    const next = room.redoStack.pop();
-    room.state.objects = next.objects;
-    room.state.layers  = next.layers || room.state.layers;
-    if (next.zorder)   room.state.zorder = next.zorder;
+    const uh = (room.userHistory || {})[userId];
+    if (!uh || !uh.redoStack.length) return;
+    const action = uh.redoStack.pop();
+    const conflicts = applyActionPatch(room, action, 'after');
+    uh.undoStack.push(action);
     toRoom('board:sync', room.state);
-    toRoom('history:update', { canUndo: true, canRedo: room.redoStack.length > 0 });
+    broadcastHistoryFlags(io, roomId, room);
     scheduleSave(roomId);
+    if (conflicts) socket.emit('history:conflict', { count: conflicts, action: 'redo' });
   });
 
-  // ── Draw streaming ────────────────────────────────────────────────────────
+  // ── Draw streaming (caneta livre) ────────────────────────────────────────────
   socket.on('draw:start', data => bcast('draw:start', { ...data, userId }));
   socket.on('draw:move',  data => socket.broadcast.to(roomId).volatile.emit('draw:move', { ...data, userId }));
   socket.on('draw:end',   data => {
     if (data.object) {
-      pushUndo(room);
+      const before = { [data.object.id]: room.state.objects[data.object.id] || null };
       room.state.objects[data.object.id] = data.object;
-      toRoom('history:update', { canUndo: true, canRedo: false });
+      const after = { [data.object.id]: room.state.objects[data.object.id] };
+      pushUserAction(room, userId, { objectsBefore: before, objectsAfter: after });
+      broadcastHistoryFlags(io, roomId, room);
       scheduleSave(roomId);
     }
     bcast('draw:end', { ...data, userId });
   });
+
+  // ── Shape streaming (retângulo, elipse, linha, seta em tempo real) ───────────
+  // Mesmo padrão do draw:start/move/end: eventos efêmeros (sem persistência,
+  // sem undo) que só existem enquanto a forma está sendo arrastada. A forma
+  // real e definitiva chega via 'object:add' normal (emitFull no cliente).
+  socket.on('shape:start', data => bcast('shape:start', { ...data, userId }));
+  socket.on('shape:move',  data => socket.broadcast.to(roomId).volatile.emit('shape:move', { ...data, userId }));
+  socket.on('shape:end',   data => bcast('shape:end', { ...data, userId }));
+  socket.on('shape:cancel', data => bcast('shape:cancel', { ...data, userId }));
 
   // ── Cursor ────────────────────────────────────────────────────────────────
   socket.on('cursor:move', pos => {
@@ -495,17 +585,25 @@ io.on('connection', socket => {
 
   // ── Board clear ───────────────────────────────────────────────────────────
   socket.on('board:clear', () => {
-    pushUndo(room);
-    // Não deletamos arquivos aqui — uploads são limpos no reinício.
+    const before = {};
+    Object.entries(room.state.objects).forEach(([id, obj]) => { before[id] = obj; });
+    const after = {};
+    Object.keys(room.state.objects).forEach(id => { after[id] = null; });
+    const zorderBefore = (room.state.zorder || []).slice();
     room.state.objects = {};
+    room.state.zorder  = [];
+    pushUserAction(room, userId, { objectsBefore: before, objectsAfter: after, zorderBefore, zorderAfter: [] });
     toRoom('board:clear');
-    toRoom('history:update', { canUndo: true, canRedo: false });
+    broadcastHistoryFlags(io, roomId, room);
     scheduleSave(roomId);
   });
 
   // ── Disconnect ────────────────────────────────────────────────────────────
   socket.on('disconnect', () => {
     delete room.users[userId];
+    // userId é gerado por conexão — ao desconectar, o histórico deste usuário
+    // fica inalcançável mesmo se reconectar (novo userId). Libera a memória.
+    if (room.userHistory) delete room.userHistory[userId];
     toRoom('users:update', Object.values(room.users));
     bcast('cursor:remove', userId);
     // Se a sala ficou vazia, marca o timestamp para eviction
