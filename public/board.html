@@ -16,8 +16,17 @@
     .tb-btn { display:flex; align-items:center; justify-content:center; width:42px; height:42px; border-radius:8px; border:none; background:transparent; color:var(--muted); cursor:pointer; transition:all .15s; position:relative; flex-shrink:0; }
     .tb-btn:hover { background:var(--surface2); color:var(--text); }
     .tb-btn.active { background:rgba(124,92,255,.2); color:var(--accent); }
-    .tb-tip { position:absolute; top:calc(100% + 8px); left:50%; transform:translateX(-50%); background:#111; color:#eee; font-size:11px; padding:4px 8px; border-radius:6px; white-space:nowrap; pointer-events:none; opacity:0; transition:opacity .15s; z-index:100; }
-    @media (hover:hover) { .tb-btn:hover .tb-tip { opacity:1; } }
+    .tb-tip { display:none; } /* o texto continua aqui, mas quem renderiza o balão visível é #tb-floating-tip (JS) */
+
+    /* Tooltip flutuante compartilhado — fica no <body>, fora do #toolbar, então
+       nunca é cortado pelo overflow (nem pelo overflow-y implícito que o
+       overflow-x:auto do toolbar força). Posição calculada via JS. */
+    #tb-floating-tip {
+      position:fixed; z-index:9999; background:#111; color:#eee; font-size:11px;
+      padding:4px 8px; border-radius:6px; white-space:nowrap; pointer-events:none;
+      opacity:0; transition:opacity .12s; transform:translateX(-50%);
+    }
+    #tb-floating-tip.show { opacity:1; }
 
     /* ── Painel de opções ── */
     #opts { position:fixed; top:70px; left:50%; transform:translateX(-50%); z-index:999; display:flex; align-items:center; gap:8px; background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:8px 12px; box-shadow:0 4px 16px rgba(0,0,0,.4); max-width:calc(100vw - 24px); overflow-x:auto; scrollbar-width:none; }
@@ -31,7 +40,24 @@
     .ol { font-size:11px; color:var(--muted); white-space:nowrap; }
 
     /* ── Painel contextual (objeto selecionado) ── */
-    #ctx { position:fixed; top:70px; right:8px; z-index:1000; background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:12px; width:200px; display:none; box-shadow:0 8px 24px rgba(0,0,0,.4); }
+    #ctx {
+      position:fixed; top:70px; right:8px; z-index:1000; background:var(--surface);
+      border:1px solid var(--border); border-radius:12px; padding:12px; width:200px;
+      display:none; box-shadow:0 8px 24px rgba(0,0,0,.4);
+      /* "top" é só o valor-base (antes do JS rodar) — quem manda de verdade é
+         positionCtxPanel(), que mede a borda inferior REAL da toolbar + painel
+         de opções + top-right-panel (lousa/como usar), pra nunca ficar embaixo
+         deles. max-height também é recalculado ali, reservando espaço pro
+         painel de Camadas logo abaixo — ou seja, este painel agora ENCOLHE
+         (ganha scroll interno) se o de Camadas estiver precisando do espaço,
+         em vez de simplesmente empurrá-lo pra fora da tela. O valor de
+         max-height abaixo é só um fallback antes do JS calcular. */
+      max-height:calc(100vh - 130px); overflow-y:auto; overflow-x:hidden;
+      scrollbar-width:thin; scrollbar-color:var(--border) transparent;
+    }
+    #ctx::-webkit-scrollbar { width:4px; }
+    #ctx::-webkit-scrollbar-track { background:transparent; }
+    #ctx::-webkit-scrollbar-thumb { background:var(--border); border-radius:2px; }
     #ctx h4 { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.7px; margin-bottom:10px; }
     .cr { display:flex; align-items:center; justify-content:space-between; gap:6px; margin-bottom:7px; }
     .cl { font-size:12px; color:var(--muted); white-space:nowrap; }
@@ -41,8 +67,17 @@
     .cb:hover, .cb:active { background:var(--border); }
     .cb.d:hover, .cb.d:active { background:rgba(255,80,80,.15); color:#ff6060; border-color:rgba(255,80,80,.3); }
 
+
     /* ── Status bar ── */
     #users { position:fixed; bottom:14px; left:14px; z-index:1000; display:flex; align-items:center; gap:6px; background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:6px 10px; font-size:12px; }
+    /* Em telas bem estreitas (ex. iPhone SE, 375px), #users (nome + contagem
+       de editores + nome da lousa) fica largo o bastante pra encostar no
+       #zoom-info, que fica centralizado embaixo. Escondendo só o "nome da
+       lousa" (o menor sacrifício visual) já encurta o suficiente pra parar
+       de colidir, sem precisar redesenhar o resto do rodapé. */
+    @media (max-width: 480px) {
+      #roomlabel { display:none; }
+    }
     .udot { width:8px; height:8px; border-radius:50%; }
     #status { position:fixed; bottom:14px; right:14px; z-index:1000; font-size:11px; color:var(--muted); display:flex; align-items:center; gap:6px; }
     .sdot { width:6px; height:6px; border-radius:50%; background:#444; }
@@ -52,12 +87,23 @@
 
     /* ── Painel superior direito (View + Tutorial) ── */
     #top-right-panel {
-      position:fixed; top:62px; right:10px; z-index:1000;
+      /* Empilhado abaixo da toolbar/opções por padrão — evita qualquer risco
+         de sobreposição horizontal com a toolbar, que é o problema que ficar
+         "lado a lado" sempre corre (largura da toolbar varia com zoom, novo
+         botão, etc — nunca dá pra confiar num número mágico de pixels aqui).
+         O "top" é calculado via JS (updTopRightPanelPos, chamada em setTool()
+         e no resize) medindo a borda inferior REAL da toolbar e do painel de
+         opções — não um valor fixo — então nunca fica nem cedo demais
+         (sobrepondo) nem longe demais (parecendo flutuar sem motivo). */
+      position:fixed; top:70px; right:10px; z-index:1000;
       display:flex; align-items:center; gap:6px;
+      transition: top .15s;
     }
-    /* Desktop: fica ao lado da toolbar no topo */
-    @media (min-width: 640px) {
-      #top-right-panel { top:14px; right:14px; }
+    /* Só fica ao lado da toolbar (como antes) em telas bem largas, com folga
+       generosa de sobra (toolbar cheia de botões + painel + margens cabem
+       tranquilamente bem antes de 1200px) — não é um cálculo apertado. */
+    @media (min-width: 1200px) {
+      #top-right-panel { top:14px !important; right:14px; }
     }
     .trp-btn {
       display:flex; align-items:center; gap:6px;
@@ -94,15 +140,28 @@
        PAINEL DE CAMADAS
     ══════════════════════════════════════════ */
     #layers-panel {
-      position:fixed; right:8px; top:78%; transform:translateY(-50%);
-      z-index:1000; background:var(--surface); border:1px solid var(--border);
-      border-radius:14px; padding:0; width:240px;
+      position:fixed; right:8px; z-index:1000; background:var(--surface); border:1px solid var(--border);
+      border-radius:14px; padding:0; width:240px; overflow:hidden;
       box-shadow:0 8px 32px rgba(0,0,0,.5);
       display:flex; flex-direction:column;
-      max-height:calc(53vh - 160px);
-      transition: transform .2s, opacity .2s;
+      /* Âncora por top+bottom (não por %/clamp de top sozinho): o navegador
+         calcula a altura como o espaço entre as duas bordas, o que NUNCA
+         resulta em valor negativo/zero mesmo em telas muito curtas — ao
+         contrário da versão anterior (clamp() de top + max-height em vh),
+         que podia colapsar a caixa a 0px. "top" tem um valor-base aqui, mas o
+         JS (repositionLayersPanel) ajusta ele dinamicamente pra nunca ficar
+         embaixo do painel de propriedades do objeto (#ctx) quando ele existe.
+         min-height garante um piso de usabilidade: em telas realmente
+         minúsculas, o painel prefere invadir um pouco o espaço reservado pro
+         rodapé (bottom:50px) a virar uma fatia inútil de poucos pixels. */
+      top:max(130px, 30vh);
+      bottom:50px;
+      min-height:180px;
+      max-height:480px;
+      transition: transform .2s, opacity .2s, top .2s;
     }
-    #layers-panel.collapsed { transform:translateY(-50%) translateX(232px); }
+    #layers-panel.collapsed { transform:translateX(232px); }
+
     #layers-header {
       display:flex; align-items:center; justify-content:space-between;
       padding:8px 10px; border-bottom:1px solid var(--border);
@@ -229,14 +288,21 @@
        PAINEL DO VIEWPORT
     ══════════════════════════════════════════ */
     #vp-panel {
-      position:fixed; left:8px; top:50%; transform:translateY(-50%);
-      z-index:1000; background:var(--surface); border:1px solid var(--border);
-      border-radius:14px; padding:0; width:190px;
+      position:fixed; left:8px; z-index:1000; background:var(--surface); border:1px solid var(--border);
+      border-radius:14px; padding:0; width:190px; overflow:hidden;
       box-shadow:0 8px 32px rgba(0,0,0,.5);
       display:flex; flex-direction:column;
-      transition: transform .2s, opacity .2s;
+      /* Diferente do #layers-panel: aqui NÃO ancoramos por top+bottom (isso
+         forçava o painel a esticar até o rodapé mesmo sem precisar — o
+         conteúdo (largura/altura/botão) é curto e fixo). Deixamos a altura
+         natural do conteúdo mandar, e só entra um teto de segurança
+         (max-height + scroll interno) quando a janela é curta demais pra
+         caber os ~230px que ele naturalmente precisa. */
+      top:max(130px, 12vh);
+      max-height:min(400px, calc(100vh - 160px));
+      transition: transform .2s, opacity .2s, top .2s;
     }
-    #vp-panel.collapsed { transform:translateY(-50%) translateX(-182px); }
+    #vp-panel.collapsed { transform:translateX(-182px); }
     #vp-header { 
       display:flex; align-items:center; justify-content:space-between;
       padding:10px 12px;
@@ -244,7 +310,14 @@
     }
     #vp-content {
       padding: 12px; display:flex; flex-direction:column; gap:6px;
+      /* Rola apenas o conteúdo (o cabeçalho fica sempre visível/fixo), com
+         scrollbar fina no tema do app em vez da barra nativa cinza padrão. */
+      overflow-y:auto; overflow-x:hidden; min-height:0;
+      scrollbar-width:thin; scrollbar-color:var(--border) transparent;
     }
+    #vp-content::-webkit-scrollbar { width:4px; }
+    #vp-content::-webkit-scrollbar-track { background:transparent; }
+    #vp-content::-webkit-scrollbar-thumb { background:var(--border); border-radius:2px; }
     #vp-header span { font-size:12px; font-weight:600; color:var(--text); letter-spacing:.4px; text-transform:uppercase; }
     #vp-toggle { background:none; border:none; color:var(--muted); cursor:pointer; padding:2px; border-radius:4px; display:flex; align-items:center; }
     #vp-toggle:hover { color:var(--text); background:var(--surface2); }
@@ -293,7 +366,7 @@
   <div class="tb-sep"></div>
   <button class="tb-btn" onclick="clearAll()" style="color:#ff6060"><svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6M14 11v6"/></svg><span class="tb-tip">Limpar</span></button>
   <div class="tb-sep"></div>
-  <button class="tb-btn" onclick="changeRoom()" title="Trocar de lousa"><svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg><span class="tb-tip">Trocar de Lousa</span></button>
+  <button class="tb-btn" onclick="changeRoom()"><svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg><span class="tb-tip">Trocar de Lousa</span></button>
 </div>
 
 <!-- ═══════════ OPÇÕES DE FERRAMENTA ═══════════ -->
@@ -877,6 +950,9 @@ function toggleVpPanel() {
 }
 function toggleLayersPanel() {
   document.getElementById('layers-panel').classList.toggle('collapsed');
+  // Recolher/expandir muda quanto espaço o painel de Camadas precisa — o
+  // painel de seleção (#ctx) reserva menos altura quando ele está recolhido.
+  layoutSidePanels();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2319,7 +2395,7 @@ canvas.on('path:created', opt => {
 canvas.on('selection:created', updCtx);
 canvas.on('selection:updated', updCtx);
 canvas.on('object:modified',   updCtx);
-canvas.on('selection:cleared', () => { document.getElementById('ctx').style.display = 'none'; });
+canvas.on('selection:cleared', () => { document.getElementById('ctx').style.display = 'none'; layoutSidePanels(); });
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // POINTER LOGIC
@@ -2433,6 +2509,7 @@ function setTool(t) {
   if (t === 'pan') {
     enterPanMode();
     opts.classList.add('hidden');
+    layoutSidePanels();
     return;
   }
   if (t === 'select') {
@@ -2456,6 +2533,11 @@ function setTool(t) {
     canvas.defaultCursor = t === 'eraser' ? 'cell' : 'crosshair';
     opts.classList.remove('hidden');
   }
+
+  // Mantém o painel "lousa/como usar" (top-right-panel), o painel de
+  // propriedades do objeto selecionado (#ctx) e o painel de Camadas todos
+  // coordenados entre si — ver layoutSidePanels().
+  layoutSidePanels();
 }
 
 function setColor(c, el) {
@@ -2469,7 +2551,7 @@ function setOp(v) { op = parseInt(v) / 100; document.getElementById('opv').textC
 
 function updCtx() {
   const objs = canvas.getActiveObjects().filter(o => !o._isViewportRect);
-  if (!objs.length) { document.getElementById('ctx').style.display = 'none'; return; }
+  if (!objs.length) { document.getElementById('ctx').style.display = 'none'; layoutSidePanels(); return; }
   const ctx = document.getElementById('ctx');
   ctx.style.display = 'block';
   // Usa o primeiro objeto como referência para preencher os campos
@@ -2518,7 +2600,120 @@ function updCtx() {
     document.getElementById('ctx-sz').value = sw;
     document.getElementById('ctx-sz-v').textContent = sw;
   }
+
+  layoutSidePanels();
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Layout coordenado dos painéis do lado direito (top-right-panel → #ctx →
+// #layers-panel). Cada um mede a borda real do anterior via
+// getBoundingClientRect() — nunca um número fixo "no chute" — e por isso
+// funciona igual não importa o tamanho da tela, zoom, idioma dos textos, etc.
+// Sempre chamar layoutSidePanels() (nunca as funções individuais soltas),
+// pra garantir que rodem na ordem certa: cada painel só sabe se posicionar
+// depois que o anterior já se acomodou.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const LAYERS_PANEL_MIN_RESERVE = 190; // min-height do #layers-panel (180px) + folga
+
+// Borda inferior da "área ocupada" no topo direito: toolbar + painel de
+// opções da ferramenta ativa (se visível) + o painel "lousa/como usar"
+// (esteja ele empilhado abaixo ou ao lado, em telas largas).
+function getTopClearArea() {
+  const toolbar = document.getElementById('toolbar');
+  const opts = document.getElementById('opts');
+  const trp = document.getElementById('top-right-panel');
+  let bottom = toolbar.getBoundingClientRect().bottom;
+  if (opts && !opts.classList.contains('hidden')) {
+    bottom = Math.max(bottom, opts.getBoundingClientRect().bottom);
+  }
+  if (trp) bottom = Math.max(bottom, trp.getBoundingClientRect().bottom);
+  return bottom;
+}
+
+// Posiciona o painel "lousa/como usar" logo abaixo da toolbar/opções. Em
+// telas largas (>=1200px) o CSS assume com segurança que cabe tudo lado a
+// lado, então aqui só limpamos qualquer inline style residual pra deixar o
+// CSS cuidar disso.
+function updTopRightPanelPos() {
+  const trp = document.getElementById('top-right-panel');
+  if (!trp) return;
+
+  if (window.innerWidth >= 1200) {
+    trp.style.top = '';
+    return;
+  }
+
+  const toolbar = document.getElementById('toolbar');
+  const opts = document.getElementById('opts');
+  let bottom = toolbar.getBoundingClientRect().bottom;
+  if (opts && !opts.classList.contains('hidden')) {
+    bottom = Math.max(bottom, opts.getBoundingClientRect().bottom);
+  }
+  trp.style.top = (bottom + 8) + 'px';
+}
+
+// Posiciona o painel de propriedades do objeto selecionado (#ctx) logo abaixo
+// de toda a área ocupada no topo (toolbar/opções/lousa-como usar) — nunca
+// embaixo dela. E, além disso, ENCOLHE a altura máxima dele (max-height)
+// reservando espaço suficiente pro painel de Camadas logo abaixo, em vez de
+// simplesmente empurrar o de Camadas pra fora da tela. Se o de Camadas
+// estiver recolhido (.collapsed), a reserva de espaço é bem menor, já que ele
+// não ocupa lugar nenhum nesse caso.
+function positionCtxPanel() {
+  const ctx = document.getElementById('ctx');
+  if (!ctx) return;
+
+  const top = getTopClearArea() + 12;
+  ctx.style.top = top + 'px';
+
+  const layersPanel = document.getElementById('layers-panel');
+  const layersCollapsed = layersPanel && layersPanel.classList.contains('collapsed');
+  const reserve = layersCollapsed ? 24 : (LAYERS_PANEL_MIN_RESERVE + 24); // +24 = folgas/gaps
+  const maxH = Math.max(120, window.innerHeight - top - reserve);
+  ctx.style.maxHeight = maxH + 'px';
+}
+
+// Empurra o painel de Camadas pra baixo do painel de propriedades do objeto
+// selecionado (#ctx) sempre que ele estiver visível — medindo a altura REAL
+// dele (getBoundingClientRect), não um número fixo. Funciona igual pra
+// qualquer tipo de objeto (retângulo, texto, imagem, grupo...), já que cada
+// um mostra uma quantidade diferente de campos e portanto uma altura
+// diferente. Quando não há objeto selecionado, volta a usar a posição padrão
+// definida em CSS (top:max(130px, 30vh)).
+//
+// O "top" calculado é sempre limitado (clamp) entre a área ocupada no topo
+// (nunca perto demais da toolbar/lousa-como usar) e "innerHeight - 180px"
+// (sempre sobra pelo menos 180px de altura utilizável pro painel de Camadas
+// acima do rodapé) — isso evita depender só da resolução automática do CSS
+// quando os valores ficam sobre-restringidos (top + bottom não cabem), que
+// era o que deixava o painel espremido/quebrado em telas muito curtas.
+function repositionLayersPanel() {
+  const layersPanel = document.getElementById('layers-panel');
+  const ctx = document.getElementById('ctx');
+  if (!layersPanel || !ctx) return;
+
+  if (ctx.style.display !== 'none') {
+    const ctxBottom = ctx.getBoundingClientRect().bottom;
+    const minTop = getTopClearArea() + 12;
+    const desiredTop = Math.max(ctxBottom + 12, minTop);
+    const maxTop = Math.max(window.innerHeight - 180, minTop);
+    layersPanel.style.top = Math.min(desiredTop, maxTop) + 'px';
+  } else {
+    layersPanel.style.top = ''; // volta pro valor padrão do CSS
+  }
+}
+
+// Orquestrador — sempre chamar este, nunca as funções acima isoladas: a
+// ordem importa (top-right-panel precisa se acomodar antes do #ctx medir a
+// borda dele, que por sua vez precisa se acomodar antes do #layers-panel
+// medir a borda dele).
+function layoutSidePanels() {
+  updTopRightPanelPos();
+  positionCtxPanel();
+  repositionLayersPanel();
+}
+window.addEventListener('resize', layoutSidePanels);
 
 // ── Funções de edição ao vivo ─────────────────────────────────────────────────
 // Funcionam tanto em seleção única quanto em multi-seleção.
@@ -3396,6 +3591,50 @@ async function pasteBoardObjects(dataArray) {
   socket.emit('objects:batch', pasted.map(ser).filter(Boolean));
   scheduleLayersUpdate();
 }
+
+// ── Tooltip flutuante da toolbar ────────────────────────────────────────────
+// Substitui o .tb-tip antigo (que ficava preso dentro do overflow do #toolbar,
+// exigindo scroll pra aparecer). Este vive em <body>, com position:fixed,
+// então nunca é cortado por overflow/transform de nenhum ancestral. A posição
+// é recalculada a cada hover via getBoundingClientRect do botão.
+(function initToolbarTooltip() {
+  const tip = document.createElement('div');
+  tip.id = 'tb-floating-tip';
+  document.body.appendChild(tip);
+
+  const canHover = window.matchMedia('(hover: hover)').matches;
+  if (!canHover) return; // em touch/mobile não faz sentido mostrar tooltip de hover
+
+  let hideTimer = null;
+
+  function showTip(btn) {
+    const span = btn.querySelector('.tb-tip');
+    const text = span ? span.textContent : (btn.getAttribute('title') || '');
+    if (!text) return;
+    clearTimeout(hideTimer);
+
+    tip.textContent = text;
+    tip.classList.add('show');
+
+    const r = btn.getBoundingClientRect();
+    let left = r.left + r.width / 2;
+    // Evita o balão vazar pra fora da tela nas bordas esquerda/direita
+    const margin = 8;
+    const half = tip.offsetWidth / 2 || 40;
+    left = Math.min(Math.max(left, margin + half), window.innerWidth - margin - half);
+
+    tip.style.left = left + 'px';
+    tip.style.top  = (r.bottom + 8) + 'px';
+  }
+
+  function hideTip() { tip.classList.remove('show'); }
+
+  document.querySelectorAll('#toolbar .tb-btn').forEach(btn => {
+    btn.addEventListener('mouseenter', () => showTip(btn));
+    btn.addEventListener('mouseleave', hideTip);
+    btn.addEventListener('click', hideTip);
+  });
+})();
 
 // Init
 setTool('select');
