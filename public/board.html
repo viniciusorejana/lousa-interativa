@@ -831,11 +831,11 @@ canvas.on('mouse:down', opt => {
   if (opt.target && opt.target._isViewportRect) return; // nunca seleciona o viewport
   if (isPanMode || spaceHeld) return; // pan mode handled separately
   if (opt.e.button !== 0) return;
-  // 'eraser' e 'pen' nunca devem ser bloqueados por uma seleção residual —
-  // são ferramentas de desenho direto, não de manipulação de seleção.
-  const isDrawTool = tool === 'eraser' || tool === 'pen';
-  if (canvas.getActiveObjects().length > 0 && !isDrawTool) return;
-  if (opt.target && ['rect','circle','line','arrow'].includes(tool)) return;
+  if (canvas.getActiveObjects().length > 0 && tool !== 'eraser') return;
+  // Não precisa mais checar "opt.target && ferramenta de forma" aqui: com
+  // canvas.skipTargetFind = true (setado em setTool para as ferramentas de
+  // desenho), o Fabric nunca encontra um alvo, então opt.target já vem
+  // undefined nesses casos — o clique sempre inicia um desenho novo.
   handlePointerDown(canvas.getPointer(opt.e), opt.target);
 });
 
@@ -2437,14 +2437,22 @@ function setTool(t) {
   }
   if (t === 'select') {
     canvas.isDrawingMode = false; canvas.selection = true;
+    canvas.skipTargetFind = false;
     canvas.defaultCursor = 'default'; opts.classList.add('hidden');
   } else if (t === 'pen') {
     canvas.isDrawingMode = true; canvas.selection = false;
+    canvas.skipTargetFind = true;
     canvas.freeDrawingBrush = new fabric.PencilBrush(canvas);
     canvas.freeDrawingBrush.color = color; canvas.freeDrawingBrush.width = sz;
     opts.classList.remove('hidden');
   } else {
     canvas.isDrawingMode = false; canvas.selection = false;
+    // skipTargetFind impede que o Fabric selecione/arraste um objeto já
+    // existente ao clicar em cima dele com uma ferramenta de desenho — o
+    // clique deve sempre iniciar uma forma/texto novo, nunca selecionar o que
+    // já está no board. A borracha é a exceção: ela precisa que o Fabric
+    // identifique o objeto sob o cursor pra saber o que apagar.
+    canvas.skipTargetFind = (t !== 'eraser');
     canvas.defaultCursor = t === 'eraser' ? 'cell' : 'crosshair';
     opts.classList.remove('hidden');
   }
