@@ -264,7 +264,16 @@ socket.on('draw:start', ({ userId, x, y, color, width, opacity }) => {
 socket.on('draw:move', ({ userId, x, y }) => {
   const s = liveStrokes[userId]; if (!s) return;
   s.pts.push({ x, y });
-  s.path.set({ path: fabric.util.parsePath(pts2path(s.pts)) });
+  // Mesma correção do board.html: recriar o Path do zero, já que mutar
+  // path.set({path:...}) num objeto existente não recalcula a posição/bbox.
+  const styleOpts = {
+    stroke: s.path.stroke, strokeWidth: s.path.strokeWidth, fill: null,
+    opacity: s.path.opacity, strokeLineCap: 'round', strokeLineJoin: 'round',
+    selectable: false, evented: false,
+  };
+  canvas.remove(s.path);
+  s.path = new fabric.Path(pts2path(s.pts), styleOpts);
+  canvas.add(s.path);
   canvas.requestRenderAll();
 });
 socket.on('draw:end', ({ userId, object }) => {

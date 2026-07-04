@@ -816,7 +816,7 @@ canvas.on('mouse:move', opt => {
   socket.volatile.emit('cursor:move', { x: p.x, y: p.y });
 
   if (penActive && tool === 'pen') {
-    socket.volatile.emit('draw:move', { x: p.x, y: p.y });
+    socket.emit('draw:move', { x: p.x, y: p.y });
   }
   if (!isDrawing || !drawStart) return;
   updateTmpShape(p);
@@ -831,7 +831,10 @@ canvas.on('mouse:down', opt => {
   if (opt.target && opt.target._isViewportRect) return; // nunca seleciona o viewport
   if (isPanMode || spaceHeld) return; // pan mode handled separately
   if (opt.e.button !== 0) return;
-  if (canvas.getActiveObjects().length > 0 && tool !== 'eraser') return;
+  // 'eraser' e 'pen' nunca devem ser bloqueados por uma seleção residual —
+  // são ferramentas de desenho direto, não de manipulação de seleção.
+  const isDrawTool = tool === 'eraser' || tool === 'pen';
+  if (canvas.getActiveObjects().length > 0 && !isDrawTool) return;
   if (opt.target && ['rect','circle','line','arrow'].includes(tool)) return;
   handlePointerDown(canvas.getPointer(opt.e), opt.target);
 });
@@ -1063,6 +1066,7 @@ function groupSelected() {
   // GIFs não podem ser agrupados
   if (targets.some(o => o._isGif)) {
     showToast('GIFs animados não podem ser agrupados.');
+    setTimeout(hideToast, 2500);
     return;
   }
 
@@ -1152,12 +1156,14 @@ function _downloadDataUrl(dataUrl, filename) {
   document.body.removeChild(a);
 }
 
-// Exporta a bounding box exata de um conjunto de objetos (seleção, grupo, ou objeto único).
+// Renderiza a bounding box exata de um conjunto de objetos (seleção, grupo, ou
+// objeto único) para um data URL PNG, sem baixar nada — usado tanto pelo export
+// para arquivo quanto pela cópia para a área de transferência do sistema.
 // Usa canvas.toDataURL com left/top/width/height = bounding box absoluta dos objetos,
 // e multiplier=1 para exportar no tamanho exato em que estão no board.
-function exportObjectsAsPNG(objects, filename) {
+function renderObjectsAsDataURL(objects) {
   const targets = objects.filter(o => !o._isViewportRect);
-  if (!targets.length) { showToast('Nada selecionado para exportar.'); return; }
+  if (!targets.length) return null;
 
   // Para obter a bounding box correta no espaço lógico do canvas:
   // - 1 objeto ou grupo real → usa os aCoords do próprio objeto
@@ -1220,6 +1226,12 @@ function exportObjectsAsPNG(objects, filename) {
   canvas.backgroundColor = prevBg;
   canvas.renderAll();
 
+  return dataUrl;
+}
+
+function exportObjectsAsPNG(objects, filename) {
+  const dataUrl = renderObjectsAsDataURL(objects);
+  if (!dataUrl) { showToast('Nada selecionado para exportar.'); return; }
   _downloadDataUrl(dataUrl, filename);
 }
 
@@ -2021,9 +2033,23 @@ socket.on('draw:start', ({ userId, x, y, color: c, width: w, opacity: opa }) => 
 });
 socket.on('draw:move', ({ userId, x, y }) => {
   if (userId === myId) return;
-  const s = remoteStrokes[userId]; if (!s) return;
+  const s = remoteStrokes[userId];
+  if (!s) return;
   s.pts.push({ x, y });
-  s.path.set({ path: fabric.util.parsePath(pts2path(s.pts)) });
+  // IMPORTANTE: mutar path.set({path: ...}) num fabric.Path já existente NÃO
+  // recalcula left/top/width/height/pathOffset — o objeto fica "travado" na
+  // caixa delimitadora minúscula do primeiro ponto, fazendo o traço parecer
+  // comprimido numa área pequena perto do início. A correção é recriar o
+  // objeto Path do zero a cada frame (mesma estratégia já usada nas formas).
+  const styleOpts = {
+    stroke: s.path.stroke, strokeWidth: s.path.strokeWidth, fill: null,
+    opacity: s.path.opacity, strokeLineCap: 'round', strokeLineJoin: 'round',
+    selectable: false, evented: false,
+  };
+  canvas.remove(s.path);
+  s.path = new fabric.Path(pts2path(s.pts), styleOpts);
+  canvas.add(s.path);
+  if (vpRect) canvas.bringToFront(vpRect);
   canvas.requestRenderAll();
 });
 socket.on('draw:end', ({ userId, object }) => {
@@ -2052,7 +2078,8 @@ socket.on('shape:start', ({ userId, shapeId, tool: t, x, y, color: c, width: w, 
 
 socket.on('shape:move', ({ userId, x, y }) => {
   if (userId === myId) return;
-  const rs = remoteShapes[userId]; if (!rs) return;
+  const rs = remoteShapes[userId];
+  if (!rs) return;
   canvas.remove(rs.obj);
   const sh = mkShape(rs.tool, rs.start, { x, y }, null, rs.style);
   if (!sh) return;
@@ -2351,7 +2378,7 @@ function updateTmpShape(p) {
   if (vpRect) canvas.bringToFront(vpRect);
   canvas.requestRenderAll();
   throttle60(() => {
-    socket.volatile.emit('shape:move', { shapeId: tmpShapeId, x: p.x, y: p.y });
+    socket.emit('shape:move', { shapeId: tmpShapeId, x: p.x, y: p.y });
   });
 }
 
@@ -2393,6 +2420,15 @@ function setTool(t) {
   const prev = findById(tmpShapeId);
   if (prev) { canvas.remove(prev); canvas.renderAll(); socket.emit('shape:cancel', { shapeId: tmpShapeId }); }
   tmpShapeId = null;
+
+  // Uma seleção que ficou "presa" de uma ação anterior bloqueia silenciosamente
+  // o mouse:down de qualquer ferramenta de desenho (o guard abaixo checa
+  // getActiveObjects().length > 0). Ao trocar para qualquer ferramenta que não
+  // seja "select", garante que não sobrou nada selecionado.
+  if (t !== 'select' && canvas.getActiveObjects().length > 0) {
+    canvas.discardActiveObject();
+    canvas.renderAll();
+  }
 
   if (t === 'pan') {
     enterPanMode();
@@ -2897,10 +2933,40 @@ async function insertFromExternalUrl(rawUrl, dropPos) {
 }
 
 // ── Paste ─────────────────────────────────────────────────────────────────────
+// Tudo passa pelo clipboard do sistema (evento 'paste' nativo do navegador),
+// não existe mais um clipboard interno próprio do board. Ao copiar (copySel),
+// gravamos no clipboard do sistema tanto uma imagem PNG da seleção (para colar
+// em qualquer outro app) quanto os dados originais dos objetos, escondidos
+// dentro do text/html sob o marcador BOARD_CLIPBOARD_MARKER. Ao colar, se esse
+// marcador estiver presente, reconstruímos os objetos originais (editáveis);
+// caso contrário, tratamos como imagem/URL externa normalmente.
 window.addEventListener('paste', async e => {
+  // Não intercepta colagem de texto normal em campos de edição (inputs,
+  // textarea, contentEditable — inclui a textarea oculta que o Fabric usa
+  // para edição de texto no board).
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return;
+
+  // 1. Dados de objetos do board colados via clipboard do sistema (copiados
+  //    dentro do próprio LiveBoard, nesta ou em outra sessão/aba). Tem
+  //    prioridade sobre a imagem: reconstrói os objetos originais e editáveis.
+  const html = e.clipboardData?.getData('text/html') || '';
+  const boardMatch = html.match(BOARD_CLIPBOARD_RE);
+  if (boardMatch) {
+    e.preventDefault();
+    try {
+      const data = JSON.parse(b64DecodeUtf8(boardMatch[1]));
+      await pasteBoardObjects(data);
+    } catch (err) {
+      console.error('Falha ao colar objetos do board:', err);
+    }
+    return;
+  }
+
   const items = Array.from(e.clipboardData?.items || []);
 
-  // 1. Arquivo de imagem no clipboard (screenshot ou Ctrl+C de imagem)
+  // 2. Arquivo de imagem no clipboard (screenshot, Ctrl+C de imagem, ou PNG
+  //    copiado deste próprio board sem o marcador acima — ex: colado em outra
+  //    aba/dispositivo onde o texto/html não foi preservado)
   const imgFile = items.find(i => i.type.startsWith('image/'));
   if (imgFile) {
     e.preventDefault();
@@ -2913,7 +2979,7 @@ window.addEventListener('paste', async e => {
     return;
   }
 
-  // 2. URL de imagem colada como texto (colar link)
+  // 3. URL de imagem colada como texto (colar link)
   const imgUrlRe = /^https?:\/\/.+\.(png|jpe?g|gif|webp|svg|bmp)(\?.*)?$/i;
   const text = (e.clipboardData.getData('text/plain') || '').trim();
   if (imgUrlRe.test(text)) {
@@ -3138,11 +3204,9 @@ window.addEventListener('keydown', e => {
     else if (e.key === 'y') { e.preventDefault(); redo(); }
     else if (e.key === 'd') { e.preventDefault(); dupSel(); }
     else if (e.key === 'c') { e.preventDefault(); copySel(); }
-    else if (e.key === 'v') {
-      // Só intercepta se houver objetos do board no clipboard interno.
-      // Caso contrário, deixa o evento 'paste' tratar (imagens externas, URLs, etc).
-      if (_clipboard.length) { e.preventDefault(); pasteSel(); }
-    }
+    // Ctrl+V não é interceptado aqui: sempre deixamos o evento 'paste' nativo do
+    // navegador disparar, que lê diretamente do clipboard do sistema (ver listener
+    // de 'paste' mais abaixo, que trata tanto objetos do board quanto imagens/URLs).
     else if (e.key === 'a') {
       e.preventDefault();
       canvas.discardActiveObject();
@@ -3210,28 +3274,73 @@ function dupSel() {
 }
 
 // ── Copiar / Colar ──────────────────────────────────────────────────────────────
-// Clipboard interno (em memória) — guarda dados serializados (não objetos Fabric
-// vivos) para que colar sempre gere objetos 100% novos, com novos ids/elementos.
-let _clipboard = [];
+// Usa exclusivamente o clipboard do sistema (navigator.clipboard / evento
+// 'paste'), sem clipboard interno próprio. Ao copiar, grava no clipboard do
+// sistema DUAS representações da mesma seleção:
+//   - image/png  → a seleção renderizada como imagem (igual ao "Exportar PNG"),
+//                   para colar em qualquer outro app (Word, WhatsApp, etc.)
+//   - text/html  → os dados originais dos objetos (serializados), escondidos
+//                   sob o marcador BOARD_CLIPBOARD_MARKER dentro de um
+//                   comentário HTML. Ao colar de volta no board, esses dados
+//                   têm prioridade e reconstroem os objetos originais,
+//                   editáveis — não apenas a imagem.
+const BOARD_CLIPBOARD_MARKER = 'LOUSA_BOARD_DATA';
+const BOARD_CLIPBOARD_RE = new RegExp(`<!--${BOARD_CLIPBOARD_MARKER}:([A-Za-z0-9+/=]+)-->`);
+
 let _pasteCount = 0; // incrementa a cada colagem para o offset não empilhar no mesmo lugar
 
-function copySel() {
-  const objs = canvas.getActiveObjects().filter(o => !o._isViewportRect);
-  if (!objs.length) { _clipboard = []; return; }
-  _clipboard = objs.map(o => ser(o)).filter(Boolean);
-  _pasteCount = 0;
-  showToast(`${_clipboard.length} objeto(s) copiado(s)`);
+// Codifica/decodifica JSON (com acentos etc.) em base64 com segurança de UTF-8.
+function b64EncodeUtf8(str) { return btoa(unescape(encodeURIComponent(str))); }
+function b64DecodeUtf8(str) { return decodeURIComponent(escape(atob(str))); }
+
+// Converte um data URL (ex: "data:image/png;base64,...") em Blob, para poder
+// ser gravado no clipboard do sistema via ClipboardItem.
+function dataURLToBlob(dataUrl) {
+  const [header, base64] = dataUrl.split(',');
+  const mime = (header.match(/data:(.*?);base64/) || [])[1] || 'image/png';
+  const bin = atob(base64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type: mime });
 }
 
-async function pasteSel() {
-  if (!_clipboard.length) return;
+async function copySel() {
+  const objs = canvas.getActiveObjects().filter(o => !o._isViewportRect);
+  if (!objs.length) return;
+
+  const serialized = objs.map(o => ser(o)).filter(Boolean);
+  if (!serialized.length) return;
+
+  _pasteCount = 0;
+
+  // Mesma renderização usada pelo "Exportar como PNG" (bounding box exata da seleção).
+  const dataUrl = renderObjectsAsDataURL(objs);
+  const html = `<!--${BOARD_CLIPBOARD_MARKER}:${b64EncodeUtf8(JSON.stringify(serialized))}-->`;
+
+  try {
+    const clipboardData = { 'text/html': new Blob([html], { type: 'text/html' }) };
+    if (dataUrl) clipboardData['image/png'] = dataURLToBlob(dataUrl);
+
+    await navigator.clipboard.write([new ClipboardItem(clipboardData)]);
+    showToast(`${serialized.length} objeto(s) copiado(s)`);
+  } catch (err) {
+    console.error('Falha ao copiar para a área de transferência do sistema:', err);
+    showToast('Não foi possível copiar para a área de transferência.');
+  }
+}
+
+// Reconstrói objetos do board a partir de dados serializados vindos do clipboard
+// do sistema (ver BOARD_CLIPBOARD_MARKER acima). Sempre gera objetos 100% novos,
+// com novos ids/elementos — nunca reaproveita referências de objetos vivos.
+async function pasteBoardObjects(dataArray) {
+  if (!dataArray || !dataArray.length) return;
   _pasteCount++;
   const offset = 24 * _pasteCount;
 
   canvas.discardActiveObject();
   const pasted = [];
 
-  for (const srcData of _clipboard) {
+  for (const srcData of dataArray) {
     const data = JSON.parse(JSON.stringify(srcData)); // cópia profunda, nunca reaproveita refs
     const newId = genId();
     const newLeft = (data.left || 0) + offset;

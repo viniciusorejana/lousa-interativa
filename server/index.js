@@ -549,7 +549,7 @@ io.on('connection', socket => {
 
   // ── Draw streaming (caneta livre) ────────────────────────────────────────────
   socket.on('draw:start', data => bcast('draw:start', { ...data, userId }));
-  socket.on('draw:move',  data => socket.broadcast.to(roomId).volatile.emit('draw:move', { ...data, userId }));
+  socket.on('draw:move',  data => socket.broadcast.to(roomId).emit('draw:move', { ...data, userId }));
   socket.on('draw:end',   data => {
     if (data.object) {
       const before = { [data.object.id]: room.state.objects[data.object.id] || null };
@@ -567,7 +567,7 @@ io.on('connection', socket => {
   // sem undo) que só existem enquanto a forma está sendo arrastada. A forma
   // real e definitiva chega via 'object:add' normal (emitFull no cliente).
   socket.on('shape:start', data => bcast('shape:start', { ...data, userId }));
-  socket.on('shape:move',  data => socket.broadcast.to(roomId).volatile.emit('shape:move', { ...data, userId }));
+  socket.on('shape:move',  data => socket.broadcast.to(roomId).emit('shape:move', { ...data, userId }));
   socket.on('shape:end',   data => bcast('shape:end', { ...data, userId }));
   socket.on('shape:cancel', data => bcast('shape:cancel', { ...data, userId }));
 
