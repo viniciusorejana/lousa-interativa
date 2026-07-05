@@ -4,6 +4,7 @@ const { Server } = require('socket.io');
 const path     = require('path');
 const fs       = require('fs');
 const multer   = require('multer');
+const sharp    = require('sharp');
 const { v4: uuidv4 } = require('uuid');
 
 const app    = express();
@@ -14,6 +15,20 @@ const PASSWORD = process.env.BOARD_PASSWORD;
 const UPLOADS  = path.join(__dirname, '../uploads');
 const DATA_DIR = path.join(__dirname, '../data/rooms');
 [UPLOADS, DATA_DIR].forEach(d => fs.mkdirSync(d, { recursive: true }));
+
+// ─── Configuração de armazenamento de uploads ─────────────────────────────────
+// Imagens estáticas (jpg/png/webp/bmp) são recomprimidas pra WebP no upload —
+// costuma cortar 70-90% do peso de uma foto normal sem perda visível. GIFs e
+// SVGs NÃO passam por essa recompressão (GIF perderia a animação; SVG
+// perderia a escalabilidade vetorial virando raster), então têm um teto de
+// tamanho mais restrito, já que não há como reduzir o peso deles aqui.
+const MAX_IMAGE_DIMENSION = 2400;              // maior lado, em px, após redimensionar
+const WEBP_QUALITY        = 84;                // 0-100, 84 é visualmente ~idêntico ao original
+const GIF_MAX_SIZE        = 8 * 1024 * 1024;   // 8MB — GIF não é recomprimido, teto mais rígido
+const UPLOADS_MAX_MB      = parseInt(process.env.UPLOADS_MAX_MB || '2048', 10); // teto de /uploads (2GB por padrão)
+const UPLOAD_SWEEP_INTERVAL = 5  * 60 * 1000;  // varredura de órfãos a cada 5min
+const UPLOAD_GRACE_MS       = 10 * 60 * 1000;  // nunca apaga upload com menos de 10min (evita corrida com upload recém-chegado)
+const STORAGE_LOG_INTERVAL  = 15 * 60 * 1000;  // log periódico de uso de disco a cada 15min
 
 // ─── Limpeza no startup ───────────────────────────────────────────────────────
 // Apaga todos os dados de rooms e uploads ao iniciar.
@@ -151,25 +166,23 @@ setInterval(() => {
 
     clearTimeout(room.saveTimer);
 
-    // Coleta uploads referenciados por imagens desta sala
-    const imgFiles = [];
+    // Coleta uploads referenciados por imagens desta sala (recursivo — cobre
+    // também imagens aninhadas dentro de grupos, ver collectImageFilenames).
+    const imgFilesSet = new Set();
     for (const obj of Object.values(room.state.objects)) {
-      if (obj.type === 'image' && obj.src) {
-        const filename = imgFilename(obj.src);
-        if (filename) imgFiles.push(filename);
-      }
+      collectImageFilenames(obj, imgFilesSet);
     }
 
     // Apaga JSON da sala e uploads (async, sem bloquear)
     fs.unlink(roomFile(roomId), () => {});
-    for (const filename of imgFiles) {
+    for (const filename of imgFilesSet) {
       fs.unlink(path.join(UPLOADS, filename), () => {});
     }
 
     delete rooms[roomId];
 
     const mins = Math.round((now - room.lastEmpty) / 60000);
-    console.log(`[room] Evicted: ${roomId} — ${mins}min inativa, ${imgFiles.length} upload(s) removido(s)`);
+    console.log(`[room] Evicted: ${roomId} — ${mins}min inativa, ${imgFilesSet.size} upload(s) removido(s)`);
   }
 }, 60 * 1000);  // checa a cada 1 minuto
 
@@ -247,10 +260,127 @@ function imgFilename(src) {
   if (src.includes('/uploads/')) return path.basename(src);
   return null;
 }
-function deleteImgFile(src) {
-  const f = imgFilename(src);
-  if (f) fs.unlink(path.join(UPLOADS, f), () => {});
+
+// Coleta recursivamente nomes de arquivo de imagem referenciados por um
+// objeto — inclusive dentro de grupos. Grupos guardam os filhos serializados
+// DENTRO de si mesmos (obj.objects[]), não como entradas separadas em
+// room.state.objects, então uma imagem dentro de um grupo só é encontrada
+// recursando aqui — sem isso, ela pareceria "não referenciada" e seria
+// apagada por engano enquanto ainda está visível dentro do grupo.
+function collectImageFilenames(obj, set) {
+  if (!obj) return;
+  const f1 = imgFilename(obj.src);
+  if (f1) set.add(f1);
+  const f2 = imgFilename(obj._gifUrl);
+  if (f2) set.add(f2);
+  if (obj.type === 'group' && Array.isArray(obj.objects)) {
+    obj.objects.forEach(child => collectImageFilenames(child, set));
+  }
 }
+
+// Todos os nomes de arquivo de imagem/gif atualmente referenciados por
+// QUALQUER sala conhecida — no estado atual, em qualquer pilha de undo/redo
+// de qualquer usuário conectado (pra não apagar algo que um "Ctrl+Z" ainda
+// pode trazer de volta), e em salas salvas em disco mas fora da RAM no
+// momento (não deveria acontecer durante uma mesma execução do servidor,
+// já que o eviction apaga os dois juntos — mas checamos por segurança).
+function collectReferencedFilenames() {
+  const referenced = new Set();
+
+  for (const room of Object.values(rooms)) {
+    for (const obj of Object.values(room.state.objects || {})) {
+      collectImageFilenames(obj, referenced);
+    }
+    for (const uh of Object.values(room.userHistory || {})) {
+      for (const action of [...(uh.undoStack || []), ...(uh.redoStack || [])]) {
+        for (const map of [action.objectsBefore, action.objectsAfter]) {
+          if (!map) continue;
+          for (const val of Object.values(map)) collectImageFilenames(val, referenced);
+        }
+      }
+    }
+  }
+
+  try {
+    for (const f of fs.readdirSync(DATA_DIR)) {
+      if (!f.endsWith('.json')) continue;
+      const roomId = f.replace('.json', '');
+      if (rooms[roomId]) continue; // já contado acima
+      try {
+        const data = JSON.parse(fs.readFileSync(path.join(DATA_DIR, f), 'utf8'));
+        for (const obj of Object.values((data.state || {}).objects || {})) {
+          collectImageFilenames(obj, referenced);
+        }
+      } catch (_) {}
+    }
+  } catch (_) {}
+
+  return referenced;
+}
+
+// Estatísticas de uso da pasta de uploads — usado no log periódico, no teto
+// de segurança do /upload e no endpoint /api/storage.
+function getUploadsStats() {
+  let totalBytes = 0, fileCount = 0;
+  try {
+    for (const f of fs.readdirSync(UPLOADS)) {
+      try {
+        const stat = fs.statSync(path.join(UPLOADS, f));
+        totalBytes += stat.size;
+        fileCount++;
+      } catch (_) {}
+    }
+  } catch (_) {}
+  return { fileCount, totalBytes, totalMB: +(totalBytes / 1024 / 1024).toFixed(1) };
+}
+
+// Varredura periódica de uploads órfãos: um arquivo é órfão quando não está
+// em collectReferencedFilenames() — ou seja, não é referenciado por NENHUMA
+// sala conhecida, nem no estado atual, nem em nenhuma pilha de undo/redo.
+//
+// Não usamos "tempo desde o último uso" como critério de segurança (isso
+// arriscaria apagar uma imagem parada mas visível na tela — ex: uma logo que
+// fica horas sem ser tocada mas continua sendo exibida). O critério real é
+// referência: existe em algum lugar ou não. O tempo (UPLOAD_GRACE_MS) entra
+// só como uma folga de segurança pra uploads recém-chegados que ainda não
+// foram sincronizados no estado da sala (uma corrida de milissegundos, não
+// minutos) — nunca apagamos algo com menos de 10min de vida.
+function sweepOrphanedUploads() {
+  let referenced;
+  try { referenced = collectReferencedFilenames(); }
+  catch (err) { console.error('[uploads] Erro ao coletar referências:', err.message); return; }
+
+  let files;
+  try { files = fs.readdirSync(UPLOADS); } catch (_) { return; }
+
+  const now = Date.now();
+  let removed = 0, freedBytes = 0;
+
+  for (const filename of files) {
+    if (referenced.has(filename)) continue;
+    const filePath = path.join(UPLOADS, filename);
+    let stat;
+    try { stat = fs.statSync(filePath); } catch (_) { continue; }
+    if (now - stat.mtimeMs < UPLOAD_GRACE_MS) continue;
+    try {
+      fs.unlinkSync(filePath);
+      removed++;
+      freedBytes += stat.size;
+    } catch (_) {}
+  }
+
+  if (removed > 0) {
+    console.log(`[uploads] Varredura de órfãos: ${removed} arquivo(s) removido(s), ${(freedBytes / 1024 / 1024).toFixed(1)}MB liberados`);
+  }
+}
+setInterval(sweepOrphanedUploads, UPLOAD_SWEEP_INTERVAL);
+
+// Log periódico de uso de disco — visibilidade simples sem precisar de SSH
+// durante uma live pra saber se o armazenamento está sob controle.
+setInterval(() => {
+  const stats = getUploadsStats();
+  console.log(`[uploads] Uso atual: ${stats.fileCount} arquivo(s), ${stats.totalMB}MB / ${UPLOADS_MAX_MB}MB`);
+}, STORAGE_LOG_INTERVAL);
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
 app.use(express.json({ limit: '2mb' }));
@@ -272,9 +402,67 @@ app.post('/auth', (req, res) => {
 });
 app.get('/check', (req, res) => isAuth(req) ? res.json({ ok: true }) : res.status(401).json({ ok: false }));
 
-app.post('/upload', upload.single('image'), (req, res) => {
+app.post('/upload', upload.single('image'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo' });
-  res.json({ url: '/uploads/' + req.file.filename });
+
+  const cleanupTemp = () => fs.unlink(req.file.path, () => {});
+
+  // Teto de segurança: nunca deixa a pasta de uploads crescer sem limite.
+  // Roda uma varredura de órfãos primeiro — se o "excesso" for só lixo
+  // acumulado, isso já libera espaço e evita recusar um upload legítimo.
+  sweepOrphanedUploads();
+  const stats = getUploadsStats();
+  if (stats.totalMB >= UPLOADS_MAX_MB) {
+    cleanupTemp();
+    return res.status(507).json({
+      error: `Armazenamento cheio (${stats.totalMB}MB / ${UPLOADS_MAX_MB}MB). Apague algumas imagens/gifs antigas do board pra liberar espaço.`
+    });
+  }
+
+  const ext = path.extname(req.file.filename).toLowerCase();
+
+  // GIF não é recomprimido (perderia a animação) — só um teto de tamanho
+  // mais restrito, já que não há como reduzir o peso dele aqui.
+  if (ext === '.gif') {
+    if (req.file.size > GIF_MAX_SIZE) {
+      cleanupTemp();
+      return res.status(413).json({ error: `GIF muito grande (máx. ${GIF_MAX_SIZE / 1024 / 1024}MB).` });
+    }
+    return res.json({ url: '/uploads/' + req.file.filename });
+  }
+
+  // SVG também não é recomprimido: rasterizar um SVG faria ele perder a
+  // escalabilidade vetorial, e SVGs já costumam ser pequenos (baseados em
+  // texto) — não há ganho real em processar.
+  if (ext === '.svg') {
+    return res.json({ url: '/uploads/' + req.file.filename });
+  }
+
+  // Demais formatos (jpg/png/webp/bmp): redimensiona (se maior que o teto) e
+  // recomprime pra WebP. Costuma cortar 70-90% do peso de uma foto normal
+  // sem perda visível.
+  try {
+    const outputFilename = uuidv4() + '.webp';
+    const outputPath = path.join(UPLOADS, outputFilename);
+
+    await sharp(req.file.path)
+      .rotate() // aplica a orientação EXIF antes de descartar os metadados
+      .resize({
+        width: MAX_IMAGE_DIMENSION, height: MAX_IMAGE_DIMENSION,
+        fit: 'inside', withoutEnlargement: true,
+      })
+      .webp({ quality: WEBP_QUALITY })
+      .toFile(outputPath);
+
+    cleanupTemp(); // remove o arquivo original (pré-compressão)
+    res.json({ url: '/uploads/' + outputFilename });
+  } catch (err) {
+    console.error('[upload] Erro ao comprimir imagem, entregando original:', err.message);
+    // Fallback: se a compressão falhar por algum motivo (arquivo corrompido,
+    // formato inesperado, etc.), ainda entrega o arquivo original em vez de
+    // quebrar o upload do usuário.
+    res.json({ url: '/uploads/' + req.file.filename });
+  }
 });
 
 // Proxy de imagens externas — evita problemas de CORS ao arrastar/colar imagens da internet
@@ -313,6 +501,39 @@ app.get('/api/rooms', (req, res) => {
     .filter(id => !rooms[id])
     .map(id => ({ id, users: 0, active: false }));
   res.json([...inMemory, ...onDisk]);
+});
+
+// API: visão geral de uso de armazenamento (uploads + salas) — pra
+// acompanhar sem precisar de SSH durante uma live.
+app.get('/api/storage', (req, res) => {
+  if (!isAuth(req)) return res.status(401).json({ error: 'Não autenticado' });
+
+  const uploads = getUploadsStats();
+
+  const roomsInfo = Object.entries(rooms).map(([id, r]) => {
+    let imgCount = 0;
+    for (const obj of Object.values(r.state.objects || {})) {
+      const set = new Set();
+      collectImageFilenames(obj, set);
+      imgCount += set.size;
+    }
+    return {
+      id,
+      users:   Object.keys(r.users).length,
+      objects: Object.keys(r.state.objects || {}).length,
+      images:  imgCount,
+    };
+  });
+
+  res.json({
+    uploads: {
+      fileCount:    uploads.fileCount,
+      totalMB:      uploads.totalMB,
+      limitMB:      UPLOADS_MAX_MB,
+      percentUsed:  +((uploads.totalMB / UPLOADS_MAX_MB) * 100).toFixed(1),
+    },
+    rooms: roomsInfo,
+  });
 });
 
 // Slug preview: retorna o slug que será usado para um nome
