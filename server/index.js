@@ -116,6 +116,11 @@ function defaultRoomState() {
     objects:  {},
     layers:   [{ id: 'layer-default', name: 'Camada 1', visible: true }],
     viewport: { x: 0, y: 0, w: 1920, h: 1080 },
+    // clientId (persistente por navegador, não por conexão) → posição da área
+    // reservada de spawn desse cliente. Só existe uma entrada aqui depois que
+    // a pessoa move a área pelo menos uma vez (ver 'staging:sync' abaixo) —
+    // não sincroniza em tempo real, só quando a posição é confirmada.
+    stagingAreas: {},
   };
 }
 
@@ -128,8 +133,10 @@ function getRoom(roomId) {
 
   // Tenta carregar do disco; se não existe, cria nova
   const saved = loadRoomFromDisk(roomId);
+  const state = saved ? saved.state : defaultRoomState();
+  if (!state.stagingAreas) state.stagingAreas = {}; // salas salvas antes dessa feature
   rooms[roomId] = {
-    state:       saved ? saved.state : defaultRoomState(),
+    state,
     userHistory: {},    // userId → { undoStack: [...], redoStack: [...] } — não persiste no disco (é por sessão)
     users:       {},    // userId → { id, name, color }
     saveTimer:   null,
@@ -138,6 +145,7 @@ function getRoom(roomId) {
   console.log(`[room] Na memória: ${roomId} (${saved ? 'restaurado' : 'novo'})`);
   return rooms[roomId];
 }
+
 
 // Salva uma sala no disco de forma debounced (2s após última alteração)
 function scheduleSave(roomId) {
@@ -557,6 +565,11 @@ io.on('connection', socket => {
   const userColor  = `hsl(${Math.floor(Math.random()*360)},70%,60%)`;
   const rawRoom    = (socket.handshake.query.roomId || 'default').trim();
   const roomId     = slugify(rawRoom) || 'default';
+  // Identificador persistente POR NAVEGADOR (não por conexão — sobrevive a
+  // reconexões, diferente de userId). Usado só pra identificar de quem é cada
+  // área reservada de spawn (ver 'staging:sync' abaixo). Cai pro userId da
+  // conexão se o cliente não enviar um (ex: cliente antigo, ou a view do OBS).
+  const clientId   = (socket.handshake.query.clientId || '').trim().slice(0, 60) || userId;
 
   const room = getRoom(roomId);
   socket.join(roomId);  // Socket.IO room para broadcast isolado
@@ -801,6 +814,26 @@ io.on('connection', socket => {
   socket.on('viewport:sync', vp => {
     room.state.viewport = vp;
     bcast('viewport:sync', vp);
+    scheduleSave(roomId);
+  });
+
+  // ── Área reservada de spawn (por cliente) ────────────────────────────────
+  // Não é tempo real (não segue o mouse pela rede) — só sincroniza quando a
+  // pessoa CONFIRMA a nova posição. Guardamos por clientId (persiste entre
+  // reconexões) pra cada cliente ter sua própria área mostrada pros outros,
+  // sem depender de estar online no momento.
+  socket.on('staging:sync', pos => {
+    if (!pos || typeof pos.left !== 'number' || typeof pos.top !== 'number') return;
+    if (!room.state.stagingAreas) room.state.stagingAreas = {};
+    const entry = { clientId, name: userName, color: userColor, left: pos.left, top: pos.top, updatedAt: Date.now() };
+    room.state.stagingAreas[clientId] = entry;
+    toRoom('staging:sync', entry); // inclui o remetente, pra confirmar visualmente também
+    scheduleSave(roomId);
+  });
+
+  socket.on('staging:remove', () => {
+    if (room.state.stagingAreas) delete room.state.stagingAreas[clientId];
+    toRoom('staging:remove', { clientId });
     scheduleSave(roomId);
   });
 
