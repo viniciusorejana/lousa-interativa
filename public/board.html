@@ -116,6 +116,10 @@
     .trp-btn.view:hover { background:rgba(74,222,128,.08); border-color:#4ade80; }
     .trp-btn.help { color:#7c5cff; border-color:rgba(124,92,255,.25); }
     .trp-btn.help:hover { background:rgba(124,92,255,.08); border-color:#7c5cff; }
+    .trp-btn.spawn { color:#60a5fa; border-color:rgba(96,165,250,.25); }
+    .trp-btn.spawn:hover { background:rgba(96,165,250,.08); border-color:#60a5fa; }
+    .trp-btn.spawn.staging { color:#fbbf24; border-color:rgba(251,191,36,.25); }
+    .trp-btn.spawn.staging:hover { background:rgba(251,191,36,.08); border-color:#fbbf24; }
     .trp-dot { width:6px; height:6px; border-radius:50%; background:#4ade80; flex-shrink:0; }
     /* Mobile: esconde o texto, mostra só ícone + dot */
     @media (max-width: 639px) {
@@ -505,6 +509,13 @@
     </svg>
     <span class="trp-label">Como usar</span>
   </button>
+  <button class="trp-btn spawn" id="trp-spawn">
+    <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+      <circle cx="12" cy="12" r="3"/>
+      <path d="M12 2v4M12 18v4M2 12h4M18 12h4" stroke-linecap="round"/>
+    </svg>
+    <span class="trp-label" id="spawn-btn-label">Spawn: minha tela</span>
+  </button>
 </div>
 <div id="zoom-info">100%</div>
 
@@ -871,6 +882,7 @@ function createViewportRect() {
   canvas.add(vpRect);
   canvas.bringToFront(vpRect);
   drawViewportRect();
+  createStagingRect();
 }
 
 function drawViewportRect() {
@@ -880,6 +892,53 @@ function drawViewportRect() {
   canvas.bringToFront(vpRect);
   document.getElementById('vp-w').value = Math.round(vpW);
   document.getElementById('vp-h').value = Math.round(vpH);
+  canvas.renderAll();
+  drawStagingRect();
+}
+
+// ── Retângulo tracejado da área reservada de spawn ────────────────────────────
+// Mesmo estilo visual do retângulo do viewport, só que amarelo (mesma cor do
+// botão "Spawn: área reservada" quando ativo) e só fica visível quando o modo
+// 'staging' está ativo — reaproveita a mesma flag _isViewportRect pra ficar
+// automaticamente fora de seleção, export, serialização e z-order (é só um
+// guia visual local, nunca sincroniza com outros usuários, igual o vpRect).
+let stagingRect = null;
+const STAGING_RECT_W = 900, STAGING_RECT_H = 700;
+
+function createStagingRect() {
+  if (stagingRect) { canvas.remove(stagingRect); }
+  stagingRect = new fabric.Rect({
+    left: 0, top: 0,
+    width: STAGING_RECT_W, height: STAGING_RECT_H,
+    fill: 'transparent',
+    stroke: '#fbbf24',
+    strokeWidth: 2,
+    strokeDashArray: [12, 6],
+    selectable: false,
+    evented: false,
+    hasControls: false,
+    hasBorders: false,
+    lockMovementX: true,
+    lockMovementY: true,
+    lockScalingX: true,
+    lockScalingY: true,
+    lockRotation: true,
+    excludeFromExport: true,
+    _isViewportRect: true,
+  });
+  canvas.add(stagingRect);
+  drawStagingRect();
+}
+
+function drawStagingRect() {
+  if (!stagingRect) return;
+  stagingRect.set({
+    left: vpW + STAGING_MARGIN, top: 0,
+    width: STAGING_RECT_W, height: STAGING_RECT_H,
+    visible: imageSpawnMode === 'staging',
+  });
+  stagingRect.setCoords();
+  canvas.bringToFront(stagingRect);
   canvas.renderAll();
 }
 
@@ -1141,8 +1200,7 @@ function groupSelected() {
 
   // GIFs não podem ser agrupados
   if (targets.some(o => o._isGif)) {
-    showToast('GIFs animados não podem ser agrupados.');
-    setTimeout(hideToast, 2500);
+    showToast('GIFs animados não podem ser agrupados.', 2500);
     return;
   }
 
@@ -1307,7 +1365,7 @@ function renderObjectsAsDataURL(objects) {
 
 function exportObjectsAsPNG(objects, filename) {
   const dataUrl = renderObjectsAsDataURL(objects);
-  if (!dataUrl) { showToast('Nada selecionado para exportar.'); return; }
+  if (!dataUrl) { showToast('Nada selecionado para exportar.', 2500); return; }
   _downloadDataUrl(dataUrl, filename);
 }
 
@@ -2860,8 +2918,23 @@ function addText(pos) {
 // ═══════════════════════════════════════════════════════════════════════════════
 // IMAGENS
 // ═══════════════════════════════════════════════════════════════════════════════
-function showToast(msg) { document.getElementById('toast-msg').textContent = msg; document.getElementById('toast').classList.add('show'); }
-function hideToast() { document.getElementById('toast').classList.remove('show'); }
+// showToast(msg) sozinho = toast "de processo" (ex: "Enviando imagem..."),
+// fica até o próprio código chamar hideToast() quando a operação terminar.
+// showToast(msg, ms) = toast "de notificação" (confirmação/erro rápido),
+// some sozinho depois de `ms`. O timer é sempre cancelado/reiniciado a cada
+// chamada, pra um toast novo nunca ser escondido por um timer de um toast
+// anterior que ainda estava pendente.
+let _toastHideTimer = null;
+function showToast(msg, autoHideMs) {
+  document.getElementById('toast-msg').textContent = msg;
+  document.getElementById('toast').classList.add('show');
+  clearTimeout(_toastHideTimer);
+  _toastHideTimer = autoHideMs ? setTimeout(hideToast, autoHideMs) : null;
+}
+function hideToast() {
+  clearTimeout(_toastHideTimer);
+  document.getElementById('toast').classList.remove('show');
+}
 
 async function uploadFile(file) {
   showToast('Enviando imagem...');
@@ -2884,6 +2957,69 @@ function centerImgOnViewport(img) {
   img.scale(s);
   img.set({ left: cx - img.getScaledWidth() / 2, top: cy - img.getScaledHeight() / 2 });
 }
+
+// ── Preferência local de onde novas imagens/gifs "nascem" no board ──────────
+// 'view'    → centralizada na tela que EU (localmente) estou olhando agora
+//             (padrão, comportamento de sempre).
+// 'staging' → sempre numa área reservada, fora do viewport oficial do OBS
+//             (que é sempre fixo em 0,0 → vpW×vpH) — assim ela não "pipoca"
+//             no meio da tela de quem está olhando em tempo real; a pessoa
+//             arrasta pra posição final depois.
+// É uma preferência POR NAVEGADOR (localStorage), não por sala nem por
+// objeto — cada pessoa escolhe pra si, sem afetar o que os outros veem.
+let imageSpawnMode = localStorage.getItem('lb_imageSpawnMode') || 'view';
+
+const STAGING_MARGIN  = 160; // distância da borda direita do viewport oficial
+const STAGING_MAX_W   = 480; // largura máxima (em coordenadas do canvas, não da tela)
+let _stagingCascade = 0;
+
+// Posiciona uma imagem/gif na área reservada, em cascata simples pra novas
+// imagens não empilharem exatamente uma em cima da outra.
+function placeInStagingArea(img) {
+  const s = img.width > STAGING_MAX_W ? STAGING_MAX_W / img.width : 1;
+  img.scale(s);
+  const offset = (_stagingCascade % 8) * 40;
+  _stagingCascade++;
+  img.set({ left: vpW + STAGING_MARGIN + offset, top: offset });
+}
+
+// Ponto único de posicionamento pra qualquer imagem/gif recém-inserido
+// (upload, colar arquivo, colar URL externa) — respeita a preferência acima.
+// NÃO é usado para: restaurar um objeto já existente (existingData), colar um
+// objeto do próprio board (pasteBoardObjects, tem sua própria lógica de
+// offset) ou drag-and-drop (a posição já é escolhida explicitamente por onde
+// a pessoa soltou o arquivo).
+function placeNewImage(img) {
+  if (imageSpawnMode === 'staging') placeInStagingArea(img);
+  else centerImgOnViewport(img);
+}
+
+function updateSpawnBtnUI() {
+  const label = document.getElementById('spawn-btn-label');
+  const btn   = document.getElementById('trp-spawn');
+  if (imageSpawnMode === 'staging') {
+    label.textContent = 'Spawn: área reservada';
+    btn.title = 'Novas imagens/gifs aparecem numa área reservada, fora do viewport do OBS — arraste pra posição depois. Clique pra mudar.';
+    btn.classList.add('staging');
+  } else {
+    label.textContent = 'Spawn: minha tela';
+    btn.title = 'Novas imagens/gifs aparecem centralizadas na tela que você está olhando agora. Clique pra mudar.';
+    btn.classList.remove('staging');
+  }
+}
+
+function toggleImageSpawnMode() {
+  imageSpawnMode = imageSpawnMode === 'staging' ? 'view' : 'staging';
+  localStorage.setItem('lb_imageSpawnMode', imageSpawnMode);
+  updateSpawnBtnUI();
+  drawStagingRect();
+  showToast(imageSpawnMode === 'staging'
+    ? 'Novas imagens vão para a área reservada'
+    : 'Novas imagens vão centralizadas na sua tela', 2200);
+}
+
+document.getElementById('trp-spawn').addEventListener('click', toggleImageSpawnMode);
+updateSpawnBtnUI();
 
 // ── Imagens e GIFs animados ───────────────────────────────────────────────────
 // GIFs são decodificados num WebWorker (gif.worker.js) fora da thread principal.
@@ -3001,7 +3137,7 @@ function _buildFabricGif(frames, canvasW, canvasH, existingData, relUrl) {
       const maxW = (window.innerWidth * 0.5) / canvas.getZoom();
       const s    = canvasW > maxW ? maxW / canvasW : 1;
       fabricImg.scale(s);
-      centerImgOnViewport(fabricImg);
+      placeNewImage(fabricImg);
     }
 
     fabricImg.setCoords();
@@ -3065,7 +3201,7 @@ function _gifFallback(absUrl, relUrl, existingData) {
         const maxW = (window.innerWidth * 0.5) / canvas.getZoom();
         const s = imgEl.naturalWidth > maxW ? maxW / imgEl.naturalWidth : 1;
         fabricImg.scale(s);
-        centerImgOnViewport(fabricImg);
+        placeNewImage(fabricImg);
       }
       fabricImg.setCoords();
       resolve(fabricImg);
@@ -3082,7 +3218,7 @@ async function placeImageFromUrl(url) {
   return new Promise(resolve => {
     fabric.Image.fromURL(absoluteImgUrl(url), img => {
       img.id = genId();
-      centerImgOnViewport(img);
+      placeNewImage(img);
       resolve(img);
     }, { crossOrigin: 'anonymous' });
   });
@@ -3273,8 +3409,7 @@ socket.on('history:update', ({ canUndo, canRedo }) => {
 // usuário alterou o(s) mesmo(s) objeto(s) depois da ação original.
 socket.on('history:conflict', ({ count, action }) => {
   const verbo = action === 'undo' ? 'desfazer' : 'refazer';
-  showToast(`Não foi possível ${verbo} ${count} item(ns) — outro usuário alterou depois.`);
-  setTimeout(hideToast, 3500);
+  showToast(`Não foi possível ${verbo} ${count} item(ns) — outro usuário alterou depois.`, 3500);
 });
 function changeRoom() {
   // Volta para a tela de login direto no passo 2 (escolha de sala).
@@ -3529,10 +3664,10 @@ async function copySel() {
     if (dataUrl) clipboardData['image/png'] = dataURLToBlob(dataUrl);
 
     await navigator.clipboard.write([new ClipboardItem(clipboardData)]);
-    showToast(`${serialized.length} objeto(s) copiado(s)`);
+    showToast(`${serialized.length} objeto(s) copiado(s)`, 2000);
   } catch (err) {
     console.error('Falha ao copiar para a área de transferência do sistema:', err);
-    showToast('Não foi possível copiar para a área de transferência.');
+    showToast('Não foi possível copiar para a área de transferência.', 3000);
   }
 }
 
