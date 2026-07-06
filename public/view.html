@@ -13,87 +13,9 @@
 <canvas id="board"></canvas>
 <script src="/socket.io/socket.io.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.1/fabric.min.js"></script>
+<script src="/js/shared/fabric-image-patch.js"></script>
+<script src="/js/shared/socket-client.js"></script>
 <script>
-// ── Monkey-patch fabric.Image.fromURL ─────────────────────────────────────────
-(function patchFabricImageFromURL() {
-  const _imgCache = new Map();
-
-  function normalizeUrl(url) {
-    const u = url || '';
-    if (!u || u.startsWith('blob:') || u.startsWith('data:')) return u;
-    if (!u.startsWith('http')) {
-      return window.location.origin + (u.startsWith('/') ? u : '/' + u);
-    }
-    try {
-      const parsed = new URL(u);
-      if (parsed.pathname.startsWith('/uploads/')) {
-        return window.location.origin + parsed.pathname;
-      }
-    } catch(_) {}
-    return u;
-  }
-
-  const _orig = fabric.Image.fromURL;
-  fabric.Image.fromURL = function(url, callback, imgOptions) {
-    const absUrl = normalizeUrl(url);
-    const opts = Object.assign({}, imgOptions || {});
-    opts.crossOrigin = 'anonymous';
-
-    if (!absUrl || !absUrl.includes('/uploads/')) {
-      return _orig.call(this, absUrl, callback, opts);
-    }
-
-    const cached = _imgCache.get(absUrl);
-
-    if (cached && cached.el && cached.el.complete && cached.el.naturalWidth > 0) {
-      const clone = new Image();
-      clone.crossOrigin = 'anonymous';
-      clone.src = cached.el.src;
-      const finish = () => callback(new fabric.Image(clone, opts));
-      if (clone.complete && clone.naturalWidth > 0) { finish(); return; }
-      clone.onload = finish;
-      clone.onerror = () => _orig.call(this, absUrl, callback, opts);
-      return;
-    }
-
-    if (cached && cached.pending) {
-      cached.pending.push({ ctx: this, callback, opts });
-      return;
-    }
-
-    _imgCache.set(absUrl, { el: null, pending: [{ ctx: this, callback, opts }] });
-
-    fetch(absUrl, { mode: 'cors', credentials: 'omit' })
-      .catch(() => {})
-      .finally(() => {
-        const el = new Image();
-        el.crossOrigin = 'anonymous';
-        el.onload = () => {
-          const entry = _imgCache.get(absUrl) || {};
-          const pending = entry.pending || [];
-          _imgCache.set(absUrl, { el, pending: null });
-          pending.forEach(({ ctx, callback: cb, opts: o }) => {
-            const clone = new Image();
-            clone.crossOrigin = 'anonymous';
-            clone.src = el.src;
-            const finish = () => cb(new fabric.Image(clone, o));
-            if (clone.complete && clone.naturalWidth > 0) finish();
-            else { clone.onload = finish; clone.onerror = () => _orig.call(ctx, absUrl, cb, o); }
-          });
-        };
-        el.onerror = () => {
-          const entry = _imgCache.get(absUrl) || {};
-          const pending = entry.pending || [];
-          _imgCache.delete(absUrl);
-          pending.forEach(({ ctx, callback: cb, opts: o }) => _orig.call(ctx, absUrl, cb, o));
-        };
-        el.src = absUrl;
-      });
-  };
-
-  window._fabricImgCache = _imgCache;
-  window._normalizeImgUrl = normalizeUrl;
-})();
 // ── Canvas ────────────────────────────────────────────────────────────────────
 // O canvas da view é sempre do tamanho da janela (configurado no OBS como 1920x1080).
 // O viewport transform mapeia a região do board definida pelo editor para preencher
@@ -143,7 +65,7 @@ const pathParts = window.location.pathname.split('/').filter(Boolean);
 // pathParts: ['view'] ou ['view','lousa-1']
 const viewRoomId = pathParts.length >= 2 ? pathParts[pathParts.length - 1] : 'default';
 
-const socket = io({ query: { type: 'view', roomId: viewRoomId }, transports: ['websocket'] });
+const socket = LB.createSocket({ type: 'view', roomId: viewRoomId });
 
 socket.on('board:init', ({ state }) => {
   if (state && state.viewport) {

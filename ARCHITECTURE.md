@@ -47,8 +47,24 @@ server/
       a manutenção em background). Nenhuma rota HTTP nem evento de socket.io
       mudou de nome, payload ou comportamento — é uma extração mecânica, não
       uma reescrita de lógica. Client (`public/*.html`) ainda não foi tocado.
-- [ ] Fase 2 — client shared (fabric-image-patch, socket-client, event-bus)
-- [ ] Fase 3 — client core + tools
+- [x] **Fase 2** — extraído `public/js/shared/fabric-image-patch.js` (o monkey-patch
+      de `fabric.Image.fromURL`, que era 100% duplicado, byte a byte, entre `board.html`
+      e `view.html`) e `public/js/shared/socket-client.js` (`LB.createSocket(query)`,
+      centralizando o único ponto de configuração de transporte do socket.io). Os dois
+      arquivos HTML agora carregam os mesmos dois arquivos — zero duplicação nesse
+      trecho. `board.html`: 4.380 → 4.288 linhas. `view.html`: 579 → 501 linhas.
+      > **Nota de arquitetura**: esses dois arquivos são **scripts clássicos**
+      > (`<script src="...">`), não ES Modules (`type="module"`) — de propósito. O
+      > restante do código de `board.html`/`view.html` ainda é um único script clássico
+      > gigante (será modularizado nas Fases 3-5). Módulos ES são carregados de forma
+      > adiada (depois do parsing do HTML), enquanto scripts clássicos executam
+      > imediatamente, na ordem em que aparecem — misturar os dois agora inverteria a
+      > ordem de execução e quebraria o patch (ele precisa rodar *antes* de qualquer
+      > `fabric.Image` ser usado). Quando o resto do client virar ES Modules (Fase 3+),
+      > esses dois arquivos viram módulos reais junto com o resto, com a ordem de
+      > `import` resolvendo isso corretamente.
+- [ ] Fase 3 — client core + tools (inclui `event-bus.js`, adiado da Fase 2 porque
+      ainda não há nenhum consumidor real dele até essa fase — evita módulo morto)
 - [ ] Fase 4 — client features
 - [ ] Fase 5 — client UI + entrypoints
 - [ ] Fase 6 — CSS

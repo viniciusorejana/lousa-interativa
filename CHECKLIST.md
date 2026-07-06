@@ -56,8 +56,18 @@ npm run dev
       socket.io de ponta a ponta (conectar → `board:init` → `object:add` →
       `history:update` → `history:undo` → `board:sync`), fora do roteiro padrão mas
       relevante por ser justamente o código que mais mudou de lugar nesta fase.
-- [ ] Fase 2 — rodar itens 1, 2, 9, 10, 16, 19 (foco: patch de imagem/gif compartilhado
-      entre board e view).
+- [x] **Fase 2** — validado via HTTP e testes isolados de código: os dois arquivos
+      compartilhados são servidos corretamente (200, content-type JS), o conteúdo é
+      byte-idêntico ao código original (diff limpo), a ordem das tags `<script>` em
+      `board.html` e `view.html` preserva a mesma sequência de execução de antes, e o
+      log do servidor ficou limpo durante todos os testes. Também rodei o
+      `fabric-image-patch.js` e o `socket-client.js` isoladamente em Node com mocks de
+      `fabric`/`fetch`/`Image`/`io`, confirmando que a lógica de cache de imagem e a
+      chamada de conexão do socket se comportam exatamente como antes.
+      **Importante**: este ambiente não tem navegador disponível para mim testar — o
+      teste definitivo (itens 1, 2, 9, 10, 16, 19 do roteiro) depende de você abrir de
+      verdade `board.html` e `view.html` no navegador. Peço que confirme isso antes de eu
+      seguir pra Fase 3, já que ali eu começo a mexer na lógica principal do canvas.
 - [ ] Fase 3 — rodar itens 1-6, 12, 19 (foco: canvas, estado, ferramentas, undo/redo).
 - [ ] Fase 4 — rodar itens 7-11, 13, 14, 19 (foco: camadas, grupos, export, mídia,
       clipboard, spawn area).
