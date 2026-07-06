@@ -1,6 +1,6 @@
 # LiveBoard 🎨
 
-Quadro colaborativo em tempo real para streams ao vivo no OBS. Múltiplos moderadores podem desenhar, escrever e inserir imagens e GIFs animados no quadro simultaneamente, e tudo reflete ao vivo na transmissão com latência mínima.
+Quadro colaborativo em tempo real para streams ao vivo no OBS. Múltiplos moderadores podem desenhar, escrever e inserir imagens e GIFs animados no quadro simultaneamente, e tudo reflete ao vivo na transmissão com latência mínima. Uma área de spawn reservada, configurável por pessoa, evita que qualquer coisa nova "pipoque" no meio do stream ao vivo.
 
 ---
 
@@ -124,6 +124,7 @@ Validada no servidor via cookie de sessão HttpOnly.
 | `Ctrl+C` | Copiar seleção |
 | `Ctrl+V` | Colar |
 | `Delete` / `Backspace` | Apagar selecionado |
+| `Esc` | Cancelar o "modo mira" de reposicionar a área de spawn reservada |
 
 ### Painel de opções (toolbar)
 
@@ -136,6 +137,49 @@ Largura, altura, opacidade, z-order ("Para trás" / "Para frente"), exportar PNG
 ### Viewport
 
 O painel **VIEWPORT** (canto esquerdo) define a resolução de captura (padrão `1920 × 1080`) e o botão "Ir para Viewport" centraliza a visão.
+
+### Layout dos painéis (topo da tela)
+
+Todos os painéis fixos no topo se reposicionam dinamicamente conforme o tamanho real da tela e da toolbar (nunca em valores fixos "no chute"), então continuam alinhados em qualquer resolução, zoom ou idioma de texto:
+
+| Painel | Posição | Conteúdo |
+|--------|---------|----------|
+| Toolbar principal | Topo, centro | Ferramentas de desenho |
+| Painel de opções | Abaixo da toolbar, centro | Cor, espessura, opacidade (por ferramenta) |
+| **Spawn** | Abaixo do painel de opções, centro | Alternar modo de spawn + mover área reservada (ver seção própria abaixo) |
+| **Ver ao vivo / Como usar** | Canto superior esquerdo | Abrir a view do OBS desta sala / tutorial in-app |
+| Viewport | Canto esquerdo, abaixo do painel anterior | Resolução de captura |
+| Propriedades do objeto (`#ctx`) | Canto direito, abaixo da área ocupada no topo | Aparece com algo selecionado |
+| Camadas | Canto direito, abaixo do painel de propriedades | Sempre visível |
+
+Em telas largas (≥1200px) os painéis de canto ficam fixos; em telas estreitas, cada um mede a borda real do anterior (`getBoundingClientRect`) e se empurra pra baixo automaticamente, sempre nessa ordem: toolbar → opções → spawn → view/ajuda → viewport (e, do lado direito: → propriedades → camadas). Todos os textos dos botões de canto (spawn, ver ao vivo, ajuda) viram **tooltip flutuante** no hover, pra manter os ícones compactos sem perder a descrição completa.
+
+---
+
+## Área de spawn reservada
+
+Controla **onde** imagens, GIFs e qualquer coisa colada com `Ctrl+V` (um objeto, vários soltos ou um grupo inteiro) aparece no board. Pensado pra quem faz live: sem isso, colar algo novo faz o item "pipocar" no meio da tela de quem está assistindo em tempo real.
+
+### Os dois modos
+
+| Modo | Onde as coisas nascem |
+|------|------------------------|
+| **Minha tela** (padrão) | Centralizado na área do board que você, localmente, está olhando agora |
+| **Área reservada** | Numa região tracejada, fora do viewport oficial (`0,0` → `vpW×vpH`, o que a view do OBS realmente mostra) — dá tempo de arrastar pra posição final com calma antes de aparecer "ao vivo" |
+
+Alternável a qualquer momento pelo botão **Spawn** no painel central. A preferência fica salva por navegador (`localStorage`), sobrevive a recarregamentos.
+
+### Posição configurável por pessoa
+
+Cada pessoa escolhe, só pra si, onde a própria área reservada fica — clicando em **"Mover área reservada"** e depois clicando no board (Esc cancela; clique direito no botão reseta pra posição padrão, à direita do viewport oficial).
+
+### Visível para todos
+
+O board mostra a área reservada de **todo mundo que está com o modo ativo** — cada uma com o nome e a cor da respectiva pessoa, pra ninguém colar em cima do que outra pessoa já está organizando. A sincronização **não é em tempo real** (não segue o mouse pela rede): só dispara nestes momentos — ligar/desligar o modo, mover ou resetar a posição, e ao reconectar/recarregar a página já com o modo ativo. Desligar o modo remove a área do board de todo mundo. A posição de cada pessoa persiste no estado da sala (sobrevive a desconexões), identificada por um `clientId` salvo no navegador — não pelo nome de usuário, que pode mudar.
+
+### Colar múltiplos objetos e grupos
+
+Colar (`Ctrl+V`) com o modo "área reservada" ativo funciona pra **qualquer seleção** — um objeto, vários soltos ou um grupo inteiro: todos são traduzidos como um bloco só pra dentro da área reservada, preservando o arranjo relativo entre eles (e encolhendo proporcionalmente, só se necessário, pra caber). Colagens sucessivas caem em cascata, pra nada nascer empilhado exatamente em cima da colagem anterior.
 
 ---
 
@@ -156,10 +200,11 @@ A ordem visual dos objetos (quem fica na frente de quem) é mantida como um arra
 
 ### Copiar e colar
 
-`Ctrl+C` copia a seleção atual (1 ou vários objetos, qualquer tipo) para um clipboard interno. `Ctrl+V` gera **novos objetos** com novos IDs para todos os clientes:
+`Ctrl+C` copia a seleção atual (1 ou vários objetos, qualquer tipo, inclusive grupos inteiros) para um clipboard interno. `Ctrl+V` gera **novos objetos** com novos IDs para todos os clientes:
 
-- Cada colagem aplica um offset incremental de 24px para não empilhar no mesmo lugar
-- `Ctrl+V` múltiplas vezes continua offset­ando progressivamente
+- Sem o modo "área reservada" ativo: cada colagem aplica um offset incremental de 24px a partir da posição original copiada, para não empilhar no mesmo lugar
+- Com o modo "área reservada" ativo: todo o conjunto colado nasce dentro da área reservada, preservando o arranjo relativo entre os objetos (ver [Área de spawn reservada](#área-de-spawn-reservada))
+- `Ctrl+V` múltiplas vezes continua offsetando/cascateando progressivamente
 - GIFs colados entram diretamente no pipeline de animação (não são cópias estáticas)
 - Objetos colados vão para a camada ativa no momento da colagem
 
@@ -252,6 +297,8 @@ liveboard/
 | `draw:end` + `zorder:sync` | Traço finalizado | Garante posição na camada correta |
 | `history:undo` / `redo` | Undo/Redo | Restaura estado completo (objetos + camadas + zorder) |
 | `board:sync` | Estado completo | Após undo/redo ou reconexão |
+| `staging:sync` | Área de spawn reservada movida/ativada | Não-realtime — só ao confirmar; persiste por `clientId` no estado da sala |
+| `staging:remove` | Área de spawn reservada desativada/resetada | Remove a área do board de todos os outros clientes |
 
 ---
 

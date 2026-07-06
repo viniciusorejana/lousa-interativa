@@ -4205,8 +4205,10 @@ const BTUT = [
   { icon:'🖼️', title:'Imagens e GIFs animados',
     body:'Clique no ícone de imagem para fazer upload ou <strong>Ctrl+V</strong> para colar da área de transferência. GIFs são <strong>totalmente animados</strong> no canvas e na view do OBS. Suporte a JPG, PNG, GIF, WebP e SVG.' },
   { icon:'📋', title:'Copiar, colar e duplicar',
-    body:'Selecione qualquer objeto (ou vários) e use:',
+    body:'Selecione qualquer objeto (ou vários, ou um grupo inteiro) e use:',
     keys:['Ctrl+C Copiar','Ctrl+V Colar','Ctrl+D Duplicar','Ctrl+A Selecionar tudo','Del Excluir'] },
+  { icon:'📦', title:'Área de spawn reservada',
+    body:'O painel <strong>Spawn</strong> (centro, abaixo da toolbar) controla onde as coisas novas nascem. No modo <strong>"área reservada"</strong>, imagens, GIFs e tudo que você colar com Ctrl+V — um objeto, vários soltos ou um grupo inteiro — aparece numa área tracejada fora do viewport oficial, em vez de "pipocar" no meio da tela de quem está assistindo ao vivo. Depois é só arrastar pra posição final com calma.<br><br>Use <strong>"Mover área reservada"</strong> pra escolher onde ela fica — é uma preferência sua, cada pessoa tem a própria, e o board mostra a área de todo mundo (com nome e cor de cada um) pra ninguém colidir.' },
   { icon:'📁', title:'Camadas',
     body:'O <strong>painel de Camadas</strong> fica na direita. Crie quantas camadas quiser, reordene por drag-and-drop e oculte camadas inteiras. Novos objetos vão sempre para a <strong>camada ativa</strong>.' },
   { icon:'🔗', title:'Agrupar e desagrupar',
@@ -4217,7 +4219,7 @@ const BTUT = [
     body:'Tudo é sincronizado em tempo real para todos. O <strong>Ctrl+Z / Ctrl+Y</strong> desfaz e refaz para todos ao mesmo tempo.',
     keys:['Ctrl+Z Desfazer','Ctrl+Y Refazer','F Centralizar viewport','0 Zoom 100%'] },
   { icon:'📺', title:'Ver ao vivo (OBS)',
-    body:'Clique em <strong>"Ver ao vivo"</strong> no canto superior direito para abrir a URL desta sala em nova aba. Configure no OBS como source <strong>Browser</strong> com o tamanho do stream — fundo transparente, pronto para overlay.' },
+    body:'Clique em <strong>"Ver ao vivo"</strong> no canto superior esquerdo para abrir a URL desta sala em nova aba. Configure no OBS como source <strong>Browser</strong> com o tamanho do stream — fundo transparente, pronto para overlay.' },
 ];
 
 let btutIdx = 0;
