@@ -94,6 +94,19 @@ npm run dev
       atenção**: item 14 (exportar PNG — objeto único, seleção múltipla, e board
       inteiro sem selecionar nada) e a parte de "copiar como imagem" dentro do item
       11 (copiar/colar), que reaproveita a mesma função de renderização.
+- [x] **`features/groups/group-service.js`** — validado: sintaxe, zero duplicata,
+      ponte íntegra, arquivos servidos e byte-idênticos, socket saudável. **Peça de
+      atenção**: item 8 (agrupar 2+ objetos, mover o grupo, desagrupar e conferir que
+      cada objeto volta pra posição/rotação/escala exatas de antes).
+- [x] **`features/layers/layers-panel.js`** — a extração mais delicada até agora
+      (maior arquivo, mais pontos de reatribuição de estado corrigidos). Validado:
+      sintaxe, zero duplicata, ponte com as 35 funções íntegra (incluindo reconferir
+      as reexportações que os módulos anteriores dependem), arquivos servidos e
+      byte-idênticos, socket saudável. **Peço atenção extra nos itens 7 e 13**: criar
+      camada, renomear, esconder/mostrar, mover objeto entre camadas via
+      drag-and-drop, colapsar/expandir grupos de traços no painel, excluir camada com
+      objetos dentro (deve pedir confirmação) — é literalmente tudo que mudou de
+      arquivo aqui.
 - [ ] Fase 3 (parte 2) / Fase 4 — rodar itens 7-11, 13, 14, 19 conforme cada feature for
       extraída de board-app.js pra seu próprio arquivo.
 - [ ] Fase 4 — rodar itens 7-11, 13, 14, 19 (foco: camadas, grupos, export, mídia,

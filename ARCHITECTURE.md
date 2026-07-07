@@ -116,7 +116,28 @@ server/
         (objeto único, seleção, board inteiro) e o helper compartilhado de
         renderização usado também pelo "copiar como imagem" do clipboard.
         `board-app.js`: 3.450 → 3.313 linhas.
-  - [ ] `features/layers/` (painel de camadas)
+  - [x] `features/groups/group-service.js` (106 linhas) — agrupar/desagrupar
+        (incluindo a matemática de decomposição de matriz de transformação pra
+        preservar posição/rotação/escala de cada filho ao desagrupar) e o toggle
+        de habilitação dos botões de grupo na toolbar. `board-app.js`: 3.313 →
+        3.219 linhas.
+  - [x] `features/layers/layers-panel.js` (613 linhas) — a maior extração até agora:
+        estado de camadas (`boardLayers`, `activeLayerId`), gerenciar camadas
+        (criar/mover/excluir/visibilidade), renderização completa do painel
+        (drag-and-drop de objetos entre camadas, colapsar/expandir, rename inline),
+        e as ações de objeto vindas do painel (mostrar/ocultar, excluir,
+        excluir/ocultar grupo de traços). `board-app.js`: 3.219 → **2.642 linhas**.
+        > Nesta extração também converti `boardLayers` de `let` reatribuível pra
+        > `export const` mutado sempre in-place (`.length=0; .push(...)` em vez de
+        > `boardLayers = novoArray`) — necessário porque um binding importado de
+        > outro módulo não pode ser reatribuído, só mutado. Achei e corrigi os 6
+        > pontos do arquivo que faziam essa reatribuição direta antes de mover a
+        > seção. Também precisei **reexportar** de `board-app.js` os itens que os
+        > módulos já extraídos (`gif-service`, `png-exporter`, `group-service`)
+        > importavam de lá e que agora moraram em `layers-panel.js`
+        > (`activeLayerId`, `objectNames`, `typeCounters`, `assignDefaultName`,
+        > `scheduleLayersUpdate`) — sem isso, aqueles três arquivos quebrariam.
+  - [ ] `features/spawn-area/` (área reservada)
   - [ ] `features/groups/` (agrupar/desagrupar)
   - [ ] `features/export/` (exportar PNG)
   - [ ] `features/spawn-area/` (área reservada)
