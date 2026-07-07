@@ -68,7 +68,23 @@ npm run dev
       teste definitivo (itens 1, 2, 9, 10, 16, 19 do roteiro) depende de você abrir de
       verdade `board.html` e `view.html` no navegador. Peço que confirme isso antes de eu
       seguir pra Fase 3, já que ali eu começo a mexer na lógica principal do canvas.
-- [ ] Fase 3 — rodar itens 1-6, 12, 19 (foco: canvas, estado, ferramentas, undo/redo).
+- [x] **Fase 3 (parte 1)** — validado o que dava pra validar sem navegador: sintaxe
+      ESM real, as 35 funções da ponte `window.*` todas presentes, zero identificador
+      duplicado no nível superior do módulo fundido, arquivos servidos corretamente
+      (200, conteúdo byte-idêntico ao disco), e o fluxo de socket.io continua saudável
+      (regressão — server não foi tocado nesta fase).
+      **Preciso muito da sua ajuda aqui**: esta foi a fase de maior risco até agora —
+      o board.html inteiro passou a depender de uma lista manual de ~35 funções
+      "ponteadas" pra `window` (pra continuar funcionando com os `onclick=` inline do
+      HTML). Se eu esqueci alguma, o sintoma é bem específico: aquele UM botão/campo
+      não faz nada ao clicar/mudar, e o console mostra algo como
+      `Uncaught ReferenceError: nomeDaFuncao is not defined` — se aparecer isso, me
+      manda o nome exato da função no erro, é rápido de corrigir. Por favor rode o
+      roteiro **completo** (itens 1-19), não só o recorte que eu geralmente sugiro,
+      já que praticamente toda interação de UI passa por essa ponte agora.
+- [ ] Fase 3 (parte 2) / Fase 4 — rodar itens 7-11, 13, 14, 19 (foco: camadas, grupos,
+      export, mídia, clipboard, spawn area — conforme cada uma for extraída de
+      board-app.js pra seu próprio arquivo).
 - [ ] Fase 4 — rodar itens 7-11, 13, 14, 19 (foco: camadas, grupos, export, mídia,
       clipboard, spawn area).
 - [ ] Fase 5 — roteiro completo (1-19) — entrypoints e UI final montados.

@@ -1,0 +1,3661 @@
+// ─── Entry point do board.html ────────────────────────────────────────────────
+// Módulo ES real (import/export, escopo próprio, strict mode implícito).
+//
+// Estado atual da migração (ver ARCHITECTURE.md): o canvas e o event-bus já
+// são módulos próprios (core/canvas-manager.js, core/event-bus.js). O restante
+// da lógica do editor (ferramentas, camadas, grupos, mídia, clipboard, etc.)
+// ainda vive inteiro aqui, dentro deste único módulo — a extração de cada
+// pedaço em arquivos próprios continua nas próximas fases (4 e 5), um de
+// cada vez, testável isoladamente.
+//
+// ── Ponte com o HTML ──────────────────────────────────────────────────────────
+// `board.html` usa atributos inline (onclick="setTool('pen')", etc.) em ~50
+// pontos. Handlers inline só enxergam identificadores em `window` — módulos ES
+// não vazam suas declarações de nível superior pra lá automaticamente (ao
+// contrário de scripts clássicos, que hoje compartilham esse mesmo escopo
+// global). A lista de funções abaixo é exposta explicitamente em `window` no
+// final deste arquivo — é a única razão de existir dessa ponte; internamente
+// o módulo continua com import/export de verdade.
+import { canvas, setResizeHook } from './core/canvas-manager.js';
+import { eventBus } from './core/event-bus.js';
+
+// Conecta o resize do canvas (definido em canvas-manager.js) ao redesenho do
+// retângulo de viewport (definido mais abaixo neste arquivo). `drawViewportRect`
+// é uma `function` — hoisted, então já existe como identificador aqui mesmo
+// antes da sua definição textual mais abaixo.
+setResizeHook(() => drawViewportRect());
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ESTADO GERAL
+// ═══════════════════════════════════════════════════════════════════════════════
+let tool = 'select', color = '#ffffff', sz = 4, op = 1, fillShape = false;
+let myId = null;
+let isDrawing = false, drawStart = null, tmpShapeId = null;
+let penActive = false;
+const remoteStrokes = {}, remoteCursors = {};
+
+// ── Sistema de camadas ────────────────────────────────────────────────────────
+let boardLayers    = [{ id: 'layer-default', name: 'Camada 1', visible: true }];
+let activeLayerId  = 'layer-default';
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── FUNCIONALIDADE 1: PAN / NAVEGAÇÃO ──────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+let isPanMode   = false;   // ferramenta pan ativa
+let isPanning   = false;   // está arrastando agora
+let panLastX    = 0, panLastY = 0;
+let spaceHeld   = false;   // espaço pressionado = pan temporário
+let prevTool    = 'select';
+
+// Dois dedos mobile
+let touchLastDist = null, touchLastMidX = null, touchLastMidY = null;
+let isTwoFinger = false;
+
+function enterPanMode() {
+  isPanMode = true;
+  canvas.isDrawingMode = false;
+  canvas.selection = false;
+  canvas.defaultCursor = 'grab';
+  canvas.hoverCursor  = 'grab';
+  document.body.classList.add('pan-mode');
+}
+function exitPanMode() {
+  isPanMode = false;
+  canvas.hoverCursor = 'move';
+  document.body.classList.remove('pan-mode');
+  document.body.classList.remove('panning');
+}
+
+// Scroll (trackpad / roda do mouse) → pan + zoom
+canvas.wrapperEl.addEventListener('wheel', e => {
+  e.preventDefault();
+  const zoom  = canvas.getZoom();
+  const point = new fabric.Point(e.offsetX, e.offsetY);
+
+  if (e.ctrlKey || e.metaKey) {
+    // Pinch-to-zoom do trackpad (ctrlKey) ou Ctrl+scroll
+    const delta = e.deltaY > 0 ? 0.9 : 1.1;
+    const newZoom = Math.max(0.05, Math.min(8, zoom * delta));
+    canvas.zoomToPoint(point, newZoom);
+  } else {
+    // Pan com dois dedos no trackpad ou roda do mouse
+    const vpt = canvas.viewportTransform;
+    vpt[4] -= e.deltaX;
+    vpt[5] -= e.deltaY;
+    canvas.setViewportTransform(vpt);
+  }
+  canvas.renderAll();
+  updateZoomInfo();
+  drawViewportRect();
+  updateVpCoords();
+}, { passive: false });
+
+// Mouse: clique do meio = pan; pan mode = arrastar com btn esquerdo
+const canvasEl = canvas.upperCanvasEl;
+
+canvasEl.addEventListener('mousedown', e => {
+  const isMiddle = e.button === 1;
+  const isLeft   = e.button === 0;
+  if (isMiddle || (isPanMode && isLeft) || (spaceHeld && isLeft)) {
+    e.preventDefault();
+    isPanning = true;
+    panLastX  = e.clientX;
+    panLastY  = e.clientY;
+    document.body.classList.add('panning');
+  }
+}, { passive: false });
+
+window.addEventListener('mousemove', e => {
+  if (!isPanning) return;
+  const dx = e.clientX - panLastX;
+  const dy = e.clientY - panLastY;
+  panLastX = e.clientX; panLastY = e.clientY;
+  const vpt = canvas.viewportTransform;
+  vpt[4] += dx; vpt[5] += dy;
+  canvas.setViewportTransform(vpt);
+  canvas.renderAll();
+  drawViewportRect();
+  updateVpCoords();
+});
+
+window.addEventListener('mouseup', e => {
+  if (isPanning) {
+    isPanning = false;
+    document.body.classList.remove('panning');
+  }
+});
+
+// Touch: dois dedos = pan + zoom
+canvasEl.addEventListener('touchstart', e => {
+  if (e.touches.length === 2) {
+    isTwoFinger = true;
+    touchLastDist = null;
+    touchLastMidX = null; touchLastMidY = null;
+    e.preventDefault();
+    return;
+  }
+  isTwoFinger = false;
+
+  // Um dedo em pan mode
+  if (isPanMode && e.touches.length === 1) {
+    isPanning = true;
+    panLastX = e.touches[0].clientX;
+    panLastY = e.touches[0].clientY;
+    e.preventDefault();
+    return;
+  }
+
+  // Fallback para lógica normal (ferramenta de desenho)
+  if (tool === 'pen' && !spaceHeld) {
+    penActive = true;
+    const p = getCanvasPoint(e);
+    socket.emit('draw:start', { x: p.x, y: p.y, color, width: sz, opacity: op });
+    return;
+  }
+  e.preventDefault();
+  if (e.touches.length !== 1) return;
+  const p = getCanvasPoint(e);
+  socket.volatile.emit('cursor:move', { x: p.x, y: p.y });
+  const target = canvas.findTarget(e.touches[0]);
+  if (canvas.getActiveObjects().length > 0 && tool !== 'eraser') return;
+  if (target && ['rect','circle','line','arrow'].includes(tool)) return;
+  handlePointerDown({ x: p.x, y: p.y }, target);
+}, { passive: false });
+
+canvasEl.addEventListener('touchmove', e => {
+  if (e.touches.length === 2) {
+    e.preventDefault();
+    const t0 = e.touches[0], t1 = e.touches[1];
+    const dist = Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY);
+    const midX = (t0.clientX + t1.clientX) / 2;
+    const midY = (t0.clientY + t1.clientY) / 2;
+
+    if (touchLastDist !== null) {
+      const scaleFactor = dist / touchLastDist;
+      const zoom  = canvas.getZoom();
+      const newZoom = Math.max(0.05, Math.min(8, zoom * scaleFactor));
+      const point = new fabric.Point(midX, midY);
+      canvas.zoomToPoint(point, newZoom);
+
+      const dx = midX - touchLastMidX;
+      const dy = midY - touchLastMidY;
+      const vpt = canvas.viewportTransform;
+      vpt[4] += dx; vpt[5] += dy;
+      canvas.setViewportTransform(vpt);
+      canvas.renderAll();
+      updateZoomInfo();
+      drawViewportRect();
+    }
+    touchLastDist = dist;
+    touchLastMidX = midX; touchLastMidY = midY;
+    return;
+  }
+
+  if (isPanMode && isPanning && e.touches.length === 1) {
+    e.preventDefault();
+    const dx = e.touches[0].clientX - panLastX;
+    const dy = e.touches[0].clientY - panLastY;
+    panLastX = e.touches[0].clientX; panLastY = e.touches[0].clientY;
+    const vpt = canvas.viewportTransform;
+    vpt[4] += dx; vpt[5] += dy;
+    canvas.setViewportTransform(vpt);
+    canvas.renderAll();
+    drawViewportRect();
+    updateVpCoords();
+    return;
+  }
+
+  if (tool === 'pen') {
+    const p = getCanvasPoint(e);
+    socket.volatile.emit('draw:move', { x: p.x, y: p.y });
+    return;
+  }
+  e.preventDefault();
+  if (!isDrawing || !drawStart) return;
+  const p = getCanvasPoint(e);
+  socket.volatile.emit('cursor:move', { x: p.x, y: p.y });
+  updateTmpShape({ x: p.x, y: p.y });
+}, { passive: false });
+
+canvasEl.addEventListener('touchend', e => {
+  if (isTwoFinger) { isTwoFinger = false; touchLastDist = null; e.preventDefault(); return; }
+  if (isPanMode && isPanning) { isPanning = false; e.preventDefault(); return; }
+  if (tool === 'pen') { penActive = false; return; }
+  e.preventDefault();
+  const p = getCanvasPoint(e);
+  handlePointerUp({ x: p.x, y: p.y });
+}, { passive: false });
+
+function resetZoom() {
+  canvas.setViewportTransform([1,0,0,1,0,0]);
+  canvas.renderAll();
+  updateZoomInfo();
+  drawViewportRect();
+  updateVpCoords();
+}
+
+function updateZoomInfo() {
+  const pct = Math.round(canvas.getZoom() * 100);
+  document.getElementById('zoom-info').textContent = pct + '%';
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── FUNCIONALIDADE 2: VIEWPORT 1920×1080 ───────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// O retângulo de viewport é um objeto especial no canvas (não sincronizado)
+// que representa a área que o /view enxerga.
+// O servidor recebe a posição do viewport e repassa para o view.html.
+
+let vpRect = null;          // fabric.Rect do viewport (não faz parte do board)
+// Viewport é SEMPRE fixo em (0, 0) — a view sempre olha para essa origem.
+const vpX = 0, vpY = 0;
+let vpW = 1920, vpH = 1080;
+let isDraggingVp = false; // mantido para compatibilidade, nunca será true
+
+function createViewportRect() {
+  if (vpRect) { canvas.remove(vpRect); }
+  vpRect = new fabric.Rect({
+    left: 0, top: 0,
+    width: vpW, height: vpH,
+    fill: 'transparent',
+    stroke: '#7c5cff',
+    strokeWidth: 2,
+    strokeDashArray: [12, 6],
+    selectable: false,
+    evented: false,
+    hasControls: false,
+    hasBorders: false,
+    lockMovementX: true,
+    lockMovementY: true,
+    lockScalingX: true,
+    lockScalingY: true,
+    lockRotation: true,
+    excludeFromExport: true,
+    _isViewportRect: true,
+  });
+  canvas.add(vpRect);
+  canvas.bringToFront(vpRect);
+  drawViewportRect();
+  createStagingRect();
+}
+
+function drawViewportRect() {
+  if (!vpRect) return;
+  vpRect.set({ left: 0, top: 0, width: vpW, height: vpH });
+  vpRect.setCoords();
+  canvas.bringToFront(vpRect);
+  document.getElementById('vp-w').value = Math.round(vpW);
+  document.getElementById('vp-h').value = Math.round(vpH);
+  canvas.renderAll();
+  drawStagingRect();
+}
+
+// ── Retângulo tracejado da área reservada de spawn ────────────────────────────
+// Mesmo estilo visual do retângulo do viewport, só que amarelo (mesma cor do
+// botão "Spawn: área reservada" quando ativo) e só fica visível quando o modo
+// 'staging' está ativo — reaproveita a mesma flag _isViewportRect pra ficar
+// automaticamente fora de seleção, export, serialização e z-order (é só um
+// guia visual local). A POSIÇÃO dele é sincronizada com os outros usuários
+// (não em tempo real, só quando confirmada — ver staging:sync), mas o próprio
+// retângulo amarelo é sempre só o meu; o de cada outro usuário aparece como
+// um retângulo separado, na cor dele (ver renderOtherStagingArea, mais abaixo).
+let stagingRect = null;
+const STAGING_RECT_W = 900, STAGING_RECT_H = 700;
+
+function createStagingRect() {
+  if (stagingRect) { canvas.remove(stagingRect); }
+  stagingRect = new fabric.Rect({
+    left: 0, top: 0,
+    width: STAGING_RECT_W, height: STAGING_RECT_H,
+    fill: 'transparent',
+    stroke: '#fbbf24',
+    strokeWidth: 2,
+    strokeDashArray: [12, 6],
+    selectable: false,
+    evented: false,
+    hasControls: false,
+    hasBorders: false,
+    lockMovementX: true,
+    lockMovementY: true,
+    lockScalingX: true,
+    lockScalingY: true,
+    lockRotation: true,
+    excludeFromExport: true,
+    _isViewportRect: true,
+  });
+  canvas.add(stagingRect);
+  drawStagingRect();
+  // canvas.clear() (board:clear/board:sync) remove os grupos das áreas dos
+  // outros usuários junto com tudo mais — como createStagingRect() é sempre
+  // chamado depois de recriar o board, é o ponto certo pra recriá-los também.
+  if (typeof renderAllOtherStagingAreas === 'function') renderAllOtherStagingAreas();
+}
+
+function drawStagingRect() {
+  if (!stagingRect) return;
+  const origin = getStagingOrigin();
+  stagingRect.set({
+    left: origin.left, top: origin.top,
+    width: STAGING_RECT_W, height: STAGING_RECT_H,
+    visible: imageSpawnMode === 'staging' || _stagingPlacementMode,
+    strokeDashArray: [12, 6],
+    opacity: _stagingPlacementMode ? 0.65 : 1,
+  });
+  stagingRect.setCoords();
+  canvas.bringToFront(stagingRect);
+  canvas.renderAll();
+}
+
+canvas.on('mouse:move', opt => {
+  const p = canvas.getPointer(opt.e);
+
+  // Modo "mira" de reposicionamento da área reservada: o retângulo tracejado
+  // segue o ponteiro em tempo real (só localmente) até o próximo clique.
+  if (_stagingPlacementMode && stagingRect) {
+    stagingRect.set({ left: p.x, top: p.y, visible: true });
+    stagingRect.setCoords();
+    canvas.bringToFront(stagingRect);
+    canvas.renderAll();
+    return;
+  }
+
+  // Emite em coordenadas do BOARD (não da tela) para funcionar com zoom/pan
+  socket.volatile.emit('cursor:move', { x: p.x, y: p.y });
+
+  if (penActive && tool === 'pen') {
+    socket.emit('draw:move', { x: p.x, y: p.y });
+  }
+  if (!isDrawing || !drawStart) return;
+  updateTmpShape(p);
+});
+
+canvas.on('mouse:up', opt => {
+  if (tool === 'pen') { penActive = false; return; }
+  handlePointerUp(canvas.getPointer(opt.e));
+});
+
+canvas.on('mouse:down', opt => {
+  // Modo "mira" de reposicionamento da área reservada: este clique confirma
+  // a nova posição (só pra este cliente) e não deve iniciar nenhuma outra
+  // ação normal do board (desenho, seleção etc.)
+  if (_stagingPlacementMode) {
+    confirmStagingPlacement(canvas.getPointer(opt.e));
+    return;
+  }
+  if (opt.target && opt.target._isViewportRect) return; // nunca seleciona o viewport/área reservada
+  if (isPanMode || spaceHeld) return; // pan mode handled separately
+  if (opt.e.button !== 0) return;
+  if (canvas.getActiveObjects().length > 0 && tool !== 'eraser') return;
+  // Não precisa mais checar "opt.target && ferramenta de forma" aqui: com
+  // canvas.skipTargetFind = true (setado em setTool para as ferramentas de
+  // desenho), o Fabric nunca encontra um alvo, então opt.target já vem
+  // undefined nesses casos — o clique sempre inicia um desenho novo.
+  handlePointerDown(canvas.getPointer(opt.e), opt.target);
+});
+
+function updateViewport() {
+  vpW = parseInt(document.getElementById('vp-w').value) || 1920;
+  vpH = parseInt(document.getElementById('vp-h').value) || 1080;
+  drawViewportRect();
+  emitViewportSync();
+}
+
+function fitViewport() {
+  // Centraliza a câmera exatamente no retângulo do viewport (sempre em 0,0)
+  const zoom = Math.min(
+    (window.innerWidth * 0.85) / vpW,
+    (window.innerHeight * 0.85) / vpH
+  );
+  const newZoom = Math.max(0.05, Math.min(8, zoom));
+  const cx = window.innerWidth / 2;
+  const cy = window.innerHeight / 2;
+  const vptX = cx - (vpW / 2) * newZoom;
+  const vptY = cy - (vpH / 2) * newZoom;
+  canvas.setViewportTransform([newZoom,0,0,newZoom, vptX, vptY]);
+  canvas.renderAll();
+  updateZoomInfo();
+  drawViewportRect();
+  updateVpCoords();
+}
+
+function updateVpCoords() {
+  document.getElementById('vp-coords').textContent = `${vpW} × ${vpH} px`;
+}
+
+function emitViewportSync() {
+  socket.emit('viewport:sync', { x: 0, y: 0, w: vpW, h: vpH });
+}
+
+function toggleVpPanel() {
+  document.getElementById('vp-panel').classList.toggle('collapsed');
+}
+function toggleLayersPanel() {
+  document.getElementById('layers-panel').classList.toggle('collapsed');
+  // Recolher/expandir muda quanto espaço o painel de Camadas precisa — o
+  // painel de seleção (#ctx) reserva menos altura quando ele está recolhido.
+  layoutSidePanels();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── PAINEL DE CAMADAS (estilo Photoshop) ──────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// boardLayers = [ { id, name, visible } ]  — cada camada é um "grupo lógico"
+// Traços/paths vão para a camada ativa automaticamente.
+// Objetos (imagens, textos, formas) têm seu próprio item dentro da camada.
+// O z-order real do canvas é: todos os objetos da camada 0 (fundo), depois
+// todos da camada 1, etc.
+
+let layersUpdateTimer = null;
+const hiddenObjects   = new Set();
+const panelSelected   = new Set();
+const objectNames     = {};
+const collapsedLayers = new Set();
+const typeCounters    = {};
+
+function scheduleLayersUpdate()  { clearTimeout(layersUpdateTimer); layersUpdateTimer = setTimeout(updateLayersPanel, 80); }
+function scheduleLayersPanel()   { scheduleLayersUpdate(); }
+
+// ── Nome fixo por objeto ──────────────────────────────────────────────────────
+function assignDefaultName(obj) {
+  if (objectNames[obj.id]) return;
+  const typeKey = obj._isArrow ? 'Seta' : ({
+    'path':'Traço','rect':'Retângulo','ellipse':'Elipse','circle':'Elipse',
+    'line':'Linha','group':'Grupo','i-text':'Texto','text':'Texto','image':'Imagem',
+  }[obj.type] || 'Objeto');
+  typeCounters[typeKey] = (typeCounters[typeKey] || 0) + 1;
+  objectNames[obj.id] = `${typeKey} ${typeCounters[typeKey]}`;
+}
+function getDisplayName(obj) {
+  if (obj.type === 'i-text' || obj.type === 'text') {
+    const t = (obj.text || '').trim().slice(0, 18);
+    return objectNames[obj.id] || (t ? `"${t}"` : 'Texto');
+  }
+  return objectNames[obj.id] || (obj._isArrow ? 'Seta' : obj.type);
+}
+
+// ── Ícones ────────────────────────────────────────────────────────────────────
+function getLayerIcon(type, obj) {
+  if (obj && obj._isArrow) return `<svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><line x1="5" y1="19" x2="19" y2="5"/><polyline points="9 5 19 5 19 15"/></svg>`;
+  const icons = {
+    'path':   `<svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M3 17c3-3 5-7 9-7s6 4 9 7" stroke-linecap="round"/></svg>`,
+    'rect':   `<svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>`,
+    'ellipse':`<svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="12" rx="10" ry="7"/></svg>`,
+    'circle': `<svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/></svg>`,
+    'line':   `<svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><line x1="5" y1="19" x2="19" y2="5" stroke-linecap="round"/></svg>`,
+    'group':  `<svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><rect x="2" y="8" width="8" height="8" rx="1"/><rect x="14" y="8" width="8" height="8" rx="1"/><rect x="8" y="2" width="8" height="8" rx="1"/></svg>`,
+    'i-text': `<svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg>`,
+    'text':   `<svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg>`,
+    'image':  `<svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>`,
+  };
+  return icons[type] || icons['rect'];
+}
+
+// ── Rename inline ─────────────────────────────────────────────────────────────
+function startRename(id, nameEl) {
+  const current = nameEl.textContent;
+  const input = document.createElement('input');
+  input.className = nameEl.className.includes('section') ? 'layer-section-name-input' : 'layer-name-input';
+  input.value = current;
+  nameEl.replaceWith(input);
+  input.focus(); input.select();
+  const commit = () => {
+    const val = input.value.trim() || current;
+    if (id.startsWith('layer-')) {
+      const l = boardLayers.find(x => x.id === id);
+      if (l) { l.name = val; socket.emit('layers:update', boardLayers); }
+    } else {
+      objectNames[id] = val;
+    }
+    scheduleLayersUpdate();
+  };
+  input.addEventListener('blur', commit);
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter')  { e.preventDefault(); input.blur(); }
+    if (e.key === 'Escape') { input.value = current; input.blur(); }
+    e.stopPropagation();
+  });
+}
+
+// ── Gerenciar camadas ─────────────────────────────────────────────────────────
+// Garante que activeLayerId aponta para uma camada que existe.
+// Chamado após F5 (board:init), após deleteLayer, e antes de qualquer new object.
+function ensureActiveLayer() {
+  if (!boardLayers.length) {
+    // Caso extremo: não há nenhuma camada — cria uma
+    boardLayers = [{ id: 'layer-default-' + genId(), name: 'Camada 1', visible: true }];
+    socket.emit('layers:update', boardLayers);
+  }
+  const valid = boardLayers.find(l => l.id === activeLayerId);
+  if (!valid) {
+    activeLayerId = boardLayers[0].id;
+  }
+}
+
+function addLayer() {
+  const n    = boardLayers.length + 1;
+  const newL = { id: 'layer-' + genId(), name: `Camada ${n}`, visible: true };
+  boardLayers.unshift(newL);   // nova camada no topo
+  activeLayerId = newL.id;
+  socket.emit('layers:update', boardLayers);
+  scheduleLayersUpdate();
+}
+
+function deleteLayer(layerId) {
+  if (boardLayers.length <= 1) return; // nunca deletar a última
+  const objs = canvas.getObjects().filter(o => o.layerId === layerId && !o._isViewportRect);
+  if (objs.length && !confirm(`Essa camada tem ${objs.length} objeto(s). Deletar?`)) return;
+  const ids = objs.map(o => o.id).filter(Boolean);
+  objs.forEach(o => canvas.remove(o));
+  canvas.renderAll();
+  if (ids.length) socket.emit('object:remove', ids);
+  boardLayers = boardLayers.filter(l => l.id !== layerId);
+  ensureActiveLayer(); // revalida — não assume boardLayers[0] diretamente
+  socket.emit('layers:update', boardLayers);
+  scheduleLayersUpdate();
+}
+
+function toggleLayerVisibility(layerId, e) {
+  if (e) e.stopPropagation();
+  const layer = boardLayers.find(l => l.id === layerId);
+  if (!layer) return;
+  layer.visible = !layer.visible;
+  socket.emit('layer:visibility', { layerId, visible: layer.visible });
+  // Aplica localmente também
+  canvas.getObjects().filter(o => o.layerId === layerId && !o._isViewportRect).forEach(o => {
+    if (!layer.visible) {
+      o._savedOpacity = o._savedOpacity ?? o.opacity;
+      o.set({ opacity: 0, visible: false }); hiddenObjects.add(o.id);
+    } else {
+      o.set({ opacity: o._savedOpacity ?? 1, visible: true });
+      delete o._savedOpacity; hiddenObjects.delete(o.id);
+    }
+  });
+  canvas.renderAll(); scheduleLayersUpdate();
+}
+
+function moveLayer(layerId, dir) {
+  const idx = boardLayers.findIndex(l => l.id === layerId);
+  if (idx < 0) return;
+  const swap = idx + dir;
+  if (swap < 0 || swap >= boardLayers.length) return;
+  [boardLayers[idx], boardLayers[swap]] = [boardLayers[swap], boardLayers[idx]];
+  applyLayerZOrder();  // reordena os objetos do canvas para refletir a nova ordem
+  socket.emit('layers:update', boardLayers);
+  socket.emit('zorder:sync', canvas.getObjects().map(o => o.id).filter(Boolean));
+  scheduleLayersUpdate();
+}
+
+// Reordena os objetos no canvas para que a ordem das camadas seja respeitada.
+// boardLayers[0] = topo visual → índice mais alto no canvas.
+// boardLayers[last] = fundo → índice 0 no canvas.
+function applyLayerZOrder() {
+  const allObjs = canvas.getObjects().filter(o => o.id && !o._isViewportRect);
+  // Ordena: fundo primeiro (último em boardLayers), topo depois (primeiro em boardLayers)
+  const layerOrder = [...boardLayers].reverse(); // index 0 = fundo
+  let targetIdx = 0;
+  layerOrder.forEach(layer => {
+    const layerObjs = allObjs.filter(o => o.layerId === layer.id);
+    layerObjs.forEach(obj => {
+      canvas.moveTo(obj, targetIdx++);
+    });
+  });
+  if (vpRect) canvas.bringToFront(vpRect);
+  canvas.renderAll();
+}
+
+// ── Toolbar: habilita botões ──────────────────────────────────────────────────
+function updateLayerToolbar() {
+  const btnG = document.getElementById('lt-group');
+  const btnU = document.getElementById('lt-ungroup');
+  if (!btnG) return;
+  const selObjs = canvas.getActiveObjects().filter(o => !o._isViewportRect);
+  const hasGif  = selObjs.some(o => o._isGif);
+  btnG.disabled = selObjs.length < 2 || hasGif;
+  const single = canvas.getActiveObject();
+  btnU.disabled = !(single?.type === 'group');
+}
+
+// ── Agrupar / Desagrupar ──────────────────────────────────────────────────────
+function groupSelected() {
+  let targets = canvas.getActiveObjects().filter(o => !o._isViewportRect);
+  if (targets.length < 2) return;
+
+  // GIFs não podem ser agrupados
+  if (targets.some(o => o._isGif)) {
+    showToast('GIFs animados não podem ser agrupados.', 2500);
+    return;
+  }
+
+  const layId  = targets[0].layerId || activeLayerId;
+  const oldIds = targets.map(o => o.id).filter(Boolean);
+
+  canvas.discardActiveObject();
+  const sel = new fabric.ActiveSelection(targets, { canvas });
+  canvas.setActiveObject(sel);
+  const group = sel.toGroup();
+  group.id      = genId();
+  group.layerId = layId;
+  typeCounters['Grupo'] = (typeCounters['Grupo'] || 0) + 1;
+  objectNames[group.id] = `Grupo ${typeCounters['Grupo']}`;
+  if (vpRect) canvas.bringToFront(vpRect);
+  canvas.discardActiveObject();
+  canvas.setActiveObject(group);
+  canvas.renderAll();
+
+  const zorder = canvas.getObjects().filter(o => o.id && !o._isViewportRect).map(o => o.id);
+  // Operação atômica — 1 único pushUndo no servidor
+  socket.emit('group:commit', { group: ser(group), childIds: oldIds, zorder });
+  scheduleLayersUpdate();
+}
+
+function ungroupSelected() {
+  const groupObj = canvas.getActiveObject();
+  if (!groupObj || groupObj.type !== 'group') return;
+  const groupId = groupObj.id;
+  const layId   = groupObj.layerId || activeLayerId;
+
+  const groupMatrix    = groupObj.calcTransformMatrix();
+  const childSnapshots = (groupObj.getObjects ? groupObj.getObjects() : []).map(ch => {
+    const localMatrix = ch.calcOwnMatrix();
+    const absMatrix   = fabric.util.multiplyTransformMatrices(groupMatrix, localMatrix);
+    const decomp      = fabric.util.qrDecompose(absMatrix);
+    return { obj: ch, left: decomp.translateX, top: decomp.translateY,
+      scaleX: Math.abs(decomp.scaleX), scaleY: Math.abs(decomp.scaleY),
+      angle: decomp.angle, flipX: decomp.scaleX < 0, flipY: decomp.scaleY < 0 };
+  });
+
+  canvas.discardActiveObject();
+  canvas.setActiveObject(groupObj);
+  groupObj.toActiveSelection();
+  canvas.discardActiveObject();
+
+  const serializedChildren = [];
+  childSnapshots.forEach(snap => {
+    const ch = snap.obj;
+    if (!ch.id) ch.id = genId();
+    ch.layerId = layId;
+
+    const rad    = (snap.angle || 0) * Math.PI / 180;
+    const sw     = (ch.width  || 0) * snap.scaleX;
+    const sh     = (ch.height || 0) * snap.scaleY;
+    const leftTL = snap.left - (Math.cos(rad) * sw / 2 - Math.sin(rad) * sh / 2);
+    const topTL  = snap.top  - (Math.sin(rad) * sw / 2 + Math.cos(rad) * sh / 2);
+
+    ch.set({ originX: 'left', originY: 'top', left: leftTL, top: topTL,
+      scaleX: snap.scaleX, scaleY: snap.scaleY, angle: snap.angle,
+      flipX: snap.flipX, flipY: snap.flipY });
+    ch.setCoords();
+    assignDefaultName(ch);
+    const s = ser(ch);
+    if (s) serializedChildren.push(s);
+  });
+
+  if (vpRect) canvas.bringToFront(vpRect);
+  canvas.renderAll();
+
+  const zorder = canvas.getObjects().filter(o => o.id && !o._isViewportRect).map(o => o.id);
+  // Operação atômica — 1 único pushUndo no servidor
+  socket.emit('ungroup:commit', { groupId, children: serializedChildren, zorder });
+  scheduleLayersUpdate();
+}
+
+// ── Exportar PNG ──────────────────────────────────────────────────────────────
+// 3 modos: objeto único, seleção/grupo (vários objetos), board inteiro (viewport).
+// Sempre fundo transparente, sem incluir o retângulo guia do viewport.
+
+function _downloadDataUrl(dataUrl, filename) {
+  const a = document.createElement('a');
+  a.href = dataUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
+// Renderiza a bounding box exata de um conjunto de objetos (seleção, grupo, ou
+// objeto único) para um data URL PNG, sem baixar nada — usado tanto pelo export
+// para arquivo quanto pela cópia para a área de transferência do sistema.
+// Usa canvas.toDataURL com left/top/width/height = bounding box absoluta dos objetos,
+// e multiplier=1 para exportar no tamanho exato em que estão no board.
+function renderObjectsAsDataURL(objects) {
+  const targets = objects.filter(o => !o._isViewportRect);
+  if (!targets.length) return null;
+
+  // Para obter a bounding box correta no espaço lógico do canvas:
+  // - 1 objeto ou grupo real → usa os aCoords do próprio objeto
+  // - seleção múltipla (ActiveSelection) → o canvas.getActiveObject() É o
+  //   ActiveSelection (subclasse de Group) e tem seus próprios aCoords que
+  //   envolvem TODOS os filhos — exatamente como um grupo real funciona
+  const activeObj = canvas.getActiveObject();
+  const source = (activeObj && !activeObj._isViewportRect) ? activeObj : targets[0];
+  source.setCoords();
+
+  const coords = source.aCoords; // { tl, tr, bl, br } em coords do canvas
+  let minX, minY, maxX, maxY;
+
+  if (coords) {
+    const pts = [coords.tl, coords.tr, coords.bl, coords.br];
+    minX = Math.min(...pts.map(p => p.x));
+    minY = Math.min(...pts.map(p => p.y));
+    maxX = Math.max(...pts.map(p => p.x));
+    maxY = Math.max(...pts.map(p => p.y));
+  } else {
+    // Fallback: itera filhos individualmente
+    minX = Infinity; minY = Infinity; maxX = -Infinity; maxY = -Infinity;
+    targets.forEach(o => {
+      o.setCoords();
+      const c = o.aCoords;
+      if (c) {
+        [c.tl, c.tr, c.bl, c.br].forEach(pt => {
+          minX = Math.min(minX, pt.x); minY = Math.min(minY, pt.y);
+          maxX = Math.max(maxX, pt.x); maxY = Math.max(maxY, pt.y);
+        });
+      }
+    });
+  }
+
+  const w = Math.max(1, Math.ceil(maxX - minX));
+  const h = Math.max(1, Math.ceil(maxY - minY));
+
+  // Esconde objetos que não fazem parte do export
+  const allObjs = canvas.getObjects();
+  const prevVisible = new Map();
+  allObjs.forEach(o => {
+    prevVisible.set(o, o.visible);
+    if (o._isViewportRect || !targets.includes(o)) o.visible = false;
+  });
+
+  const prevBg  = canvas.backgroundColor;
+  const prevVpt = canvas.viewportTransform.slice();
+  canvas.backgroundColor = '';
+  canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
+  canvas.renderAll();
+
+  const dataUrl = canvas.toDataURL({
+    format: 'png',
+    left: minX, top: minY, width: w, height: h,
+    multiplier: 1,
+  });
+
+  canvas.setViewportTransform(prevVpt);
+  allObjs.forEach(o => { o.visible = prevVisible.get(o); o.setCoords(); });
+  canvas.backgroundColor = prevBg;
+  canvas.renderAll();
+
+  return dataUrl;
+}
+
+function exportObjectsAsPNG(objects, filename) {
+  const dataUrl = renderObjectsAsDataURL(objects);
+  if (!dataUrl) { showToast('Nada selecionado para exportar.', 2500); return; }
+  _downloadDataUrl(dataUrl, filename);
+}
+
+// Exporta o board inteiro na área do viewport (ex: 1920×1080), com todos os
+// objetos nas posições em que estão, fundo transparente, sem o retângulo guia.
+function exportBoardAsPNG() {
+  const allObjs = canvas.getObjects();
+  const prevVisible = new Map();
+  allObjs.forEach(o => {
+    prevVisible.set(o, o.visible);
+    if (o._isViewportRect) o.visible = false;
+  });
+
+  const prevBg = canvas.backgroundColor;
+  canvas.backgroundColor = '';
+
+  const prevVpt = canvas.viewportTransform.slice();
+  canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
+  canvas.renderAll();
+
+  const dataUrl = canvas.toDataURL({
+    format: 'png',
+    left: 0, top: 0, width: vpW, height: vpH,
+    multiplier: 1,
+  });
+
+  canvas.setViewportTransform(prevVpt);
+  allObjs.forEach(o => { o.visible = prevVisible.get(o); });
+  canvas.backgroundColor = prevBg;
+  canvas.renderAll();
+
+  _downloadDataUrl(dataUrl, `lousa-${Date.now()}.png`);
+}
+
+// Decide automaticamente qual modo usar baseado na seleção atual:
+// nenhuma seleção → exporta o board inteiro (viewport);
+// 1 objeto selecionado → exporta aquele objeto;
+// 2+ objetos selecionados (ou um grupo) → exporta a bounding box da seleção.
+function exportSelectionOrBoardAsPNG() {
+  const active = canvas.getActiveObjects().filter(o => !o._isViewportRect);
+  if (active.length === 0) {
+    exportBoardAsPNG();
+  } else if (active.length === 1) {
+    const name = (objectNames[active[0].id] || active[0].type || 'objeto').replace(/[^\w\-]+/g, '_');
+    exportObjectsAsPNG(active, `${name}-${Date.now()}.png`);
+  } else {
+    exportObjectsAsPNG(active, `selecao-${Date.now()}.png`);
+  }
+}
+
+// ── Render principal ──────────────────────────────────────────────────────────
+let layerDragSrcId = null;
+const collapsedGroups = new Set();
+
+function updateLayersPanel() {
+  const list = document.getElementById('layers-list');
+  if (!list) return;
+  const allObjs = canvas.getObjects().filter(o => o.id && !o._isViewportRect);
+  ensureActiveLayer();
+  // Objetos sem camada (criados antes de ter camada, ou após F5 com camada deletada)
+  // são reatribuídos à camada ativa
+  allObjs.forEach(o => {
+    if (!o.layerId || !boardLayers.find(l => l.id === o.layerId)) {
+      o.layerId = activeLayerId;
+    }
+    assignDefaultName(o);
+  });
+
+  if (!boardLayers.length) {
+    list.innerHTML = '<div id="layers-empty">Nenhuma camada</div>';
+    return;
+  }
+
+  const canvasSel = new Set(canvas.getActiveObjects().map(o => o.id));
+  list.innerHTML = '';
+
+  // Renderiza do topo para o fundo (boardLayers[0] = topo)
+  boardLayers.forEach(layer => {
+    const layerObjs   = allObjs.filter(o => o.layerId === layer.id);
+    const isActive    = layer.id === activeLayerId;
+    const isCollapsed = collapsedLayers.has(layer.id);
+    const paths       = layerObjs.filter(o => o.type === 'path');
+    const others      = layerObjs.filter(o => o.type !== 'path');
+
+    // layerObjs já está na ordem do canvas (allObjs = canvas.getObjects() filtrado).
+    // Para o painel, precisamos do topo para baixo → reverso.
+    // Traços consecutivos são agrupados em um único item "N traços" que ocupa
+    // a posição correta na stack, respeitando objetos intercalados.
+
+    // ── Cabeçalho da camada ───────────────────────────────────────────────────
+    const section = document.createElement('div');
+    section.className = 'layer-section' + (isCollapsed ? ' collapsed' : '');
+    section.dataset.layerId = layer.id;
+
+    const eyeIcon = layer.visible
+      ? `<svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`
+      : `<svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
+
+    const header = document.createElement('div');
+    header.className = 'layer-section-header' + (isActive ? ' active-layer' : '');
+    header.innerHTML = `
+      <button class="lsa-btn" onclick="collapsedLayers.has('${layer.id}')?collapsedLayers.delete('${layer.id}'):collapsedLayers.add('${layer.id}');scheduleLayersUpdate();">
+        <svg width="9" height="9" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" style="transform:rotate(${isCollapsed?'0':'90'}deg);transition:.15s">
+          <polyline points="9 18 15 12 9 6"/>
+        </svg>
+      </button>
+      <span class="layer-section-name" data-rename="${layer.id}">${layer.name}</span>
+      <span style="font-size:9px;color:var(--muted);flex-shrink:0">${layerObjs.length}</span>
+      <div class="layer-section-actions">
+        <button class="lsa-btn ${layer.visible ? '' : 'hidden-layer'}" onclick="toggleLayerVisibility('${layer.id}',event)">${eyeIcon}</button>
+        <button class="lsa-btn" onclick="moveLayer('${layer.id}',-1)" title="Subir">↑</button>
+        <button class="lsa-btn" onclick="moveLayer('${layer.id}',1)" title="Descer">↓</button>
+        <button class="lsa-btn" onclick="deleteLayer('${layer.id}')" title="Excluir camada" style="color:#ff6060">
+          <svg width="10" height="10" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/></svg>
+        </button>
+      </div>`;
+
+    // Clicar no header = ativar essa camada
+    // Click simples = ativar camada (delay para não conflitar com dblclick de rename)
+    header.addEventListener('click', e => {
+      if (e.target.closest('.lsa-btn')) return;
+      clearTimeout(header._clickTimer);
+      header._clickTimer = setTimeout(() => {
+        activeLayerId = layer.id;
+        scheduleLayersUpdate();
+      }, 200);
+    });
+    // Duplo clique no nome = renomear camada
+    header.querySelector('[data-rename]').addEventListener('dblclick', e => {
+      e.stopPropagation();
+      clearTimeout(header._clickTimer);
+      startRename(layer.id, e.currentTarget);
+    });
+
+    // Drop no header da camada = mover objeto(s) para essa camada
+    header.addEventListener('dragover', e => {
+      if (!layerDragSrcId) return;
+      e.preventDefault();
+      document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+      header.classList.add('drag-over');
+    });
+    header.addEventListener('dragleave', () => header.classList.remove('drag-over'));
+    header.addEventListener('drop', e => {
+      e.preventDefault(); e.stopPropagation();
+      header.classList.remove('drag-over');
+      const dragData = e.dataTransfer.getData('text/plain');
+      let idsToMove = [];
+      if (dragData.startsWith('__pathgroup__')) {
+        // Grupo de traços — move todos
+        idsToMove = dragData.replace('__pathgroup__', '').split(',').filter(Boolean);
+      } else if (layerDragSrcId) {
+        idsToMove = [layerDragSrcId];
+      }
+      idsToMove.forEach(id => {
+        const obj = findById(id);
+        if (obj && obj.layerId !== layer.id) {
+          obj.layerId = layer.id;
+          const s = ser(obj);
+          if (s) socket.emit('object:modify:commit', s);
+        }
+      });
+      if (idsToMove.length) {
+        applyLayerZOrder();
+        socket.emit('zorder:sync', canvas.getObjects().map(o => o.id).filter(Boolean));
+      }
+      layerDragSrcId = null;
+      scheduleLayersUpdate();
+    });
+
+    section.appendChild(header);
+
+    if (!isCollapsed) {
+      const objsDiv = document.createElement('div');
+      objsDiv.className = 'layer-section-objects';
+
+      // ── Helper: cria item de objeto (traço ou objeto) ──────────────────────
+      function makeObjItem(obj, indent, parentDiv) {
+        const isCanSel = canvasSel.has(obj.id);
+        const isGroup  = obj.type === 'group';
+        const isCollG  = collapsedGroups.has(obj.id);
+        const isHid    = hiddenObjects.has(obj.id);
+        const accent   = obj.stroke || (obj.fill && obj.fill !== 'transparent' ? obj.fill : null) || '#7c5cff';
+        const eyeSvg   = isHid
+          ? `<svg width="11" height="11" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`
+          : `<svg width="11" height="11" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
+
+        const item = document.createElement('div');
+        item.className = 'layer-item' + (isCanSel ? ' selected' : '') + (isGroup ? ' is-group' : '');
+        item.style.paddingLeft = indent + 'px';
+        item.draggable = true;
+        item.dataset.id = obj.id;
+
+        const expandHtml = isGroup
+          ? `<button class="layer-expand-btn ${isCollG?'':'open'}" onclick="collapsedGroups.has('${obj.id}')?collapsedGroups.delete('${obj.id}'):collapsedGroups.add('${obj.id}');scheduleLayersUpdate();event.stopPropagation()">
+              <svg width="9" height="9" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+            </button>`
+          : `<span style="width:14px;flex-shrink:0;display:inline-block"></span>`;
+
+        item.innerHTML = `
+          <div class="layer-drag-handle" title="Arrastar para reordenar ou mover de camada">⋮⋮</div>
+          ${expandHtml}
+          <div class="layer-icon" style="color:${accent}">${getLayerIcon(obj.type, obj)}</div>
+          <span class="layer-name" data-rename="${obj.id}" title="Duplo clique = renomear">${getDisplayName(obj)}</span>
+          <div class="layer-actions">
+            <button class="layer-action-btn ${isHid ? 'hidden-obj' : ''}" onclick="toggleObjVisibility('${obj.id}')" title="${isHid ? 'Mostrar' : 'Ocultar'}">${eyeSvg}</button>
+            <button class="layer-action-btn" onclick="deleteObjById('${obj.id}')" style="color:#ff6060" title="Excluir">
+              <svg width="11" height="11" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/></svg>
+            </button>
+          </div>`;
+
+        // Duplo clique no nome → renomear; cancela o select pendente do 1º clique
+        item.querySelector('[data-rename]').addEventListener('dblclick', e => {
+          e.stopPropagation();
+          clearTimeout(item._clickTimer);
+          startRename(obj.id, e.currentTarget);
+        });
+
+        // Click simples → selecionar (delay de 200ms para não conflitar com dblclick)
+        item.addEventListener('click', e => {
+          if (e.target.closest('.layer-action-btn,.layer-drag-handle,.layer-expand-btn')) return;
+          clearTimeout(item._clickTimer);
+          item._clickTimer = setTimeout(() => {
+            canvas.setActiveObject(obj); canvas.renderAll(); scheduleLayersUpdate();
+          }, 200);
+        });
+
+        // Drag: reorder dentro da camada OU mover para outra camada (drop no header)
+        item.addEventListener('dragstart', e => {
+          layerDragSrcId = obj.id;
+          item.style.opacity = '.5';
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData('text/plain', obj.id);
+        });
+        item.addEventListener('dragend', () => {
+          item.style.opacity = '';
+          document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+        });
+        item.addEventListener('dragover', e => {
+          e.preventDefault();
+          document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+          item.classList.add('drag-over');
+        });
+        item.addEventListener('drop', e => {
+          e.preventDefault(); e.stopPropagation();
+          item.classList.remove('drag-over');
+          if (!layerDragSrcId || layerDragSrcId === obj.id) return;
+          const src = findById(layerDragSrcId); if (!src) return;
+          // Reorder dentro da camada
+          canvas.moveTo(src, allObjs.indexOf(obj));
+          canvas.renderAll();
+          socket.emit('zorder:sync', canvas.getObjects().map(o => o.id).filter(Boolean));
+          scheduleLayersUpdate(); layerDragSrcId = null;
+        });
+
+        parentDiv.appendChild(item);
+
+        // Filhos do grupo — apenas exibição (sem drag nem visibilidade individual)
+        if (isGroup && !isCollG) {
+          const children = obj.getObjects ? obj.getObjects() : [];
+          [...children].reverse().forEach(ch => {
+            if (!ch.id) ch.id = genId(); assignDefaultName(ch);
+            const ci = document.createElement('div');
+            ci.className = 'layer-item is-group-child';
+            ci.style.paddingLeft = (indent + 14) + 'px';
+            ci.innerHTML = `
+              <div class="layer-icon" style="color:var(--muted);opacity:.6">${getLayerIcon(ch.type, ch)}</div>
+              <span class="layer-name" style="font-size:10px;color:var(--muted)">${getDisplayName(ch)}</span>`;
+            parentDiv.appendChild(ci);
+          });
+        }
+      }
+
+      // ── Renderiza em ordem real do canvas (topo → fundo) ──────────────────
+      // Agrupa traços CONSECUTIVOS DA MESMA COR em um único item "N traços [cor]".
+      // Traços de cores diferentes ou intercalados com objetos aparecem separados.
+      const orderedDesc = [...layerObjs].reverse(); // topo do canvas primeiro
+      let i = 0;
+      while (i < orderedDesc.length) {
+        const obj = orderedDesc[i];
+        // Setas são paths mas tratadas como objetos individuais
+        if (obj.type === 'path' && !obj._isArrow) {
+          // Coleta traços consecutivos da mesma cor (excluindo setas)
+          const groupColor = obj.stroke || '#ffffff';
+          const pathGroup  = [];
+          while (i < orderedDesc.length &&
+                 orderedDesc[i].type === 'path' &&
+                 !orderedDesc[i]._isArrow &&
+                 (orderedDesc[i].stroke || '#ffffff') === groupColor) {
+            pathGroup.push(orderedDesc[i]); i++;
+          }
+          const pathsHidden  = pathGroup.every(p => hiddenObjects.has(p.id));
+          const pathsPartial = !pathsHidden && pathGroup.some(p => hiddenObjects.has(p.id));
+          const eyeOpacity   = pathsHidden ? '0.3' : (pathsPartial ? '0.6' : '1');
+          const eyeSvg = pathsHidden
+            ? `<svg width="11" height="11" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`
+            : `<svg width="11" height="11" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
+
+          const pathItem = document.createElement('div');
+          pathItem.className = 'layer-item';
+          pathItem.style.paddingLeft = '18px';
+          pathItem.style.cursor = 'default';
+          pathItem.draggable = true;
+          pathItem.dataset.pathGroup = pathGroup.map(p => p.id).join(',');
+          pathItem.innerHTML = `
+            <div class="layer-drag-handle" title="Arrastar para mover traços para outra camada">⋮⋮</div>
+            <span style="width:14px;flex-shrink:0;display:inline-block"></span>
+            <div class="layer-icon">
+              <svg width="12" height="12" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="${groupColor}" stroke="none"/></svg>
+            </div>
+            <span class="layer-name" style="color:var(--muted)">
+              ${pathGroup.length} traço${pathGroup.length > 1 ? 's' : ''}
+            </span>
+            <div class="layer-actions">
+              <button class="layer-action-btn" style="opacity:${eyeOpacity}" title="${pathsHidden ? 'Mostrar' : 'Ocultar'}"
+                onclick="togglePathGroup([${pathGroup.map(p => `'${p.id}'`).join(',')}])">
+                ${eyeSvg}
+              </button>
+              <button class="layer-action-btn" style="color:#ff6060" title="Excluir traços"
+                onclick="deletePathGroup([${pathGroup.map(p => `'${p.id}'`).join(',')}])">
+                <svg width="11" height="11" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/></svg>
+              </button>
+            </div>`;
+
+          pathItem.addEventListener('click', e => {
+            if (e.target.closest('.layer-action-btn,.layer-drag-handle')) return;
+            // Seleciona todos os traços do grupo no canvas
+            const pathObjs = pathGroup.map(p => findById(p.id)).filter(Boolean);
+            if (pathObjs.length === 1) {
+              canvas.setActiveObject(pathObjs[0]);
+            } else if (pathObjs.length > 1) {
+              const sel = new fabric.ActiveSelection(pathObjs, { canvas });
+              canvas.setActiveObject(sel);
+            }
+            canvas.renderAll();
+            scheduleLayersUpdate();
+          });
+          pathItem.addEventListener('dragstart', e => {
+            layerDragSrcId = pathGroup[0].id;
+            pathItem.style.opacity = '.5';
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', '__pathgroup__' + pathGroup.map(p => p.id).join(','));
+          });
+          pathItem.addEventListener('dragend', () => {
+            pathItem.style.opacity = '';
+            document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+          });
+          // dragover + drop: permite reordenar entre grupos de traços E entre traços e outros objetos
+          pathItem.addEventListener('dragover', e => {
+            e.preventDefault();
+            document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+            pathItem.classList.add('drag-over');
+          });
+          pathItem.addEventListener('drop', e => {
+            e.preventDefault(); e.stopPropagation();
+            pathItem.classList.remove('drag-over');
+            const dragData = e.dataTransfer.getData('text/plain');
+            // Move o(s) objeto(s) arrastado(s) para a posição do primeiro traço deste grupo
+            const targetObj = pathGroup[pathGroup.length - 1]; // mais fundo do grupo = referência
+            const targetIdx = allObjs.indexOf(targetObj);
+            if (dragData.startsWith('__pathgroup__')) {
+              // Outro grupo de traços sendo reordenado
+              const srcIds = dragData.replace('__pathgroup__', '').split(',').filter(Boolean);
+              srcIds.forEach((id, k) => {
+                const src = findById(id); if (!src) return;
+                canvas.moveTo(src, Math.max(0, targetIdx - k));
+              });
+            } else if (layerDragSrcId) {
+              // Objeto individual
+              const src = findById(layerDragSrcId); if (src) canvas.moveTo(src, targetIdx);
+            }
+            canvas.renderAll();
+            socket.emit('zorder:sync', canvas.getObjects().map(o => o.id).filter(Boolean));
+            scheduleLayersUpdate();
+            layerDragSrcId = null;
+          });
+          objsDiv.appendChild(pathItem);
+        } else {
+          makeObjItem(obj, 18, objsDiv);
+          i++;
+        }
+      }
+
+      if (layerObjs.length === 0) {
+        const empty = document.createElement('div');
+        empty.style.cssText = 'padding:6px 20px;font-size:10px;color:var(--muted);font-style:italic';
+        empty.textContent = 'Camada vazia';
+        objsDiv.appendChild(empty);
+      }
+
+      section.appendChild(objsDiv);
+    }
+
+    list.appendChild(section);
+  });
+
+  updateLayerToolbar();
+}
+
+function toggleObjVisibility(id) {
+  const obj = findById(id); if (!obj) return;
+  let data;
+  if (hiddenObjects.has(id)) {
+    hiddenObjects.delete(id);
+    obj.set({ opacity: obj._savedOpacity ?? 1, visible: true }); delete obj._savedOpacity;
+    data = { ...ser(obj), _visibilityChange: true };
+  } else {
+    const prevOpacity = obj.opacity;
+    hiddenObjects.add(id); obj._savedOpacity = prevOpacity; obj.set({ opacity:0, visible:false });
+    // Envia a opacidade original junto — sem isso, outros clientes que também
+    // recebam este objeto não têm como saber para qual opacidade restaurar depois.
+    data = { ...ser(obj), _visibilityChange: true, _prevOpacity: prevOpacity };
+  }
+  socket.emit('object:modify', data);
+  canvas.renderAll(); scheduleLayersUpdate();
+}
+
+// Oculta/mostra um grupo de traços de uma vez
+function togglePathGroup(ids) {
+  const allHidden = ids.every(id => hiddenObjects.has(id));
+  ids.forEach(id => {
+    const obj = findById(id); if (!obj) return;
+    let data;
+    if (allHidden) {
+      hiddenObjects.delete(id);
+      obj.set({ opacity: obj._savedOpacity ?? 1, visible: true }); delete obj._savedOpacity;
+      data = { ...ser(obj), _visibilityChange: true };
+    } else {
+      if (!hiddenObjects.has(id)) {
+        const prevOpacity = obj.opacity;
+        hiddenObjects.add(id); obj._savedOpacity = prevOpacity; obj.set({ opacity: 0, visible: false });
+        data = { ...ser(obj), _visibilityChange: true, _prevOpacity: prevOpacity };
+      } else {
+        data = { ...ser(obj), _visibilityChange: true };
+      }
+    }
+    socket.emit('object:modify', data);
+  });
+  canvas.renderAll(); scheduleLayersUpdate();
+}
+
+// Exclui todos os traços de um grupo de uma vez
+function deletePathGroup(ids) {
+  const objs = ids.map(id => findById(id)).filter(Boolean);
+  if (!objs.length) return;
+  objs.forEach(o => canvas.remove(o));
+  canvas.discardActiveObject();
+  canvas.renderAll();
+  socket.emit('object:remove', ids);
+  scheduleLayersUpdate();
+}
+
+function deleteObjById(id) {
+  const obj = findById(id); if (!obj) return;
+  canvas.remove(obj); canvas.discardActiveObject(); canvas.renderAll();
+  socket.emit('object:remove', [id]);
+  panelSelected.delete(id); scheduleLayersUpdate();
+}
+
+canvas.on('object:added',      scheduleLayersUpdate);
+canvas.on('object:removed',    obj => {
+  // Para o loop de animação se o objeto removido era um GIF
+  if (obj && obj._isGif && obj.id) {
+    activeGifs.delete(obj.id);
+  }
+  scheduleLayersUpdate();
+});
+canvas.on('selection:created', () => { scheduleLayersUpdate(); updateLayerToolbar(); });
+canvas.on('selection:updated', () => { scheduleLayersUpdate(); updateLayerToolbar(); });
+canvas.on('selection:cleared', () => { scheduleLayersUpdate(); updateLayerToolbar(); });
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SERIALIZAÇÃO
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Converte qualquer URL de imagem para path relativo (/uploads/arquivo.jpg).
+// O estado compartilhado nunca deve conter localhost ou IP de quem fez upload.
+function relativeImgPath(src) {
+  if (!src || src.startsWith('blob:')) return '';
+  // Já é relativo
+  if (src.startsWith('/uploads/')) return src;
+  // Absoluto (http://qualquer-host:porta/uploads/arquivo.jpg) → extrai só o path
+  try {
+    const u = new URL(src);
+    if (u.pathname.startsWith('/uploads/')) return u.pathname;
+  } catch (_) {}
+  // Fallback: se contém /uploads/ em qualquer forma
+  const idx = src.indexOf('/uploads/');
+  if (idx !== -1) return src.slice(idx);
+  return src;
+}
+
+// Converte path relativo para URL absoluta usando a origem do cliente atual.
+// Chamado APENAS na hora de carregar — nunca no estado salvo.
+function absoluteImgUrl(src) {
+  if (!src) return '';
+  if (src.startsWith('blob:')) return '';
+  if (src.startsWith('http://') || src.startsWith('https://')) {
+    // Já absoluto mas com host diferente → reescreve com origem atual
+    try {
+      const u = new URL(src);
+      if (u.pathname.startsWith('/uploads/')) {
+        return window.location.origin + u.pathname;
+      }
+    } catch (_) {}
+    return src;
+  }
+  // Relativo → absoluto com origem atual
+  return window.location.origin + (src.startsWith('/') ? src : '/' + src);
+}
+
+function normalizeSerializedObj(j, fabricObj) {
+  // Normaliza src de imagens (topo ou dentro de grupo)
+  if (j.type === 'image') {
+    if (j._isGif && (j._gifUrl || j.src)) {
+      j.src     = relativeImgPath(j._gifUrl || j.src);
+      j._gifUrl = j.src;
+    } else if (fabricObj && fabricObj.getElement) {
+      const el  = fabricObj.getElement();
+      const raw = el ? el.src : (j.src || '');
+      j.src = relativeImgPath(raw);
+    } else {
+      j.src = relativeImgPath(j.src || '');
+    }
+  }
+  // Normaliza recursivamente os filhos de grupos
+  if (j.type === 'group' && Array.isArray(j.objects)) {
+    const children = fabricObj && fabricObj.getObjects ? fabricObj.getObjects() : [];
+    j.objects = j.objects.map((childJ, i) => {
+      normalizeSerializedObj(childJ, children[i] || null);
+      return childJ;
+    });
+  }
+  if (j.scaleX < 0) { j.flipX = !j.flipX; j.scaleX = Math.abs(j.scaleX); }
+  if (j.scaleY < 0) { j.flipY = !j.flipY; j.scaleY = Math.abs(j.scaleY); }
+  return j;
+}
+
+function ser(obj) {
+  if (obj._isViewportRect) return null;
+  const j = obj.toJSON(['id', 'layerId', '_isArrow', '_isGif', '_gifUrl']);
+  normalizeSerializedObj(j, obj);
+  j.zIndex = canvas.getObjects().filter(o => !o._isViewportRect).indexOf(obj);
+  return j;
+}
+
+function serTransform(obj) {
+  return {
+    id:     obj.id,
+    type:   obj.type,
+    left:   obj.left,
+    top:    obj.top,
+    scaleX: Math.abs(obj.scaleX || 1),
+    scaleY: Math.abs(obj.scaleY || 1),
+    angle:  obj.angle || 0,
+    flipX:  obj.flipX || false,
+    flipY:  obj.flipY || false,
+    opacity: obj.opacity,
+    zIndex: canvas.getObjects().filter(o => !o._isViewportRect).indexOf(obj),
+  };
+}
+
+function serTransformAbsolute(obj, groupMatrix) {
+  const localMatrix = obj.calcOwnMatrix();
+  const absMatrix   = fabric.util.multiplyTransformMatrices(groupMatrix, localMatrix);
+  const d           = fabric.util.qrDecompose(absMatrix);
+  const w   = (obj.width  || 0) * Math.abs(d.scaleX);
+  const h   = (obj.height || 0) * Math.abs(d.scaleY);
+  const rad = d.angle * Math.PI / 180;
+  const left = d.translateX - (Math.cos(rad) * w / 2 - Math.sin(rad) * h / 2);
+  const top  = d.translateY - (Math.sin(rad) * w / 2 + Math.cos(rad) * h / 2);
+  return {
+    id:     obj.id, type: obj.type, left, top,
+    scaleX: Math.abs(d.scaleX), scaleY: Math.abs(d.scaleY),
+    angle:  d.angle, flipX: d.scaleX < 0, flipY: d.scaleY < 0,
+    opacity: obj.opacity,
+    zIndex: canvas.getObjects().filter(o => !o._isViewportRect).indexOf(obj),
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SOCKET
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── Nome do usuário e sala ────────────────────────────────────────────────────
+const myUserName = sessionStorage.getItem('lb_username')
+  || localStorage.getItem('lb_username')
+  || 'Anônimo';
+const myRoomId   = sessionStorage.getItem('lb_roomId')   || 'default';
+const myRoomName = sessionStorage.getItem('lb_roomName') || myRoomId;
+
+// Identificador persistente POR NAVEGADOR — diferente do userId (que é por
+// conexão e muda a cada reconexão). Usado só pra saber "qual área reservada
+// de spawn é a minha" entre os outros usuários (ver staging:sync mais
+// abaixo) — nunca enviado a mais ninguém além do próprio servidor.
+const myClientId = localStorage.getItem('lb_clientId') || (() => {
+  const id = (window.crypto && crypto.randomUUID)
+    ? crypto.randomUUID()
+    : 'c-' + Math.random().toString(36).slice(2) + '-' + Date.now().toString(36);
+  localStorage.setItem('lb_clientId', id);
+  return id;
+})();
+
+const socket = LB.createSocket({ type: 'editor', userName: myUserName, roomId: myRoomId, clientId: myClientId });
+
+socket.on('connect', () => {
+  document.getElementById('sdot').className = 'sdot on';
+  document.getElementById('stxt').textContent = 'Conectado';
+});
+socket.on('disconnect', () => {
+  document.getElementById('sdot').className = 'sdot blink';
+  document.getElementById('stxt').textContent = 'Reconectando...';
+});
+socket.on('board:init', ({ state, roomId, userId, userName, userColor, canUndo, canRedo }) => {
+  myId = userId;
+  document.getElementById('mydot').style.background = userColor;
+  document.getElementById('myname').textContent = userName || myUserName;
+  // Mostra o nome da sala no badge inferior
+  const roomLabel = document.getElementById('roomlabel');
+  if (roomLabel) roomLabel.textContent = myRoomName || roomId || '';
+  if (state && state.layers && state.layers.length) {
+    boardLayers = state.layers;
+  }
+  ensureActiveLayer();
+  loadState(state);
+  if (state && state.viewport) {
+    vpW = state.viewport.w || 1920; vpH = state.viewport.h || 1080;
+  }
+  // Cache local das áreas reservadas de spawn de cada cliente da sala —
+  // populado aqui (estado já existente) e depois mantido ao vivo por
+  // staging:sync/staging:remove. createViewportRect() → createStagingRect()
+  // é quem efetivamente desenha isso no canvas.
+  _stagingAreaEntries = (state && state.stagingAreas) ? { ...state.stagingAreas } : {};
+  createViewportRect();
+  fitViewport();
+  // Se essa pessoa já estava com "Spawn: área reservada" ativo (preferência
+  // salva no localStorage) antes de recarregar a página / reconectar, avisa
+  // os outros de novo — senão a área só reaparecia pros outros depois da
+  // próxima vez que ela fosse movida, mesmo já estando ativa.
+  if (imageSpawnMode === 'staging') emitStagingSync(getStagingOrigin());
+  const btnU = document.querySelector('[onclick="undo()"]');
+  const btnR = document.querySelector('[onclick="redo()"]');
+  if (btnU) btnU.style.opacity = canUndo ? '1' : '0.35';
+  if (btnR) btnR.style.opacity = canRedo ? '1' : '0.35';
+});
+socket.on('users:update', users => {
+  const count = users.length;
+  const names = users.map(u => u.name || u.id).join(', ');
+  const el = document.getElementById('ucnt');
+  el.textContent = ' · ' + count + (count === 1 ? ' editor' : ' editores');
+  el.title = 'Online: ' + names;
+});
+
+socket.on('object:add',       d       => applyFull(d));
+socket.on('object:modify',    d       => applyFull(d));
+socket.on('object:transform', d       => { applyTransformOnly(d); canvas.renderAll(); });
+socket.on('objects:transform', updates => { updates.forEach(d => applyTransformOnly(d)); canvas.renderAll(); });
+socket.on('object:remove', ids => {
+  ids.forEach(id => { const o = findById(id); if (o) canvas.remove(o); });
+  canvas.renderAll();
+});
+socket.on('objects:batch', objs => { objs.forEach(d => applyFull(d, false)); canvas.renderAll(); });
+
+// Operações atômicas de grupo — aplicadas por outros clientes
+socket.on('group:commit', ({ group: groupData, childIds, zorder }) => {
+  // Pega os objetos Fabric existentes no canvas pelos ids dos filhos.
+  // Eles já têm seus elementos DOM carregados — não precisamos recriar nada.
+  const children = childIds.map(id => findById(id)).filter(Boolean);
+
+  if (children.length === 0) {
+    // Nenhum filho encontrado no canvas (ex: cliente entrou depois do grupo)
+    // Cai no caminho lento de recriação via applyFull
+    applyFull(groupData, false);
+    if (zorder) zorder.forEach((id, idx) => { const o = findById(id); if (o) canvas.moveTo(o, idx); });
+    canvas.renderAll();
+    scheduleLayersUpdate();
+    return;
+  }
+
+  // Remove os filhos do canvas sem destruí-los
+  children.forEach(o => canvas.remove(o));
+
+  // Cria o grupo com os objetos existentes — equivalente ao sel.toGroup() do emitter.
+  // canvas.discardActiveObject() garante que nenhuma ActiveSelection interfira.
+  canvas.discardActiveObject();
+  const sel = new fabric.ActiveSelection(children, { canvas });
+  canvas.setActiveObject(sel);
+  const grp = sel.toGroup();
+
+  // Aplica os metadados do grupo vindos do emitter (posição, escala, id, layerId)
+  grp.id      = groupData.id;
+  grp.layerId = groupData.layerId || activeLayerId;
+  grp.set({
+    left:    groupData.left    ?? grp.left,
+    top:     groupData.top     ?? grp.top,
+    scaleX:  groupData.scaleX  ?? grp.scaleX,
+    scaleY:  groupData.scaleY  ?? grp.scaleY,
+    angle:   groupData.angle   ?? grp.angle,
+    opacity: groupData.opacity ?? grp.opacity,
+  });
+  grp.setCoords();
+
+  canvas.discardActiveObject();
+  if (vpRect) canvas.bringToFront(vpRect);
+  if (zorder) zorder.forEach((id, idx) => { const o = findById(id); if (o) canvas.moveTo(o, idx); });
+  canvas.renderAll();
+  scheduleLayersUpdate();
+});
+
+socket.on('ungroup:commit', ({ groupId, children: childrenData, zorder }) => {
+  const grp = findById(groupId);
+
+  if (!grp || grp.type !== 'group') {
+    childrenData.forEach(d => applyFull(d, false));
+    if (zorder) zorder.forEach((id, idx) => { const o = findById(id); if (o) canvas.moveTo(o, idx); });
+    canvas.renderAll();
+    scheduleLayersUpdate();
+    return;
+  }
+
+  canvas.discardActiveObject();
+  canvas.setActiveObject(grp);
+  // toActiveSelection() já faz o mesmo cálculo de matriz que ungroupSelected() faz
+  // para converter coordenadas relativas ao grupo → absolutas do canvas.
+  // NÃO re-aplicamos left/top do emitter em cima disso — causaria double-offset.
+  const activeSel = grp.toActiveSelection();
+
+  if (activeSel && activeSel.getObjects) {
+    activeSel.getObjects().forEach(o => {
+      const data = childrenData.find(d => d.id === o.id);
+      if (data) {
+        // Só metadados que toActiveSelection() não define
+        o.set({ layerId: data.layerId || o.layerId });
+        // Normaliza origin para 'left'/'top' (consistência com o estado do emitter)
+        if (o.originX !== 'left' || o.originY !== 'top') {
+          const pt = o.translateToOriginPoint(
+            new fabric.Point(o.left, o.top), o.originX, o.originY
+          );
+          o.set({ originX: 'left', originY: 'top', left: pt.x, top: pt.y });
+        }
+        o.setCoords();
+      }
+    });
+  }
+
+  canvas.discardActiveObject();
+  if (vpRect) canvas.bringToFront(vpRect);
+  if (zorder) zorder.forEach((id, idx) => { const o = findById(id); if (o) canvas.moveTo(o, idx); });
+  canvas.renderAll();
+  scheduleLayersUpdate();
+});
+socket.on('board:clear', () => {
+  canvas.clear(); canvas.backgroundColor = '#1e1e2a'; canvas.renderAll();
+  createViewportRect();
+  hiddenObjects.clear();
+  scheduleLayersUpdate();
+});
+socket.on('board:sync', st => {
+  canvas.clear(); canvas.backgroundColor = '#1e1e2a';
+  hiddenObjects.clear();
+  if (st && st.layers && st.layers.length) { boardLayers = st.layers; }
+  ensureActiveLayer();
+  loadState(st);
+  setTimeout(createViewportRect, 100);
+  scheduleLayersUpdate();
+});
+socket.on('zorder:sync', order => {
+  const contentObjs = canvas.getObjects().filter(o => !o._isViewportRect);
+  order.forEach((id, idx) => {
+    const o = contentObjs.find(x => x.id === id);
+    if (o) canvas.moveTo(o, idx);
+  });
+  if (vpRect) canvas.bringToFront(vpRect);
+  canvas.renderAll();
+  scheduleLayersUpdate();
+});
+
+socket.on('viewport:sync', vp => {
+  vpW = vp.w; vpH = vp.h;
+  drawViewportRect();
+});
+
+// Visibilidade de camada — aplica para todos os objetos dessa camada
+socket.on('layer:visibility', ({ layerId, visible }) => {
+  const layer = boardLayers.find(l => l.id === layerId);
+  if (layer) layer.visible = visible;
+  canvas.getObjects()
+    .filter(o => o.layerId === layerId && !o._isViewportRect)
+    .forEach(o => {
+      if (!visible) {
+        o._savedOpacity = o._savedOpacity ?? o.opacity;
+        o.set({ opacity: 0, visible: false });
+        hiddenObjects.add(o.id);
+      } else {
+        o.set({ opacity: o._savedOpacity ?? 1, visible: true });
+        delete o._savedOpacity;
+        hiddenObjects.delete(o.id);
+      }
+    });
+  canvas.renderAll();
+  scheduleLayersPanel();
+});
+
+socket.on('layers:update', layers => {
+  boardLayers = layers;
+  ensureActiveLayer();
+  applyLayerZOrder(); // reflete nova ordem das camadas no canvas
+  scheduleLayersPanel();
+});
+
+// Stroke streaming
+socket.on('draw:start', ({ userId, x, y, color: c, width: w, opacity: opa }) => {
+  if (userId === myId) return;
+  const p = new fabric.Path('M ' + x + ' ' + y, {
+    stroke: c, strokeWidth: w, fill: null, opacity: opa,
+    strokeLineCap: 'round', strokeLineJoin: 'round', selectable: false, evented: false
+  });
+  remoteStrokes[userId] = { path: p, pts: [{ x, y }] };
+  canvas.add(p); canvas.renderAll();
+});
+socket.on('draw:move', ({ userId, x, y }) => {
+  if (userId === myId) return;
+  const s = remoteStrokes[userId];
+  if (!s) return;
+  s.pts.push({ x, y });
+  // IMPORTANTE: mutar path.set({path: ...}) num fabric.Path já existente NÃO
+  // recalcula left/top/width/height/pathOffset — o objeto fica "travado" na
+  // caixa delimitadora minúscula do primeiro ponto, fazendo o traço parecer
+  // comprimido numa área pequena perto do início. A correção é recriar o
+  // objeto Path do zero a cada frame (mesma estratégia já usada nas formas).
+  const styleOpts = {
+    stroke: s.path.stroke, strokeWidth: s.path.strokeWidth, fill: null,
+    opacity: s.path.opacity, strokeLineCap: 'round', strokeLineJoin: 'round',
+    selectable: false, evented: false,
+  };
+  canvas.remove(s.path);
+  s.path = new fabric.Path(pts2path(s.pts), styleOpts);
+  canvas.add(s.path);
+  if (vpRect) canvas.bringToFront(vpRect);
+  canvas.requestRenderAll();
+});
+socket.on('draw:end', ({ userId, object }) => {
+  if (userId === myId) return;
+  const s = remoteStrokes[userId];
+  if (s) { canvas.remove(s.path); delete remoteStrokes[userId]; }
+  if (object) applyFull(object); else canvas.renderAll();
+});
+
+// ── Streaming de formas (retângulo, elipse, linha, seta) em tempo real ───────
+// Mesmo padrão do draw:start/move/end: cada usuário remoto tem no máximo um
+// preview temporário em andamento por vez, guardado em remoteShapes[userId].
+const remoteShapes = {};
+
+socket.on('shape:start', ({ userId, shapeId, tool: t, x, y, color: c, width: w, opacity: opa, fillShape: fs }) => {
+  if (userId === myId) return;
+  const style = { color: c, sz: w, op: opa, fillShape: fs };
+  const sh = mkShape(t, { x, y }, { x, y }, null, style);
+  if (!sh) return;
+  sh.selectable = false; sh.evented = false;
+  remoteShapes[userId] = { shapeId, tool: t, start: { x, y }, style, obj: sh };
+  canvas.add(sh);
+  if (vpRect) canvas.bringToFront(vpRect);
+  canvas.renderAll();
+});
+
+socket.on('shape:move', ({ userId, x, y }) => {
+  if (userId === myId) return;
+  const rs = remoteShapes[userId];
+  if (!rs) return;
+  canvas.remove(rs.obj);
+  const sh = mkShape(rs.tool, rs.start, { x, y }, null, rs.style);
+  if (!sh) return;
+  sh.selectable = false; sh.evented = false;
+  rs.obj = sh;
+  canvas.add(sh);
+  if (vpRect) canvas.bringToFront(vpRect);
+  canvas.requestRenderAll();
+});
+
+socket.on('shape:end', ({ userId, object }) => {
+  if (userId === myId) return;
+  const rs = remoteShapes[userId];
+  if (rs) { canvas.remove(rs.obj); delete remoteShapes[userId]; }
+  if (object) applyFull(object); else canvas.renderAll();
+});
+
+socket.on('shape:cancel', ({ userId }) => {
+  if (userId === myId) return;
+  const rs = remoteShapes[userId];
+  if (rs) { canvas.remove(rs.obj); delete remoteShapes[userId]; canvas.renderAll(); }
+});
+
+// Cursores remotos — recebidos em coordenadas do board, convertidos para tela
+socket.on('cursor:move', ({ userId, userName: uName, color: c, x, y }) => {
+  if (userId === myId) return;
+  if (!remoteCursors[userId]) {
+    const el = document.createElement('div');
+    el.className = 'rcursor';
+    const label = uName || userId; // usa nome se disponível, cai para ID
+    el.innerHTML = `<svg width="20" height="20" viewBox="0 0 20 20" fill="${c}"><path d="M5 2l12 7.5-6.5.5-3 6.5z"/></svg><span class="rcname" style="background:${c}">${label}</span>`;
+    document.body.appendChild(el);
+    remoteCursors[userId] = el;
+  }
+  // Converte do espaço do board para a tela, respeitando zoom e pan atuais
+  const zoom = canvas.getZoom();
+  const vpt  = canvas.viewportTransform;
+  const sx   = x * zoom + vpt[4];
+  const sy   = y * zoom + vpt[5];
+  remoteCursors[userId].style.left = sx + 'px';
+  remoteCursors[userId].style.top  = sy + 'px';
+});
+socket.on('cursor:remove', uid => {
+  if (remoteCursors[uid]) { remoteCursors[uid].remove(); delete remoteCursors[uid]; }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// APLICAÇÃO DE DADOS RECEBIDOS
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── Fila de carregamento por objeto ───────────────────────────────────────────
+// Evita race condition quando chegam múltiplos updates para o mesmo objeto
+// enquanto uma imagem ainda está carregando via fromURL.
+const loadingQueue = {};  // id → último data recebido enquanto carregando
+const loadingNow   = new Set();  // ids que estão no meio de um fromURL
+
+function applyFull(data, render = true) {
+  if (!data || !data.id) return;
+
+  // Se já está carregando esse objeto, guarda o update mais recente para depois
+  if (loadingNow.has(data.id)) {
+    loadingQueue[data.id] = data;
+    return;
+  }
+
+  const ex = findById(data.id);
+  if (ex) canvas.remove(ex);
+
+  // Trata como async se for imagem OU grupo que contém imagens/gifs (deser é assíncrono)
+  const isAsync = data.type === 'image' ||
+    (data.type === 'group' && Array.isArray(data.objects) &&
+      data.objects.some(c => c.type === 'image'));
+  if (isAsync) loadingNow.add(data.id);
+
+  deser(data, o => {
+    // Aplica visibility state de camada se existir
+    if (data._layerHidden) { o.set({ opacity: 0, visible: false }); }
+
+    canvas.add(o);
+
+    // Sincroniza o Set local hiddenObjects com o estado real do objeto recebido.
+    // Sem isso, o ícone de olho e o toggle de visibilidade ficam dessincronizados
+    // em qualquer cliente que não foi quem escondeu o objeto originalmente —
+    // o clique local passaria a repetir a ação errada (esconder de novo, por ex).
+    const isHiddenNow = data._layerHidden === true ||
+      (data.opacity === 0 && data.visible === false);
+    if (isHiddenNow) {
+      hiddenObjects.add(o.id);
+      // _prevOpacity viaja no payload quando quem escondeu tinha opacidade != 1;
+      // sem isso não temos como saber para qual valor restaurar depois.
+      o._savedOpacity = (data._prevOpacity !== undefined) ? data._prevOpacity : (o._savedOpacity ?? 1);
+    } else {
+      hiddenObjects.delete(o.id);
+      delete o._savedOpacity;
+    }
+
+    // Aplica z-order: usa zIndex do objeto se disponível, depois reforça a ordem de camadas.
+    // Isso garante que um objeto adicionado numa camada inferior fique abaixo de objetos
+    // em camadas superiores, independente da ordem de chegada.
+    if (data.zIndex !== undefined) {
+      const contentObjs = canvas.getObjects().filter(x => !x._isViewportRect);
+      const tgt = Math.min(data.zIndex, contentObjs.length - 1);
+      canvas.moveTo(o, tgt);
+    }
+    // Reforça a ordem entre camadas (corrige casos onde zIndex está desatualizado)
+    applyLayerZOrder();
+
+    if (vpRect) canvas.bringToFront(vpRect);
+    if (render) canvas.renderAll();
+
+    if (isAsync) {
+      loadingNow.delete(data.id);
+      if (loadingQueue[data.id]) {
+        const queued = loadingQueue[data.id];
+        delete loadingQueue[data.id];
+        applyFull(queued, true);
+        return;
+      }
+    }
+    scheduleLayersUpdate();
+  });
+}
+
+function applyTransformOnly(data) {
+  const obj = findById(data.id); if (!obj) return;
+  obj.set({
+    left:    data.left,  top:     data.top,
+    scaleX:  Math.abs(data.scaleX || 1), scaleY:  Math.abs(data.scaleY || 1),
+    angle:   data.angle   || 0,
+    flipX:   data.flipX   || false, flipY:   data.flipY   || false,
+    opacity: data.opacity !== undefined ? data.opacity : obj.opacity,
+  });
+  obj.setCoords();
+  if ((data.type === 'i-text' || data.type === 'text') && data.text !== undefined) {
+    obj.set({ text: data.text, fill: data.fill || obj.fill });
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// EMIT — SYNC
+// ═══════════════════════════════════════════════════════════════════════════════
+let lastSyncMs = 0;
+function throttle60(fn) {
+  const now = Date.now();
+  if (now - lastSyncMs < 16) return;
+  lastSyncMs = now;
+  fn();
+}
+
+function emitLiveTransform(target) {
+  if (!target || target._isViewportRect) return;
+  throttle60(() => {
+    const isMulti = target.type === 'activeSelection';
+    if (!isMulti) {
+      if (target.id) socket.volatile.emit('object:transform', serTransform(target));
+      return;
+    }
+    const gm = target.calcTransformMatrix();
+    const updates = target.getObjects().filter(o => o.id).map(o => serTransformAbsolute(o, gm));
+    if (updates.length) socket.volatile.emit('objects:transform', updates);
+  });
+}
+
+function emitFull(obj) {
+  if (obj._isViewportRect) return;
+  if (!obj.id) obj.id = genId();
+  ensureActiveLayer(); // garante que activeLayerId é válido antes de atribuir
+  if (!obj.layerId) obj.layerId = activeLayerId;
+  const s = ser(obj);
+  if (s) socket.emit('object:add', s);
+}
+
+// Wrapper para canvas.add que sempre reforça a ordem de camadas depois.
+// Usar em todo lugar que adiciona um objeto localmente (não via applyFull).
+function addToCanvas(obj) {
+  canvas.add(obj);
+  applyLayerZOrder();
+  if (vpRect) canvas.bringToFront(vpRect);
+}
+
+function emitModify(obj) {
+  if (obj._isViewportRect || !obj.id) return;
+  const s = ser(obj);
+  if (s) socket.emit('object:modify:commit', s);
+}
+
+function emitModifyGroup(target) {
+  if (!target) return;
+  const isMulti = target.type === 'activeSelection';
+  if (!isMulti) { emitModify(target); return; }
+  const gm = target.calcTransformMatrix();
+  target.getObjects().filter(o => o.id).forEach(o => {
+    const abs  = serTransformAbsolute(o, gm);
+    const data = ser(o);
+    if (!data) return;
+    Object.assign(data, abs);
+    socket.emit('object:modify', data);
+  });
+}
+
+function sendBackFront(dir) {
+  canvas.getActiveObjects().forEach(o => {
+    if (o._isViewportRect) return;
+    dir === 'back' ? canvas.sendToBack(o) : canvas.bringToFront(o);
+  });
+  if (vpRect) canvas.bringToFront(vpRect);
+  canvas.renderAll();
+  const order = canvas.getObjects().filter(o => o.id && !o._isViewportRect).map(o => o.id);
+  socket.emit('zorder:sync', order);
+  scheduleLayersUpdate();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// EVENTOS DO CANVAS
+// ═══════════════════════════════════════════════════════════════════════════════
+canvas.on('object:moving',   opt => { if (!opt.target._isViewportRect) emitLiveTransform(opt.target); });
+canvas.on('object:scaling',  opt => { if (!opt.target._isViewportRect) emitLiveTransform(opt.target); });
+canvas.on('object:rotating', opt => { if (!opt.target._isViewportRect) emitLiveTransform(opt.target); });
+canvas.on('object:skewing',  opt => { if (!opt.target._isViewportRect) emitLiveTransform(opt.target); });
+canvas.on('object:modified', opt => {
+  if (!opt.target || opt.target._isViewportRect) return;
+  emitModifyGroup(opt.target);
+  scheduleLayersUpdate();
+});
+
+canvas.on('path:created', opt => {
+  const path = opt.path; path.id = genId();
+  path.layerId = activeLayerId;
+  // O Fabric já adicionou o path ao canvas automaticamente (no topo) — reforça
+  // a ordem de camadas para que ele respeite a hierarquia correta.
+  applyLayerZOrder();
+  emitFull(path);
+  socket.emit('draw:end', { object: ser(path) });
+  // Sincroniza z-order para que o traço apareça na camada correta nos clientes remotos
+  socket.emit('zorder:sync', canvas.getObjects().filter(o => o.id && !o._isViewportRect).map(o => o.id));
+});
+
+canvas.on('selection:created', updCtx);
+canvas.on('selection:updated', updCtx);
+canvas.on('object:modified',   updCtx);
+canvas.on('selection:cleared', () => { document.getElementById('ctx').style.display = 'none'; layoutSidePanels(); });
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// POINTER LOGIC
+// ═══════════════════════════════════════════════════════════════════════════════
+function getCanvasPoint(e) {
+  const rect = canvas.upperCanvasEl.getBoundingClientRect();
+  let clientX, clientY;
+  if (e.touches && e.touches.length > 0) { clientX = e.touches[0].clientX; clientY = e.touches[0].clientY; }
+  else if (e.changedTouches && e.changedTouches.length > 0) { clientX = e.changedTouches[0].clientX; clientY = e.changedTouches[0].clientY; }
+  else { clientX = e.clientX; clientY = e.clientY; }
+  const zoom = canvas.getZoom();
+  const vpt  = canvas.viewportTransform;
+  return {
+    x: (clientX - rect.left - vpt[4]) / zoom,
+    y: (clientY - rect.top  - vpt[5]) / zoom,
+    clientX, clientY
+  };
+}
+
+function handlePointerDown(p, target) {
+  if (isPanMode || spaceHeld) return;
+  if (tool === 'eraser') {
+    if (target && target.id && !target._isViewportRect) { const id = target.id; canvas.remove(target); canvas.renderAll();
+      socket.emit('object:remove', [id]);
+      scheduleLayersUpdate();
+    }
+    return;
+  }
+  if (tool === 'text') { addText(p); return; }
+  if (tool === 'pen') {
+    penActive = true;
+    socket.emit('draw:start', { x: p.x, y: p.y, color, width: sz, opacity: op });
+    return;
+  }
+  if (['rect','circle','line','arrow'].includes(tool)) {
+    isDrawing = true;
+    drawStart = { x: p.x, y: p.y };
+    tmpShapeId = genId();
+    // Notifica outros clientes que uma forma começou a ser desenhada — eles vão
+    // criar um preview local que acompanha o arraste em tempo real (mesmo
+    // mecanismo do draw:start/move/end usado pela caneta livre).
+    socket.emit('shape:start', {
+      shapeId: tmpShapeId, tool, x: p.x, y: p.y,
+      color, width: sz, opacity: op, fillShape,
+    });
+  }
+}
+
+function updateTmpShape(p) {
+  if (!isDrawing || !drawStart) return;
+  const prev = findById(tmpShapeId);
+  if (prev) canvas.remove(prev);
+  const sh = mkShape(tool, drawStart, p, tmpShapeId);
+  if (!sh) return;
+  canvas.add(sh);
+  if (vpRect) canvas.bringToFront(vpRect);
+  canvas.requestRenderAll();
+  throttle60(() => {
+    socket.emit('shape:move', { shapeId: tmpShapeId, x: p.x, y: p.y });
+  });
+}
+
+function handlePointerUp(p) {
+  penActive = false;
+  if (!isDrawing) return;
+  isDrawing = false;
+  const prev = findById(tmpShapeId);
+  if (prev) canvas.remove(prev);
+  const dx = Math.abs(p.x - drawStart.x), dy = Math.abs(p.y - drawStart.y);
+  if (dx > 3 || dy > 3) {
+    const sh = mkShape(tool, drawStart, p, tmpShapeId);
+    if (sh) {
+      addToCanvas(sh);
+      canvas.renderAll();
+      emitFull(sh);
+      // Avisa os outros clientes para removerem o preview temporário e mostra
+      // o objeto final (mesmo padrão do draw:end da caneta livre).
+      socket.emit('shape:end', { shapeId: tmpShapeId, object: ser(sh) });
+    }
+  } else {
+    socket.emit('shape:cancel', { shapeId: tmpShapeId });
+  }
+  drawStart = null; tmpShapeId = null;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FERRAMENTAS
+// ═══════════════════════════════════════════════════════════════════════════════
+function setTool(t) {
+  // Sai do pan mode se estava nele
+  if (isPanMode && t !== 'pan') exitPanMode();
+
+  tool = t;
+  document.querySelectorAll('.tb-btn').forEach(b => b.classList.remove('active'));
+  const btn = document.getElementById('t-' + t); if (btn) btn.classList.add('active');
+  const opts = document.getElementById('opts');
+  isDrawing = false; drawStart = null;
+  const prev = findById(tmpShapeId);
+  if (prev) { canvas.remove(prev); canvas.renderAll(); socket.emit('shape:cancel', { shapeId: tmpShapeId }); }
+  tmpShapeId = null;
+
+  // Uma seleção que ficou "presa" de uma ação anterior bloqueia silenciosamente
+  // o mouse:down de qualquer ferramenta de desenho (o guard abaixo checa
+  // getActiveObjects().length > 0). Ao trocar para qualquer ferramenta que não
+  // seja "select", garante que não sobrou nada selecionado.
+  if (t !== 'select' && canvas.getActiveObjects().length > 0) {
+    canvas.discardActiveObject();
+    canvas.renderAll();
+  }
+
+  if (t === 'pan') {
+    enterPanMode();
+    opts.classList.add('hidden');
+    layoutSidePanels();
+    return;
+  }
+  if (t === 'select') {
+    canvas.isDrawingMode = false; canvas.selection = true;
+    canvas.skipTargetFind = false;
+    canvas.defaultCursor = 'default'; opts.classList.add('hidden');
+  } else if (t === 'pen') {
+    canvas.isDrawingMode = true; canvas.selection = false;
+    canvas.skipTargetFind = true;
+    canvas.freeDrawingBrush = new fabric.PencilBrush(canvas);
+    canvas.freeDrawingBrush.color = color; canvas.freeDrawingBrush.width = sz;
+    opts.classList.remove('hidden');
+  } else {
+    canvas.isDrawingMode = false; canvas.selection = false;
+    // skipTargetFind impede que o Fabric selecione/arraste um objeto já
+    // existente ao clicar em cima dele com uma ferramenta de desenho — o
+    // clique deve sempre iniciar uma forma/texto novo, nunca selecionar o que
+    // já está no board. A borracha é a exceção: ela precisa que o Fabric
+    // identifique o objeto sob o cursor pra saber o que apagar.
+    canvas.skipTargetFind = (t !== 'eraser');
+    canvas.defaultCursor = t === 'eraser' ? 'cell' : 'crosshair';
+    opts.classList.remove('hidden');
+  }
+
+  // Mantém o painel de spawn, o painel view/ajuda (canto superior esquerdo),
+  // o painel de propriedades do objeto selecionado (#ctx) e o painel de
+  // Camadas todos coordenados entre si — ver layoutSidePanels().
+  layoutSidePanels();
+}
+
+function setColor(c, el) {
+  color = c;
+  document.querySelectorAll('.swatch').forEach(s => s.classList.remove('sel'));
+  if (el) el.classList.add('sel');
+  if (canvas.freeDrawingBrush) canvas.freeDrawingBrush.color = c;
+}
+function setSz(v) { sz = parseInt(v); document.getElementById('szv').textContent = v; if (canvas.freeDrawingBrush) canvas.freeDrawingBrush.width = sz; }
+function setOp(v) { op = parseInt(v) / 100; document.getElementById('opv').textContent = v + '%'; if (canvas.freeDrawingBrush) canvas.freeDrawingBrush.opacity = op; }
+
+function updCtx() {
+  const objs = canvas.getActiveObjects().filter(o => !o._isViewportRect);
+  if (!objs.length) { document.getElementById('ctx').style.display = 'none'; layoutSidePanels(); return; }
+  const ctx = document.getElementById('ctx');
+  ctx.style.display = 'block';
+  // Usa o primeiro objeto como referência para preencher os campos
+  const o = objs[0];
+  const multi = objs.length > 1;
+
+  // Título
+  const typeNames = { 'path':'Traço', 'rect':'Retângulo', 'ellipse':'Elipse', 'circle':'Elipse',
+    'line':'Linha', 'i-text':'Texto', 'text':'Texto', 'image':'Imagem', 'group':'Grupo' };
+  document.getElementById('ctx-title').textContent = multi
+    ? `${objs.length} objetos`
+    : (typeNames[o.type] || 'Objeto');
+
+  // Dimensões (só para seleção única)
+  document.getElementById('cw').value  = multi ? '' : Math.round(o.getScaledWidth());
+  document.getElementById('ch').value  = multi ? '' : Math.round(o.getScaledHeight());
+  document.getElementById('cop').value = Math.round((o.opacity || 1) * 100);
+
+  // Cor de stroke/texto
+  const isText = o.type === 'i-text' || o.type === 'text';
+  const strokeColor = isText ? (o.fill || '#ffffff') : (o.stroke || '#ffffff');
+  const colorEl = document.getElementById('ctx-color');
+  colorEl.value = strokeColor.startsWith('#') ? strokeColor : '#ffffff';
+  document.getElementById('ctx-color-lbl').textContent = isText ? 'texto' : 'linha';
+  const hideColor = o.type === 'image' || o.type === 'group';
+  document.getElementById('ctx-color-row').style.display = hideColor ? 'none' : 'flex';
+
+  // Preenchimento
+  const hasFill = !multi &&
+    o.type !== 'i-text' && o.type !== 'text' &&
+    o.type !== 'image' && o.type !== 'line' && o.type !== 'path';
+  document.getElementById('ctx-fill-row').style.display = hasFill ? 'flex' : 'none';
+  if (hasFill) {
+    const fillActive = o.fill && o.fill !== 'transparent' && o.fill !== '';
+    document.getElementById('ctx-fill-on').checked = !!fillActive;
+    const fillEl = document.getElementById('ctx-fill');
+    fillEl.value    = fillActive && o.fill.startsWith('#') ? o.fill : '#ffffff';
+    fillEl.disabled = !fillActive;
+  }
+
+  // Espessura
+  const hasSz = objs.every(x => x.type !== 'image' && x.type !== 'i-text' && x.type !== 'text' && x.type !== 'group');
+  document.getElementById('ctx-sz-row').style.display = hasSz ? 'flex' : 'none';
+  if (hasSz) {
+    const sw = o.strokeWidth || 1;
+    document.getElementById('ctx-sz').value = sw;
+    document.getElementById('ctx-sz-v').textContent = sw;
+  }
+
+  layoutSidePanels();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Layout coordenado dos painéis do topo/direita (spawn-panel → #ctx →
+// #layers-panel), mais o painel superior esquerdo (view/ajuda). Cada um mede
+// a borda real do anterior via getBoundingClientRect() — nunca um número fixo
+// "no chute" — e por isso funciona igual não importa o tamanho da tela, zoom,
+// idioma dos textos, etc. Sempre chamar layoutSidePanels() (nunca as funções
+// individuais soltas), pra garantir que rodem na ordem certa: cada painel só
+// sabe se posicionar depois que o anterior já se acomodou.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const LAYERS_PANEL_MIN_RESERVE = 190; // min-height do #layers-panel (180px) + folga
+
+// Borda inferior da "área ocupada" no topo-centro: toolbar + painel de opções
+// da ferramenta ativa (se visível) + painel de spawn (que fica sempre
+// centralizado logo abaixo). Usado por quem precisa saber onde essa área
+// termina pra não ficar embaixo dela (#ctx, #layers-panel).
+function getTopClearArea() {
+  const toolbar = document.getElementById('toolbar');
+  const opts = document.getElementById('opts');
+  const spawnPanel = document.getElementById('spawn-panel');
+  let bottom = toolbar.getBoundingClientRect().bottom;
+  if (opts && !opts.classList.contains('hidden')) {
+    bottom = Math.max(bottom, opts.getBoundingClientRect().bottom);
+  }
+  if (spawnPanel) bottom = Math.max(bottom, spawnPanel.getBoundingClientRect().bottom);
+  return bottom;
+}
+
+// Posiciona o painel de spawn logo abaixo da toolbar/opções — sempre
+// centralizado, em qualquer tamanho de tela (diferente do painel view/ajuda,
+// que mora num canto e só se move quando a toolbar ameaça encostar nele).
+function updSpawnPanelPos() {
+  const sp = document.getElementById('spawn-panel');
+  if (!sp) return;
+  const toolbar = document.getElementById('toolbar');
+  const opts = document.getElementById('opts');
+  let bottom = toolbar.getBoundingClientRect().bottom;
+  if (opts && !opts.classList.contains('hidden')) {
+    bottom = Math.max(bottom, opts.getBoundingClientRect().bottom);
+  }
+  sp.style.top = (bottom + 8) + 'px';
+}
+
+// Posiciona o painel "view do OBS / como usar" (canto superior esquerdo). Em
+// telas largas ele mora fixo no canto (CSS cuida disso — só limpamos qualquer
+// inline style residual). Em telas estreitas, a toolbar central (que pode
+// esticar bem perto das bordas) arrisca encostar nele, então empurramos pra
+// baixo da área ocupada no topo (toolbar/opções/spawn) só nesse caso.
+function updTopLeftPanelPos() {
+  const tlp = document.getElementById('top-left-panel');
+  if (!tlp) return;
+
+  if (window.innerWidth >= 1200) {
+    tlp.style.top = '';
+    return;
+  }
+  tlp.style.top = (getTopClearArea() + 8) + 'px';
+}
+
+// Posiciona o painel de Viewport (canto superior esquerdo, abaixo do painel
+// view/ajuda) — mede a borda inferior REAL do painel view/ajuda, pra nunca
+// ficar embaixo dele. Isso importa principalmente em telas estreitas, onde o
+// painel view/ajuda desce (empurrado pela toolbar central, ver
+// updTopLeftPanelPos) e pode chegar perto o suficiente do topo padrão do
+// Viewport (top:max(130px,12vh) do CSS) pra sobrepor os dois. O valor do CSS
+// continua sendo o mínimo — só sobe daqui se o painel view/ajuda precisar de
+// mais espaço que isso.
+function updVpPanelPos() {
+  const vp = document.getElementById('vp-panel');
+  const tlp = document.getElementById('top-left-panel');
+  if (!vp || !tlp) return;
+  const cssMinTop = Math.max(130, window.innerHeight * 0.12); // espelha o "top:max(130px,12vh)" do CSS
+  const tlpBottom = tlp.getBoundingClientRect().bottom;
+  vp.style.top = Math.max(cssMinTop, tlpBottom + 10) + 'px';
+}
+
+// Posiciona o painel de propriedades do objeto selecionado (#ctx) logo abaixo
+// de toda a área ocupada no topo (toolbar/opções/spawn) — nunca embaixo dela.
+// E, além disso, ENCOLHE a altura máxima dele (max-height) reservando espaço
+// suficiente pro painel de Camadas logo abaixo, em vez de simplesmente
+// empurrá-lo pra fora da tela. Se o de Camadas estiver recolhido (.collapsed),
+// a reserva de espaço é bem menor, já que ele não ocupa lugar nenhum nesse caso.
+function positionCtxPanel() {
+  const ctx = document.getElementById('ctx');
+  if (!ctx) return;
+
+  const top = getTopClearArea() + 12;
+  ctx.style.top = top + 'px';
+
+  const layersPanel = document.getElementById('layers-panel');
+  const layersCollapsed = layersPanel && layersPanel.classList.contains('collapsed');
+  const reserve = layersCollapsed ? 24 : (LAYERS_PANEL_MIN_RESERVE + 24); // +24 = folgas/gaps
+  const maxH = Math.max(120, window.innerHeight - top - reserve);
+  ctx.style.maxHeight = maxH + 'px';
+}
+
+// Empurra o painel de Camadas pra baixo do painel de propriedades do objeto
+// selecionado (#ctx) sempre que ele estiver visível — medindo a altura REAL
+// dele (getBoundingClientRect), não um número fixo. Funciona igual pra
+// qualquer tipo de objeto (retângulo, texto, imagem, grupo...), já que cada
+// um mostra uma quantidade diferente de campos e portanto uma altura
+// diferente. Quando não há objeto selecionado, volta a usar a posição padrão
+// definida em CSS (top:max(130px, 30vh)).
+//
+// O "top" calculado é sempre limitado (clamp) entre a área ocupada no topo
+// (nunca perto demais da toolbar/spawn) e "innerHeight - 180px" (sempre sobra
+// pelo menos 180px de altura utilizável pro painel de Camadas acima do
+// rodapé) — isso evita depender só da resolução automática do CSS quando os
+// valores ficam sobre-restringidos (top + bottom não cabem), que era o que
+// deixava o painel espremido/quebrado em telas muito curtas.
+function repositionLayersPanel() {
+  const layersPanel = document.getElementById('layers-panel');
+  const ctx = document.getElementById('ctx');
+  if (!layersPanel || !ctx) return;
+
+  if (ctx.style.display !== 'none') {
+    const ctxBottom = ctx.getBoundingClientRect().bottom;
+    const minTop = getTopClearArea() + 12;
+    const desiredTop = Math.max(ctxBottom + 12, minTop);
+    const maxTop = Math.max(window.innerHeight - 180, minTop);
+    layersPanel.style.top = Math.min(desiredTop, maxTop) + 'px';
+  } else {
+    layersPanel.style.top = ''; // volta pro valor padrão do CSS
+  }
+}
+
+// Orquestrador — sempre chamar este, nunca as funções acima isoladas: a
+// ordem importa (spawn-panel precisa se acomodar antes do #ctx medir a borda
+// dele, que por sua vez precisa se acomodar antes do #layers-panel medir a
+// borda dele; top-left-panel depende da mesma área acomodada também; e o
+// vp-panel depende do top-left-panel já estar no lugar certo).
+function layoutSidePanels() {
+  updSpawnPanelPos();
+  updTopLeftPanelPos();
+  updVpPanelPos();
+  positionCtxPanel();
+  repositionLayersPanel();
+}
+window.addEventListener('resize', layoutSidePanels);
+
+// ── Funções de edição ao vivo ─────────────────────────────────────────────────
+// Funcionam tanto em seleção única quanto em multi-seleção.
+// IMPORTANTE: quando há activeSelection, o Fabric converte left/top dos filhos
+// para coordenadas relativas — precisamos serializar com coordenadas absolutas.
+function getSelObjs() {
+  return canvas.getActiveObjects().filter(o => !o._isViewportRect);
+}
+
+// Emite modificação de objeto respeitando se está em activeSelection
+function emitModifyWithAbsPos(o) {
+  if (!o.id || o._isViewportRect) return;
+  const active = canvas.getActiveObject();
+  if (active && active.type === 'activeSelection') {
+    // Objeto dentro de uma seleção múltipla — calcular posição absoluta
+    const gm  = active.calcTransformMatrix();
+    const abs = serTransformAbsolute(o, gm);
+    const data = ser(o);
+    if (!data) return;
+    Object.assign(data, abs);
+    socket.emit('object:modify:commit', data);
+  } else {
+    emitModify(o);
+  }
+}
+
+function setSelColor(val) {
+  getSelObjs().forEach(o => {
+    const isText = o.type === 'i-text' || o.type === 'text';
+    if (isText) o.set({ fill: val });
+    else        o.set({ stroke: val });
+    emitModifyWithAbsPos(o);
+  });
+  canvas.renderAll();
+}
+
+function setSelFill(val) {
+  if (!document.getElementById('ctx-fill-on').checked) return;
+  getSelObjs().forEach(o => { o.set({ fill: val }); emitModifyWithAbsPos(o); });
+  canvas.renderAll();
+}
+
+function toggleSelFill(checked) {
+  const fillInput = document.getElementById('ctx-fill');
+  fillInput.disabled = !checked;
+  const fillVal = checked ? (fillInput.value || '#ffffff') : 'transparent';
+  getSelObjs().forEach(o => { o.set({ fill: fillVal }); emitModifyWithAbsPos(o); });
+  canvas.renderAll();
+}
+
+function setSelStroke(val) {
+  const n = parseInt(val);
+  document.getElementById('ctx-sz-v').textContent = n;
+  getSelObjs().forEach(o => { o.set({ strokeWidth: n }); emitModifyWithAbsPos(o); });
+  canvas.renderAll();
+}
+
+function resizeSel(d, v) {
+  const o = canvas.getActiveObject(); if (!o || !v || o._isViewportRect) return;
+  d === 'w' ? o.scaleToWidth(parseFloat(v)) : o.scaleToHeight(parseFloat(v));
+  o.setCoords(); canvas.renderAll(); emitModifyWithAbsPos(o);
+}
+
+function setSelOp(v) {
+  getSelObjs().forEach(o => { o.set({ opacity: parseInt(v) / 100 }); emitModifyWithAbsPos(o); });
+  canvas.renderAll();
+}
+function delSel() {
+  const ids = canvas.getActiveObjects().filter(o => !o._isViewportRect).map(o => o.id).filter(Boolean);
+  canvas.getActiveObjects().filter(o => !o._isViewportRect).forEach(o => canvas.remove(o));
+  canvas.discardActiveObject(); canvas.renderAll();
+  socket.emit('object:remove', ids);
+  scheduleLayersUpdate();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CRIAÇÃO DE FORMAS
+// ═══════════════════════════════════════════════════════════════════════════════
+function mkShape(t, s, e, id, style) {
+  const st   = style || { color, sz, op, fillShape };
+  const oid  = id || genId();
+  const base = {
+    stroke: st.color, strokeWidth: st.sz, fill: 'transparent',
+    opacity: st.op, selectable: true, evented: true,
+    strokeLineCap: 'round', strokeLineJoin: 'round', id: oid
+  };
+  if (t === 'rect')   return new fabric.Rect({ ...base, fill: st.fillShape ? st.color : 'transparent', left: Math.min(s.x,e.x), top: Math.min(s.y,e.y), width: Math.abs(e.x-s.x)||1, height: Math.abs(e.y-s.y)||1 });
+  if (t === 'circle') return new fabric.Ellipse({ ...base, fill: st.fillShape ? st.color : 'transparent', left: Math.min(s.x,e.x), top: Math.min(s.y,e.y), rx: Math.abs(e.x-s.x)/2||1, ry: Math.abs(e.y-s.y)/2||1 });
+  if (t === 'line')   return new fabric.Line([s.x, s.y, e.x, e.y], { ...base, fill: null });
+  if (t === 'arrow') {
+    const dx  = e.x - s.x, dy = e.y - s.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const ang = Math.atan2(dy, dx);
+    // Tamanho da cabeça proporcional à espessura, mínimo razoável
+    const hl  = Math.max(16, st.sz * 4);
+    const hw  = Math.max(10, st.sz * 2.5);
+    // Recua o fim da linha para não passar pela cabeça
+    const ex2 = e.x - Math.cos(ang) * hl * 0.6;
+    const ey2 = e.y - Math.sin(ang) * hl * 0.6;
+    // Pontos da cabeça triangular no espaço local
+    const cos = Math.cos(ang), sin = Math.sin(ang);
+    // Ponta, esquerda, direita
+    const tip = [e.x, e.y];
+    const lx  = e.x - hl * cos + hw * sin;
+    const ly  = e.y - hl * sin - hw * cos;
+    const rx  = e.x - hl * cos - hw * sin;
+    const ry  = e.y - hl * sin + hw * cos;
+    const pathStr = [
+      `M ${s.x} ${s.y} L ${ex2} ${ey2}`,
+      `M ${tip[0]} ${tip[1]} L ${lx} ${ly} L ${rx} ${ry} Z`,
+    ].join(' ');
+    return new fabric.Path(pathStr, {
+      ...base,
+      fill: st.color,          // cabeça preenchida
+      stroke: st.color,
+      strokeWidth: st.sz,
+      strokeLineCap: 'round',
+      strokeLineJoin: 'round',
+      _isArrow: true,       // marcador para saber que é seta
+    });
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TEXTO
+// ═══════════════════════════════════════════════════════════════════════════════
+function addText(pos) {
+  const t = new fabric.IText('Texto', {
+    left: pos.x, top: pos.y, id: genId(),
+    fill: color, fontSize: Math.max(16, sz * 4),
+    fontFamily: 'Segoe UI, system-ui, sans-serif',
+    selectable: true, editable: true
+  }); addToCanvas(t);
+  canvas.setActiveObject(t); t.enterEditing(); canvas.renderAll();
+  t.on('editing:exited', () => emitFull(t));
+  t.on('changed', () => socket.volatile.emit('object:transform', {
+    id: t.id, type: t.type, text: t.text, fill: t.fill,
+    left: t.left, top: t.top, scaleX: t.scaleX, scaleY: t.scaleY,
+    angle: t.angle, flipX: t.flipX, flipY: t.flipY, opacity: t.opacity
+  }));
+  setTool('select');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// IMAGENS
+// ═══════════════════════════════════════════════════════════════════════════════
+// showToast(msg) sozinho = toast "de processo" (ex: "Enviando imagem..."),
+// fica até o próprio código chamar hideToast() quando a operação terminar.
+// showToast(msg, ms) = toast "de notificação" (confirmação/erro rápido),
+// some sozinho depois de `ms`. O timer é sempre cancelado/reiniciado a cada
+// chamada, pra um toast novo nunca ser escondido por um timer de um toast
+// anterior que ainda estava pendente.
+let _toastHideTimer = null;
+function showToast(msg, autoHideMs) {
+  document.getElementById('toast-msg').textContent = msg;
+  document.getElementById('toast').classList.add('show');
+  clearTimeout(_toastHideTimer);
+  _toastHideTimer = autoHideMs ? setTimeout(hideToast, autoHideMs) : null;
+}
+function hideToast() {
+  clearTimeout(_toastHideTimer);
+  document.getElementById('toast').classList.remove('show');
+}
+
+async function uploadFile(file) {
+  showToast('Enviando imagem...');
+  const fd = new FormData(); fd.append('image', file);
+  const res = await fetch('/upload', { method: 'POST', body: fd });
+  if (!res.ok) {
+    let msg = 'Falha no upload';
+    try { const j = await res.json(); if (j && j.error) msg = j.error; } catch (_) {}
+    throw new Error(msg);
+  }
+  return (await res.json()).url;
+}
+
+// ── Posiciona imagem no centro do viewport ────────────────────────────────────
+function centerImgOnViewport(img) {
+  const s   = img.width > canvas.width * .5 ? canvas.width * .5 / img.width : 1;
+  const zoom = canvas.getZoom(), vpt = canvas.viewportTransform;
+  const cx = (-vpt[4] + window.innerWidth  / 2) / zoom;
+  const cy = (-vpt[5] + window.innerHeight / 2) / zoom;
+  img.scale(s);
+  img.set({ left: cx - img.getScaledWidth() / 2, top: cy - img.getScaledHeight() / 2 });
+}
+
+// ── Preferência local de onde novas imagens/gifs "nascem" no board ──────────
+// 'view'    → centralizada na tela que EU (localmente) estou olhando agora
+//             (padrão, comportamento de sempre).
+// 'staging' → sempre numa área reservada, fora do viewport oficial do OBS
+//             (que é sempre fixo em 0,0 → vpW×vpH) — assim ela não "pipoca"
+//             no meio da tela de quem está olhando em tempo real; a pessoa
+//             arrasta pra posição final depois.
+// É uma preferência POR NAVEGADOR (localStorage), não por sala nem por
+// objeto — cada pessoa escolhe pra si, sem afetar o que os outros veem.
+let imageSpawnMode = localStorage.getItem('lb_imageSpawnMode') || 'view';
+
+const STAGING_MARGIN  = 160; // distância padrão da borda direita do viewport oficial
+const STAGING_MAX_W   = 480; // largura máxima de uma imagem avulsa (em coords do canvas)
+let _stagingCascade = 0;
+
+// ── Posição da área reservada (configurável POR CLIENTE) ────────────────────
+// Por padrão a área fica a STAGING_MARGIN px à direita do viewport oficial
+// (comportamento de sempre). Mas cada pessoa pode clicar em "Mover área
+// reservada" e escolher, só pra si, onde a SUA área deve ficar (nunca move a
+// de ninguém mais). A posição fica salva localmente (localStorage, por sala)
+// pra persistir entre recarregamentos, e também é enviada ao servidor —
+// não em tempo real (nunca segue o mouse pela rede) — nestes momentos:
+// ligar o modo "área reservada" (sincroniza na posição atual), mover/resetar
+// a posição enquanto o modo está ativo, e ao reconectar/recarregar a página
+// já com o modo ativo. Desligar o modo remove a área do board dos outros.
+// É assim que ela aparece, com meu nome e cor, no board de todo mundo (ver
+// "Áreas reservadas de outros usuários" mais abaixo).
+const _stagingPosKey = `lb_stagingPos_${myRoomId}`;
+let _stagingPos = null; // {left, top} em coords do canvas, ou null = usa o padrão
+try {
+  const raw = localStorage.getItem(_stagingPosKey);
+  if (raw) _stagingPos = JSON.parse(raw);
+} catch (_) { _stagingPos = null; }
+
+let _stagingPlacementMode = false; // true enquanto a pessoa está escolhendo a nova posição
+
+function getStagingOrigin() {
+  return _stagingPos || { left: vpW + STAGING_MARGIN, top: 0 };
+}
+
+function saveStagingPos(pos) {
+  _stagingPos = pos;
+  try { localStorage.setItem(_stagingPosKey, JSON.stringify(pos)); } catch (_) {}
+}
+
+function resetStagingPos() {
+  _stagingPos = null;
+  try { localStorage.removeItem(_stagingPosKey); } catch (_) {}
+  drawStagingRect();
+  // Se o modo área reservada ainda está ativo, a área continua existindo pros
+  // outros verem — só que agora na posição padrão. Só remove de vez (some pra
+  // todo mundo) se o modo já estiver desligado.
+  if (imageSpawnMode === 'staging') emitStagingSync(getStagingOrigin());
+  else emitStagingRemove();
+  showToast('Área reservada voltou pra posição padrão', 2000);
+}
+
+// Próximo deslocamento em cascata dentro da área reservada, compartilhado por
+// imagens avulsas e por grupos de objetos colados, pra nada nascer exatamente
+// empilhado em cima do que já estava lá.
+function nextStagingOffset() {
+  const off = (_stagingCascade % 8) * 40;
+  _stagingCascade++;
+  return off;
+}
+
+// Posiciona uma imagem/gif na área reservada, em cascata simples pra novas
+// imagens não empilharem exatamente uma em cima da outra.
+function placeInStagingArea(img) {
+  const s = img.width > STAGING_MAX_W ? STAGING_MAX_W / img.width : 1;
+  img.scale(s);
+  const offset = nextStagingOffset();
+  const origin = getStagingOrigin();
+  img.set({ left: origin.left + offset, top: origin.top + offset });
+}
+
+// Reposiciona (in-place, nos dados serializados ainda não instanciados) um
+// conjunto de objetos — um só, vários soltos ou grupos — pra dentro da área
+// reservada, preservando o arranjo relativo entre eles (só translada e, se
+// necessário, encolhe tudo proporcionalmente pra caber). Usado pelo paste de
+// objetos do próprio board (pasteBoardObjects) quando o modo staging tá ativo.
+function placeStagingGroup(items) {
+  let minLeft = Infinity, minTop = Infinity, maxRight = -Infinity, maxBottom = -Infinity;
+  for (const d of items) {
+    const w = (d.width  || 0) * (d.scaleX ?? 1);
+    const h = (d.height || 0) * (d.scaleY ?? 1);
+    const l = d.left || 0, t = d.top || 0;
+    if (l < minLeft) minLeft = l;
+    if (t < minTop) minTop = t;
+    if (l + w > maxRight) maxRight = l + w;
+    if (t + h > maxBottom) maxBottom = t + h;
+  }
+  if (!isFinite(minLeft)) return; // segurança, não deveria acontecer
+
+  const bboxW = Math.max(1, maxRight - minLeft);
+  const bboxH = Math.max(1, maxBottom - minTop);
+  // Só encolhe (nunca aumenta) o suficiente pra caber na área reservada.
+  const scale = Math.min(1, STAGING_RECT_W / bboxW, STAGING_RECT_H / bboxH);
+
+  const offset = nextStagingOffset();
+  const origin = getStagingOrigin();
+  const targetLeft = origin.left + offset;
+  const targetTop  = origin.top  + offset;
+
+  for (const d of items) {
+    const l = d.left || 0, t = d.top || 0;
+    d.left = targetLeft + (l - minLeft) * scale;
+    d.top  = targetTop  + (t - minTop) * scale;
+    if (scale !== 1) {
+      d.scaleX = (d.scaleX ?? 1) * scale;
+      d.scaleY = (d.scaleY ?? 1) * scale;
+    }
+  }
+}
+
+// Ponto único de posicionamento pra qualquer imagem/gif recém-inserido
+// (upload, colar arquivo, colar URL externa) — respeita a preferência acima.
+// NÃO é usado para: restaurar um objeto já existente (existingData), colar um
+// objeto do próprio board (pasteBoardObjects, tem sua própria lógica — ver
+// placeStagingGroup acima) ou drag-and-drop (a posição já é escolhida
+// explicitamente por onde a pessoa soltou o arquivo).
+function placeNewImage(img) {
+  if (imageSpawnMode === 'staging') placeInStagingArea(img);
+  else centerImgOnViewport(img);
+}
+
+function updateSpawnBtnUI() {
+  const label = document.getElementById('spawn-btn-label');
+  const btn   = document.getElementById('trp-spawn');
+  const moveBtn = document.getElementById('trp-spawn-move');
+  if (imageSpawnMode === 'staging') {
+    label.textContent = 'Spawn: área reservada';
+    btn.dataset.tip = 'Novas imagens/gifs e objetos colados (Ctrl+V) aparecem numa área reservada, fora do viewport do OBS — arraste pra posição depois. Clique pra mudar.';
+    btn.classList.add('staging');
+    moveBtn.disabled = false;
+  } else {
+    label.textContent = 'Spawn: minha tela';
+    btn.dataset.tip = 'Novas imagens/gifs e objetos colados (Ctrl+V) aparecem centralizados na tela que você está olhando agora. Clique pra mudar.';
+    btn.classList.remove('staging');
+    moveBtn.disabled = true;
+    if (_stagingPlacementMode) cancelStagingPlacement();
+  }
+}
+
+function toggleImageSpawnMode() {
+  imageSpawnMode = imageSpawnMode === 'staging' ? 'view' : 'staging';
+  localStorage.setItem('lb_imageSpawnMode', imageSpawnMode);
+  updateSpawnBtnUI();
+  drawStagingRect();
+  // Mostra/esconde a área pros outros assim que o modo muda — não precisa
+  // mover pra aparecer. Ativar sincroniza a posição atual (padrão ou já
+  // customizada); desativar remove o retângulo do board de todo mundo.
+  if (imageSpawnMode === 'staging') emitStagingSync(getStagingOrigin());
+  else emitStagingRemove();
+  showToast(imageSpawnMode === 'staging'
+    ? 'Novas imagens e objetos colados vão para a área reservada'
+    : 'Novas imagens e objetos colados vão centralizados na sua tela', 2200);
+}
+
+document.getElementById('trp-spawn').addEventListener('click', toggleImageSpawnMode);
+updateSpawnBtnUI();
+
+// ── Escolher (por cliente) onde a área reservada fica ────────────────────────
+// Clique no botão entra em "modo mira": a área reservada (localmente) segue
+// o mouse e o próximo clique no board confirma a nova posição. O modo mira em
+// si nunca sai da sua tela, mas a posição CONFIRMADA é enviada ao servidor
+// (staging:sync) pra os outros usuários verem onde ela ficou — sem tempo
+// real, só nesse momento da confirmação (ver "Áreas reservadas de outros
+// usuários" mais abaixo).
+function startStagingPlacement() {
+  if (document.getElementById('trp-spawn-move').disabled) return;
+  _stagingPlacementMode = true;
+  document.getElementById('trp-spawn-move').classList.add('active');
+  drawStagingRect();
+  showToast('Clique no board pra definir a posição da área reservada (Esc cancela)', 4000);
+}
+
+function cancelStagingPlacement() {
+  _stagingPlacementMode = false;
+  document.getElementById('trp-spawn-move').classList.remove('active');
+  drawStagingRect();
+}
+
+function confirmStagingPlacement(pointer) {
+  const pos = { left: pointer.x, top: pointer.y };
+  saveStagingPos(pos);
+  _stagingPlacementMode = false;
+  document.getElementById('trp-spawn-move').classList.remove('active');
+  drawStagingRect();
+  emitStagingSync(pos);
+  showToast('Posição da área reservada atualizada — os outros já veem onde ela ficou', 2600);
+}
+
+document.getElementById('trp-spawn-move').addEventListener('click', () => {
+  if (_stagingPlacementMode) cancelStagingPlacement();
+  else startStagingPlacement();
+});
+// Clique direito no botão restaura a posição padrão (à direita do viewport).
+document.getElementById('trp-spawn-move').addEventListener('contextmenu', e => {
+  e.preventDefault();
+  if (!_stagingPlacementMode) resetStagingPos();
+});
+
+// Envia/remove a posição pro servidor, pra outros usuários verem onde a
+// MINHA área reservada fica (ver bloco "Áreas reservadas de outros usuários"
+// abaixo). Nunca em tempo real (nunca segue o mouse pela rede) — só nestes
+// momentos: ligar/desligar o modo, mover ou resetar a posição, e reconectar
+// já com o modo ativo.
+function emitStagingSync(pos)  { socket.emit('staging:sync', pos); }
+function emitStagingRemove()   { socket.emit('staging:remove'); }
+
+// ── Áreas reservadas de OUTROS usuários (mostradas no board) ────────────────
+// Cada cliente só sincroniza a própria posição nos momentos acima (não é
+// tempo real). Guardamos aqui um cache local de {clientId → dados} recebido
+// do servidor (board:init traz o estado atual de todos; staging:sync/-remove
+// atualizam ao vivo depois) e desenhamos um retângulo tracejado — na cor do
+// respectivo usuário — pra cada um. A MINHA própria área nunca aparece nessa
+// lista (ela já é o stagingRect local, amarelo, controlado só por mim).
+let _stagingAreaEntries = {};   // clientId → { clientId, name, color, left, top }
+let _otherStagingRects  = {};   // clientId → objeto fabric.Group no canvas
+
+function renderOtherStagingArea(entry) {
+  if (!entry || !entry.clientId || entry.clientId === myClientId) return;
+  removeOtherStagingRect(entry.clientId);
+
+  const rect = new fabric.Rect({
+    left: 0, top: 0, width: STAGING_RECT_W, height: STAGING_RECT_H,
+    fill: 'transparent', stroke: entry.color || '#94a3b8', strokeWidth: 2, strokeDashArray: [10, 5],
+  });
+  const label = new fabric.Text(`Área de ${entry.name || 'usuário'}`, {
+    left: 8, top: 8, fontSize: 13, fontFamily: 'system-ui, sans-serif',
+    fill: entry.color || '#94a3b8',
+  });
+  const group = new fabric.Group([rect, label], {
+    left: entry.left, top: entry.top,
+    selectable: false, evented: false, hasControls: false, hasBorders: false,
+    lockMovementX: true, lockMovementY: true, lockScalingX: true, lockScalingY: true, lockRotation: true,
+    excludeFromExport: true,
+    _isViewportRect: true,     // reaproveita: nunca selecionável/exportável/serializável
+    _isOtherStagingRect: true,
+  });
+  canvas.add(group);
+  canvas.bringToFront(group);
+  if (vpRect) canvas.bringToFront(vpRect);
+  if (stagingRect) canvas.bringToFront(stagingRect);
+  _otherStagingRects[entry.clientId] = group;
+  canvas.renderAll();
+}
+
+function removeOtherStagingRect(clientId) {
+  const g = _otherStagingRects[clientId];
+  if (g) { canvas.remove(g); delete _otherStagingRects[clientId]; canvas.renderAll(); }
+}
+
+// Redesenha todas as áreas de outros usuários a partir do cache local — usado
+// depois de qualquer canvas.clear() (board:clear, board:sync), já que isso
+// remove os grupos junto com o resto dos objetos.
+function renderAllOtherStagingAreas() {
+  Object.keys(_otherStagingRects).forEach(removeOtherStagingRect);
+  Object.values(_stagingAreaEntries).forEach(renderOtherStagingArea);
+}
+
+socket.on('staging:sync', entry => {
+  if (!entry || !entry.clientId) return;
+  _stagingAreaEntries[entry.clientId] = entry;
+  renderOtherStagingArea(entry);
+});
+
+socket.on('staging:remove', ({ clientId } = {}) => {
+  if (!clientId) return;
+  delete _stagingAreaEntries[clientId];
+  removeOtherStagingRect(clientId);
+});
+
+// ── Imagens e GIFs animados ───────────────────────────────────────────────────
+// GIFs são decodificados num WebWorker (gif.worker.js) fora da thread principal.
+// O Worker retorna frames como ImageBitmap[] + delays via postMessage.
+// Um único loop requestAnimationFrame global redesenha todos os GIFs ativos
+// no mesmo tick, sem múltiplos rAF concorrentes.
+
+function isGifUrl(url) {
+  if (!url) return false;
+  return url.toLowerCase().split('?')[0].endsWith('.gif');
+}
+
+// ── Worker singleton ──────────────────────────────────────────────────────────
+const _gifWorker = new Worker('/gif.worker.js');
+
+// Mapa de callbacks pendentes: workerRequestId → { resolve, reject }
+const _gifPending = new Map();
+let _gifReqId = 0;
+
+_gifWorker.onmessage = function(e) {
+  const { id, frames, canvasW, canvasH, error } = e.data;
+  const cb = _gifPending.get(id);
+  if (!cb) return;
+  _gifPending.delete(id);
+  if (error) cb.reject(new Error(error));
+  else       cb.resolve({ frames, canvasW, canvasH });
+};
+
+function decodeGifInWorker(url) {
+  return new Promise((resolve, reject) => {
+    const id = ++_gifReqId;
+    _gifPending.set(id, { resolve, reject });
+    _gifWorker.postMessage({ id, url });
+  });
+}
+
+// ── Registro de GIFs ativos ───────────────────────────────────────────────────
+// gifId → { fabricImg, frames:[{bitmap,delay}], frameIdx, lastTime }
+const _gifRegistry = new Map();
+
+// Conjunto legado para compatibilidade com o código de remoção
+const activeGifs = { add: id => {}, delete: id => { _gifRegistry.delete(id); }, size: 0 };
+
+// Loop único global — um único rAF para TODOS os GIFs
+let _rafId = null;
+
+function _gifTick(now) {
+  if (_gifRegistry.size === 0) { _rafId = null; return; }
+  _rafId = requestAnimationFrame(_gifTick);
+
+  let needsRender = false;
+
+  _gifRegistry.forEach((state, gifId) => {
+    const { fabricImg, frames } = state;
+    if (!frames || frames.length === 0) return;
+
+    const elapsed = now - state.lastTime;
+    const cur     = frames[state.frameIdx];
+
+    if (elapsed >= cur.delay) {
+      // Avança para o próximo frame
+      state.frameIdx = (state.frameIdx + 1) % frames.length;
+      state.lastTime = now;
+
+      // Atualiza o elemento canvas interno do Fabric com o novo bitmap
+      const nextBitmap = frames[state.frameIdx].bitmap;
+      fabricImg._element = nextBitmap;   // Fabric usa _element para renderizar
+      if (fabricImg._originalElement !== undefined) {
+        fabricImg._originalElement = nextBitmap;
+      }
+      needsRender = true;
+    }
+  });
+
+  if (needsRender) canvas.requestRenderAll();
+}
+
+function _ensureGifLoop() {
+  if (!_rafId) {
+    _rafId = requestAnimationFrame(_gifTick);
+  }
+}
+
+// ── Cria objeto Fabric a partir dos frames decodificados ──────────────────────
+function _buildFabricGif(frames, canvasW, canvasH, existingData, relUrl) {
+  return new Promise((resolve) => {
+    // Cria um ImageBitmap inicial para o Fabric
+    const firstBitmap = frames[0].bitmap;
+
+    // fabric.Image aceita um CanvasImageSource (ImageBitmap é válido)
+    const fabricImg = new fabric.Image(firstBitmap, {
+      left:    0,
+      top:     0,
+      id:      existingData ? existingData.id      : genId(),
+      layerId: existingData ? existingData.layerId : activeLayerId,
+      _gifUrl: relUrl,
+      _isGif:  true,
+      // Fabric usa width/height do elemento; forçamos as dimensões do GIF
+      width:   canvasW,
+      height:  canvasH,
+    });
+
+    if (existingData) {
+      fabricImg.set({
+        left:    existingData.left    ?? 0,
+        top:     existingData.top     ?? 0,
+        scaleX:  existingData.scaleX  ?? 1,
+        scaleY:  existingData.scaleY  ?? 1,
+        angle:   existingData.angle   ?? 0,
+        opacity: existingData.opacity ?? 1,
+        flipX:   existingData.flipX   ?? false,
+        flipY:   existingData.flipY   ?? false,
+      });
+    } else {
+      const maxW = (window.innerWidth * 0.5) / canvas.getZoom();
+      const s    = canvasW > maxW ? maxW / canvasW : 1;
+      fabricImg.scale(s);
+      placeNewImage(fabricImg);
+    }
+
+    fabricImg.setCoords();
+
+    // Registra no registry de animação
+    _gifRegistry.set(fabricImg.id, {
+      fabricImg,
+      frames,
+      frameIdx: 0,
+      lastTime: performance.now(),
+    });
+    _ensureGifLoop();
+
+    resolve(fabricImg);
+  });
+}
+
+// ── API pública ───────────────────────────────────────────────────────────────
+
+async function placeGif(url, existingData) {
+  const absUrl = absoluteImgUrl(url);
+  const relUrl = url;
+
+  // Decodifica no Worker
+  let frames, canvasW, canvasH;
+  try {
+    ({ frames, canvasW, canvasH } = await decodeGifInWorker(absUrl));
+  } catch (workerErr) {
+    // Fallback: usa <img> nativa (apenas primeiro frame em alguns browsers)
+    console.warn('[GIF] Worker falhou, usando fallback nativo:', workerErr);
+    return _gifFallback(absUrl, relUrl, existingData);
+  }
+
+  if (!frames || frames.length === 0) {
+    return _gifFallback(absUrl, relUrl, existingData);
+  }
+
+  return _buildFabricGif(frames, canvasW, canvasH, existingData, relUrl);
+}
+
+// Fallback usando <img> nativa (anima apenas se o browser suportar no canvas)
+function _gifFallback(absUrl, relUrl, existingData) {
+  return new Promise((resolve, reject) => {
+    const imgEl = new Image();
+    imgEl.crossOrigin = 'anonymous';
+    imgEl.onload = () => {
+      const fabricImg = new fabric.Image(imgEl, {
+        left:    0, top: 0,
+        id:      existingData ? existingData.id      : genId(),
+        layerId: existingData ? existingData.layerId : activeLayerId,
+        _gifUrl: relUrl, _isGif: true,
+      });
+      if (existingData) {
+        fabricImg.set({
+          left: existingData.left ?? 0, top: existingData.top ?? 0,
+          scaleX: existingData.scaleX ?? 1, scaleY: existingData.scaleY ?? 1,
+          angle: existingData.angle ?? 0, opacity: existingData.opacity ?? 1,
+          flipX: existingData.flipX ?? false, flipY: existingData.flipY ?? false,
+        });
+      } else {
+        const maxW = (window.innerWidth * 0.5) / canvas.getZoom();
+        const s = imgEl.naturalWidth > maxW ? maxW / imgEl.naturalWidth : 1;
+        fabricImg.scale(s);
+        placeNewImage(fabricImg);
+      }
+      fabricImg.setCoords();
+      resolve(fabricImg);
+    };
+    imgEl.onerror = () => reject(new Error('Falha ao carregar GIF: ' + absUrl));
+    imgEl.src = absUrl;
+  });
+}
+
+async function placeImageFromUrl(url) {
+  if (isGifUrl(url)) {
+    return placeGif(url, null);
+  }
+  return new Promise(resolve => {
+    fabric.Image.fromURL(absoluteImgUrl(url), img => {
+      img.id = genId();
+      placeNewImage(img);
+      resolve(img);
+    }, { crossOrigin: 'anonymous' });
+  });
+}
+
+async function insertImg(inp) {
+  const file = inp.files[0]; if (!file) return; inp.value = '';
+  try {
+    const url = await uploadFile(file);
+    const img = await placeImageFromUrl(url);  // placeImageFromUrl já trata GIFs
+    addToCanvas(img);
+    canvas.setActiveObject(img); canvas.renderAll(); emitFull(img); hideToast();
+  } catch (e) { hideToast(); alert('Erro: ' + e.message); }
+}
+
+// ── Helpers de inserção de imagem externa ─────────────────────────────────────
+async function insertFromExternalUrl(rawUrl, dropPos) {
+  const url = rawUrl.trim();
+  const imgUrlRe = /^https?:\/\/.+\.(png|jpe?g|gif|webp|svg|bmp)(\?.*)?$/i;
+  if (!imgUrlRe.test(url) && !dropPos) return false; // só exige extensão no paste; drop tenta qualquer src
+
+  showToast('Carregando imagem...');
+  try {
+    const proxyUrl = '/api/img-proxy?url=' + encodeURIComponent(url);
+    if (isGifUrl(url)) {
+      const gif = await placeGif(proxyUrl, dropPos || null);
+      if (dropPos) {
+        gif.set({ left: dropPos.x - gif.getScaledWidth()/2, top: dropPos.y - gif.getScaledHeight()/2 });
+        gif.setCoords();
+      }
+      addToCanvas(gif);
+      canvas.setActiveObject(gif); canvas.renderAll(); emitFull(gif); hideToast();
+    } else {
+      const r = await fetch(proxyUrl);
+      if (!r.ok) throw new Error('Status ' + r.status);
+      const blob = await r.blob();
+      if (!blob.type.startsWith('image/')) throw new Error('Não é uma imagem');
+      const ext  = url.split('?')[0].split('.').pop().toLowerCase() || 'png';
+      const file = new File([blob], 'imagem.' + ext, { type: blob.type });
+      const uploadUrl = await uploadFile(file);
+      const img = await placeImageFromUrl(uploadUrl);
+      if (dropPos) {
+        img.set({ left: dropPos.x - img.getScaledWidth()/2, top: dropPos.y - img.getScaledHeight()/2 });
+        img.setCoords();
+      }
+      addToCanvas(img);
+      canvas.setActiveObject(img); canvas.renderAll(); emitFull(img); hideToast();
+    }
+    return true;
+  } catch (err) {
+    hideToast();
+    alert('Erro ao carregar imagem: ' + err.message);
+    return false;
+  }
+}
+
+// ── Paste ─────────────────────────────────────────────────────────────────────
+// Tudo passa pelo clipboard do sistema (evento 'paste' nativo do navegador),
+// não existe mais um clipboard interno próprio do board. Ao copiar (copySel),
+// gravamos no clipboard do sistema tanto uma imagem PNG da seleção (para colar
+// em qualquer outro app) quanto os dados originais dos objetos, escondidos
+// dentro do text/html sob o marcador BOARD_CLIPBOARD_MARKER. Ao colar, se esse
+// marcador estiver presente, reconstruímos os objetos originais (editáveis);
+// caso contrário, tratamos como imagem/URL externa normalmente.
+window.addEventListener('paste', async e => {
+  // Não intercepta colagem de texto normal em campos de edição (inputs,
+  // textarea, contentEditable — inclui a textarea oculta que o Fabric usa
+  // para edição de texto no board).
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return;
+
+  // 1. Dados de objetos do board colados via clipboard do sistema (copiados
+  //    dentro do próprio LiveBoard, nesta ou em outra sessão/aba). Tem
+  //    prioridade sobre a imagem: reconstrói os objetos originais e editáveis.
+  const html = e.clipboardData?.getData('text/html') || '';
+  const boardMatch = html.match(BOARD_CLIPBOARD_RE);
+  if (boardMatch) {
+    e.preventDefault();
+    try {
+      const data = JSON.parse(b64DecodeUtf8(boardMatch[1]));
+      await pasteBoardObjects(data);
+    } catch (err) {
+      console.error('Falha ao colar objetos do board:', err);
+    }
+    return;
+  }
+
+  const items = Array.from(e.clipboardData?.items || []);
+
+  // 2. Arquivo de imagem no clipboard (screenshot, Ctrl+C de imagem, ou PNG
+  //    copiado deste próprio board sem o marcador acima — ex: colado em outra
+  //    aba/dispositivo onde o texto/html não foi preservado)
+  const imgFile = items.find(i => i.type.startsWith('image/'));
+  if (imgFile) {
+    e.preventDefault();
+    try {
+      const url = await uploadFile(imgFile.getAsFile());
+      const img = await placeImageFromUrl(url);
+      addToCanvas(img);
+      canvas.setActiveObject(img); canvas.renderAll(); emitFull(img); hideToast();
+    } catch (err) { hideToast(); alert('Erro: ' + err.message); }
+    return;
+  }
+
+  // 3. URL de imagem colada como texto (colar link)
+  const imgUrlRe = /^https?:\/\/.+\.(png|jpe?g|gif|webp|svg|bmp)(\?.*)?$/i;
+  const text = (e.clipboardData.getData('text/plain') || '').trim();
+  if (imgUrlRe.test(text)) {
+    e.preventDefault();
+    await insertFromExternalUrl(text, null);
+  }
+});
+
+// ── Drag-and-drop ─────────────────────────────────────────────────────────────
+// IMPORTANTE: o Fabric.js envolve o <canvas> original num wrapperEl e cria um
+// upper-canvas por cima dele — é o upper-canvas que recebe todos os eventos de
+// ponteiro. Ligar dragover/drop no elemento <canvas> original nunca funciona;
+// precisa ser no wrapperEl (contêiner pai comum a lower e upper canvas).
+const _boardEl = canvas.wrapperEl;
+
+// Proteção global: impede que o browser abra a imagem em nova aba/navegue caso
+// o usuário solte fora da área exata do canvas (fora do wrapperEl).
+window.addEventListener('dragover', e => e.preventDefault());
+window.addEventListener('drop', e => { if (e.target !== _boardEl && !_boardEl.contains(e.target)) e.preventDefault(); });
+
+_boardEl.addEventListener('dragover', e => {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'copy';
+});
+
+_boardEl.addEventListener('drop', async e => {
+  e.preventDefault();
+  e.stopPropagation();
+
+  const rect = _boardEl.getBoundingClientRect();
+  const zoom = canvas.getZoom();
+  const vpt  = canvas.viewportTransform;
+  const dropPos = {
+    x: (e.clientX - rect.left - vpt[4]) / zoom,
+    y: (e.clientY - rect.top  - vpt[5]) / zoom,
+  };
+
+  // 1. Arquivo(s) do sistema operacional
+  const files = Array.from(e.dataTransfer.files || []).filter(f => f.type.startsWith('image/'));
+  if (files.length) {
+    for (const file of files) {
+      try {
+        showToast('Enviando...');
+        const url = await uploadFile(file);
+        const img = await placeImageFromUrl(url);
+        img.set({ left: dropPos.x - img.getScaledWidth()/2, top: dropPos.y - img.getScaledHeight()/2 });
+        img.setCoords();
+        addToCanvas(img); canvas.setActiveObject(img); canvas.renderAll(); emitFull(img); hideToast();
+      } catch (err) { hideToast(); alert('Erro: ' + err.message); }
+    }
+    return;
+  }
+
+  // 2. Imagem arrastada de outra aba — extrai src do HTML ou URI
+  const html    = e.dataTransfer.getData('text/html') || '';
+  const srcMatch = html.match(/src=["']([^"']+)["']/i);
+  const uriList  = e.dataTransfer.getData('text/uri-list') || '';
+  const plainUrl = e.dataTransfer.getData('text/plain') || '';
+  const srcUrl   = (srcMatch && srcMatch[1]) || uriList.split('\n')[0].trim() || plainUrl.trim();
+
+  if (srcUrl && srcUrl.startsWith('http')) {
+    await insertFromExternalUrl(srcUrl, dropPos);
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// HISTÓRICO (colaborativo — servidor é a fonte da verdade)
+// ═══════════════════════════════════════════════════════════════════════════════
+// O servidor mantém undoStack/redoStack. O cliente apenas emite os comandos.
+// board:sync recebido do servidor recarrega o estado para todos.
+
+function undo() { socket.emit('history:undo'); }
+function redo() { socket.emit('history:redo'); }
+
+// Atualiza botões de undo/redo baseado no estado do servidor (por usuário)
+socket.on('history:update', ({ canUndo, canRedo }) => {
+  const btnU = document.querySelector('[onclick="undo()"]');
+  const btnR = document.querySelector('[onclick="redo()"]');
+  if (btnU) btnU.style.opacity = canUndo ? '1' : '0.35';
+  if (btnR) btnR.style.opacity = canRedo ? '1' : '0.35';
+});
+
+// Avisa quando um undo/redo não pôde ser aplicado por completo porque outro
+// usuário alterou o(s) mesmo(s) objeto(s) depois da ação original.
+socket.on('history:conflict', ({ count, action }) => {
+  const verbo = action === 'undo' ? 'desfazer' : 'refazer';
+  showToast(`Não foi possível ${verbo} ${count} item(ns) — outro usuário alterou depois.`, 3500);
+});
+function changeRoom() {
+  // Volta para a tela de login direto no passo 2 (escolha de sala).
+  // A senha já está válida (cookie de sessão), não precisa redigitar.
+  // Guarda um flag para o index.html saber que deve pular o passo 1.
+  sessionStorage.setItem('lb_skip_pw', '1');
+  window.location.href = '/';
+}
+
+function clearAll() {
+  if (!confirm('Limpar todo o quadro?')) return;
+  canvas.getObjects().filter(o => !o._isViewportRect).forEach(o => canvas.remove(o));
+  canvas.renderAll();
+  socket.emit('board:clear');
+  scheduleLayersUpdate();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DESERIALIZAÇÃO
+// ═══════════════════════════════════════════════════════════════════════════════
+function getFabricType(type) {
+  const map = {
+    'i-text': fabric.IText, 'text': fabric.Text, 'textbox': fabric.Textbox,
+    'rect': fabric.Rect, 'circle': fabric.Circle, 'ellipse': fabric.Ellipse,
+    'triangle': fabric.Triangle, 'line': fabric.Line,
+    'polyline': fabric.Polyline, 'polygon': fabric.Polygon,
+  };
+  return type in map ? map[type] : fabric[type.charAt(0).toUpperCase() + type.slice(1)];
+}
+
+function deser(data, cb) {
+  if (!data || !data.type) return;
+  if (data.type === 'image') {
+    if (data._isGif && (data._gifUrl || data.src)) {
+      // GIF — decodifica via Worker (gif.worker.js) e anima com rAF global
+      placeGif(data._gifUrl || data.src, data)
+        .then(img => cb(img))
+        .catch(() => {
+          // Fallback: carrega como imagem estática
+          fabric.Image.fromURL(absoluteImgUrl(data.src || data._gifUrl), img => {
+            img.set(data); img.id = data.id; if (data.layerId) img.layerId = data.layerId; cb(img);
+          }, { crossOrigin: 'anonymous' });
+        });
+      return;
+    }
+    fabric.Image.fromURL(absoluteImgUrl(data.src), img => { img.set(data); img.id = data.id; if (data.layerId) img.layerId = data.layerId; cb(img); }, { crossOrigin: 'anonymous' });
+    return;
+  }
+  if (data.type === 'path') { const o = new fabric.Path(data.path, data); o.id = data.id; if (data.layerId) o.layerId = data.layerId; if (data._isArrow) o._isArrow = true; cb(o); return; }
+  if (data.type === 'line') {
+    const o = new fabric.Line([data.x1, data.y1, data.x2, data.y2], data);
+    o.id = data.id; cb(o); return;
+  }
+  if (data.type === 'group') {
+    // Usa o fabric.Group.fromObject nativo — ele chama fabric.Image.fromURL
+    // internamente para cada filho, que agora é interceptado pelo nosso patch:
+    // src é normalizado para o host atual e crossOrigin='anonymous' é garantido.
+    fabric.Group.fromObject(data, o => {
+      o.id = data.id;
+      if (data.layerId) o.layerId = data.layerId;
+      cb(o);
+    });
+    return;
+  }
+  const FT = getFabricType(data.type);
+  if (!FT) { console.warn('Tipo desconhecido:', data.type); return; }
+  FT.fromObject(data, o => { o.id = data.id; if (data.layerId) o.layerId = data.layerId; cb(o); });
+}
+
+function findById(id) { return canvas.getObjects().find(o => o.id === id); }
+
+// Token de geração — cancela loadState anterior se um novo board:sync chegar antes de terminar
+let _loadGen = 0;
+
+function loadState(state) {
+  const gen = ++_loadGen;
+  canvas.getObjects().filter(o => !o._isViewportRect).forEach(o => canvas.remove(o));
+  if (!state || !state.objects) { canvas.renderAll(); return; }
+  const objs = Object.values(state.objects);
+  if (!objs.length) { canvas.renderAll(); return; }
+  let done = 0;
+  const total = objs.length;
+  objs.forEach(d => deser(d, o => {
+    if (gen !== _loadGen) return;
+    canvas.add(o);
+    if (++done < total) return;
+    if (gen !== _loadGen) return;
+
+    // Aplica z-order: usa state.zorder se disponível (fonte de verdade precisa),
+    // senão cai no applyLayerZOrder como fallback (para salas antigas sem zorder salvo).
+    if (state.zorder && state.zorder.length) {
+      state.zorder.forEach((id, idx) => {
+        const o = canvas.getObjects().find(x => x.id === id);
+        if (o) canvas.moveTo(o, idx);
+      });
+    } else {
+      applyLayerZOrder();
+    }
+
+    if (vpRect) canvas.bringToFront(vpRect);
+    canvas.renderAll();
+    scheduleLayersUpdate();
+  }));
+}
+
+function pts2path(pts) { return pts.reduce((a, p, i) => i === 0 ? 'M ' + p.x + ' ' + p.y : a + ' L ' + p.x + ' ' + p.y, ''); }
+function genId() { return Math.random().toString(36).slice(2, 10) + Date.now().toString(36); }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ATALHOS DE TECLADO
+// ═══════════════════════════════════════════════════════════════════════════════
+window.addEventListener('keydown', e => {
+  const activeObj = canvas.getActiveObject();
+  if (activeObj && activeObj.isEditing) return;
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return;
+
+  // Esc cancela o modo "mira" de reposicionar a área reservada
+  if (e.key === 'Escape' && _stagingPlacementMode) {
+    e.preventDefault();
+    cancelStagingPlacement();
+    return;
+  }
+
+  // Espaço: pan temporário
+  if (e.code === 'Space' && !spaceHeld) {
+    e.preventDefault();
+    spaceHeld = true;
+    prevTool = tool;
+    // Se estava na caneta, desativa o modo de desenho para o pan não criar traços
+    if (canvas.isDrawingMode) {
+      canvas.isDrawingMode = false;
+    }
+    document.body.classList.add('pan-mode');
+    canvas.defaultCursor = 'grab';
+    canvas.hoverCursor = 'grab';
+    return;
+  }
+
+  if (e.ctrlKey || e.metaKey) {
+    if (e.key === 'z') { e.preventDefault(); undo(); }
+    else if (e.key === 'y') { e.preventDefault(); redo(); }
+    else if (e.key === 'd') { e.preventDefault(); dupSel(); }
+    else if (e.key === 'c') { e.preventDefault(); copySel(); }
+    // Ctrl+V não é interceptado aqui: sempre deixamos o evento 'paste' nativo do
+    // navegador disparar, que lê diretamente do clipboard do sistema (ver listener
+    // de 'paste' mais abaixo, que trata tanto objetos do board quanto imagens/URLs).
+    else if (e.key === 'a') {
+      e.preventDefault();
+      canvas.discardActiveObject();
+      const sel = canvas.getObjects().filter(o => !o._isViewportRect && o.selectable !== false);
+      if (sel.length) {
+        canvas.setActiveObject(new fabric.ActiveSelection(sel, { canvas }));
+        canvas.renderAll();
+      }
+    }
+    return;
+  }
+  switch (e.key) {
+    case 'v': setTool('select'); break; case 'h': setTool('pan'); break;
+    case 'p': setTool('pen'); break;
+    case 'e': setTool('eraser'); break; case 'r': setTool('rect'); break;
+    case 'c': setTool('circle'); break; case 'l': setTool('line'); break;
+    case 'a': setTool('arrow'); break;  case 't': setTool('text'); break;
+    case 'f': case 'F': fitViewport(); break;
+    case '0': resetZoom(); break;
+    case '+': case '=': {
+      const p = new fabric.Point(window.innerWidth/2, window.innerHeight/2);
+      canvas.zoomToPoint(p, Math.min(8, canvas.getZoom() * 1.2));
+      canvas.renderAll(); updateZoomInfo(); drawViewportRect();
+      break;
+    }
+    case '-': {
+      const p = new fabric.Point(window.innerWidth/2, window.innerHeight/2);
+      canvas.zoomToPoint(p, Math.max(0.05, canvas.getZoom() / 1.2));
+      canvas.renderAll(); updateZoomInfo(); drawViewportRect();
+      break;
+    }
+    case 'Delete': case 'Backspace': if (canvas.getActiveObjects().length) delSel(); break;
+  }
+});
+
+window.addEventListener('keyup', e => {
+  if (e.code === 'Space') {
+    spaceHeld = false;
+    isPanning = false;
+    document.body.classList.remove('pan-mode');
+    document.body.classList.remove('panning');
+    canvas.defaultCursor = 'default';
+    canvas.hoverCursor = 'move';
+    // Restaura o modo de desenho se a ferramenta ativa é caneta
+    if (tool === 'pen') {
+      canvas.isDrawingMode = true;
+    }
+  }
+});
+
+function dupSel() {
+  const objs = canvas.getActiveObjects().filter(o => !o._isViewportRect); if (!objs.length) return; canvas.discardActiveObject();
+  const clones = []; let done = 0;
+  objs.forEach(o => o.clone(cl => {
+    cl.id = genId(); cl.set({ left: o.left + 20, top: o.top + 20 });
+    canvas.add(cl); clones.push(cl);
+    if (++done === objs.length) {
+      applyLayerZOrder();
+      // Serializa ANTES de virar ActiveSelection (mesmo motivo do comentário
+      // em pasteBoardObjects: o Fabric muda left/top pra relativo ao grupo
+      // assim que a seleção múltipla é criada).
+      const serialized = clones.map(ser).filter(Boolean);
+      canvas.setActiveObject(new fabric.ActiveSelection(clones, { canvas }));
+      canvas.renderAll();
+      socket.emit('objects:batch', serialized);
+      scheduleLayersUpdate();
+    }
+  }, ['id', 'layerId', '_isArrow', '_isGif', '_gifUrl']));
+}
+
+// ── Copiar / Colar ──────────────────────────────────────────────────────────────
+// Usa exclusivamente o clipboard do sistema (navigator.clipboard / evento
+// 'paste'), sem clipboard interno próprio. Ao copiar, grava no clipboard do
+// sistema DUAS representações da mesma seleção:
+//   - image/png  → a seleção renderizada como imagem (igual ao "Exportar PNG"),
+//                   para colar em qualquer outro app (Word, WhatsApp, etc.)
+//   - text/html  → os dados originais dos objetos (serializados), escondidos
+//                   sob o marcador BOARD_CLIPBOARD_MARKER dentro de um
+//                   comentário HTML. Ao colar de volta no board, esses dados
+//                   têm prioridade e reconstroem os objetos originais,
+//                   editáveis — não apenas a imagem.
+const BOARD_CLIPBOARD_MARKER = 'LOUSA_BOARD_DATA';
+const BOARD_CLIPBOARD_RE = new RegExp(`<!--${BOARD_CLIPBOARD_MARKER}:([A-Za-z0-9+/=]+)-->`);
+
+let _pasteCount = 0; // incrementa a cada colagem para o offset não empilhar no mesmo lugar
+
+// Codifica/decodifica JSON (com acentos etc.) em base64 com segurança de UTF-8.
+function b64EncodeUtf8(str) { return btoa(unescape(encodeURIComponent(str))); }
+function b64DecodeUtf8(str) { return decodeURIComponent(escape(atob(str))); }
+
+// Converte um data URL (ex: "data:image/png;base64,...") em Blob, para poder
+// ser gravado no clipboard do sistema via ClipboardItem.
+function dataURLToBlob(dataUrl) {
+  const [header, base64] = dataUrl.split(',');
+  const mime = (header.match(/data:(.*?);base64/) || [])[1] || 'image/png';
+  const bin = atob(base64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type: mime });
+}
+
+async function copySel() {
+  const objs = canvas.getActiveObjects().filter(o => !o._isViewportRect);
+  if (!objs.length) return;
+
+  const serialized = objs.map(o => ser(o)).filter(Boolean);
+  if (!serialized.length) return;
+
+  _pasteCount = 0;
+
+  // Mesma renderização usada pelo "Exportar como PNG" (bounding box exata da seleção).
+  const dataUrl = renderObjectsAsDataURL(objs);
+  const html = `<!--${BOARD_CLIPBOARD_MARKER}:${b64EncodeUtf8(JSON.stringify(serialized))}-->`;
+
+  try {
+    const clipboardData = { 'text/html': new Blob([html], { type: 'text/html' }) };
+    if (dataUrl) clipboardData['image/png'] = dataURLToBlob(dataUrl);
+
+    await navigator.clipboard.write([new ClipboardItem(clipboardData)]);
+    showToast(`${serialized.length} objeto(s) copiado(s)`, 2000);
+  } catch (err) {
+    console.error('Falha ao copiar para a área de transferência do sistema:', err);
+    showToast('Não foi possível copiar para a área de transferência.', 3000);
+  }
+}
+
+// Reconstrói objetos do board a partir de dados serializados vindos do clipboard
+// do sistema (ver BOARD_CLIPBOARD_MARKER acima). Sempre gera objetos 100% novos,
+// com novos ids/elementos — nunca reaproveita referências de objetos vivos.
+async function pasteBoardObjects(dataArray) {
+  if (!dataArray || !dataArray.length) return;
+
+  canvas.discardActiveObject();
+  const pasted = [];
+
+  // Cópia profunda de tudo primeiro (nunca reaproveita refs dos dados originais).
+  const items = dataArray.map(d => JSON.parse(JSON.stringify(d)));
+
+  // Onde o conjunto colado (1 objeto, vários soltos ou grupos) vai nascer:
+  //  - 'staging' → todo o conjunto é traduzido (e, se preciso, encolhido) pra
+  //    dentro da área reservada, preservando o arranjo relativo entre as peças,
+  //    em cascata pra não empilhar exatamente sobre a colagem anterior.
+  //  - padrão ('view') → comportamento de sempre: cada colagem sucessiva sai
+  //    um pouco deslocada da posição original copiada.
+  if (imageSpawnMode === 'staging') {
+    placeStagingGroup(items);
+  } else {
+    _pasteCount++;
+    const offset = 24 * _pasteCount;
+    for (const data of items) {
+      data.left = (data.left || 0) + offset;
+      data.top  = (data.top  || 0) + offset;
+    }
+  }
+
+  for (const data of items) {
+    const newId = genId();
+
+    if (data.type === 'image' && data._isGif) {
+      // GIFs precisam passar por placeGif() para entrar no _gifRegistry
+      // e animar corretamente — clone() não registra o loop de animação.
+      data.id = newId;
+      data.layerId = activeLayerId;
+      try {
+        const gifObj = await placeGif(data._gifUrl || data.src, data);
+        addToCanvas(gifObj);
+        pasted.push(gifObj);
+      } catch (_) { /* ignora gif que falhou ao colar */ }
+      continue;
+    }
+
+    // Demais tipos (imagem comum, formas, texto, traços, grupos): deser() já
+    // resolve cada caso (inclusive grupos recursivamente e imagens via cache).
+    data.id = newId;
+    data.layerId = activeLayerId;
+    assignDefaultName(data);
+
+    await new Promise(resolve => {
+      deser(data, obj => {
+        addToCanvas(obj);
+        pasted.push(obj);
+        resolve();
+      });
+    });
+    hideToast();
+  }
+
+  if (vpRect) canvas.bringToFront(vpRect);
+  if (stagingRect) canvas.bringToFront(stagingRect);
+
+  // IMPORTANTE: serializa (captura left/top absolutos) ANTES de agrupar numa
+  // ActiveSelection. O Fabric recalcula left/top de cada objeto pra relativo
+  // ao CENTRO da seleção assim que ela é criada — se a gente serializasse
+  // depois, os outros clientes receberiam essas coordenadas relativas como
+  // se fossem absolutas, e o conjunto colado apareceria deslocado pra perto
+  // da origem do board (era exatamente o bug: só quem colou via a posição
+  // certa — os próprios objetos locais já tinham sido adicionados com a
+  // posição absoluta correta — mas o payload enviado pra rede é que saía
+  // errado).
+  const serialized = pasted.map(ser).filter(Boolean);
+
+  canvas.setActiveObject(pasted.length > 1
+    ? new fabric.ActiveSelection(pasted, { canvas })
+    : pasted[0]);
+  canvas.renderAll();
+
+  // objects:batch → applyFull no destino trata cada tipo corretamente,
+  // inclusive _isGif (decodifica via Worker e registra no _gifRegistry).
+  socket.emit('objects:batch', serialized);
+  scheduleLayersUpdate();
+}
+
+// ── Tooltip flutuante da toolbar ────────────────────────────────────────────
+// Substitui o .tb-tip antigo (que ficava preso dentro do overflow do #toolbar,
+// exigindo scroll pra aparecer). Este vive em <body>, com position:fixed,
+// então nunca é cortado por overflow/transform de nenhum ancestral. A posição
+// é recalculada a cada hover via getBoundingClientRect do botão.
+(function initToolbarTooltip() {
+  const tip = document.createElement('div');
+  tip.id = 'tb-floating-tip';
+  document.body.appendChild(tip);
+
+  const canHover = window.matchMedia('(hover: hover)').matches;
+  if (!canHover) return; // em touch/mobile não faz sentido mostrar tooltip de hover
+
+  let hideTimer = null;
+
+  function showTip(btn) {
+    const span = btn.querySelector('.tb-tip');
+    const text = span ? span.textContent : (btn.dataset.tip || btn.getAttribute('title') || '');
+    if (!text) return;
+    clearTimeout(hideTimer);
+
+    tip.textContent = text;
+    tip.classList.add('show');
+
+    const r = btn.getBoundingClientRect();
+    let left = r.left + r.width / 2;
+    // Evita o balão vazar pra fora da tela nas bordas esquerda/direita
+    const margin = 8;
+    const half = tip.offsetWidth / 2 || 40;
+    left = Math.min(Math.max(left, margin + half), window.innerWidth - margin - half);
+
+    tip.style.left = left + 'px';
+    tip.style.top  = (r.bottom + 8) + 'px';
+  }
+
+  function hideTip() { tip.classList.remove('show'); }
+
+  document.querySelectorAll('#toolbar .tb-btn, #top-left-panel .trp-btn, #spawn-panel .trp-btn').forEach(btn => {
+    btn.addEventListener('mouseenter', () => showTip(btn));
+    btn.addEventListener('mouseleave', hideTip);
+    btn.addEventListener('click', hideTip);
+  });
+})();
+
+// Init
+setTool('select');
+// ── Ver ao vivo ───────────────────────────────────────────────────────────────
+function openViewUrl() {
+  window.open(window.location.origin + '/view/' + (myRoomId || 'default'), '_blank');
+}
+
+// Liga os botões do painel superior direito
+(function bindPanelButtons() {
+  var vBtn = document.getElementById('trp-view');
+  var hBtn = document.getElementById('trp-help');
+  if (vBtn) vBtn.addEventListener('click', openViewUrl);
+  if (hBtn) hBtn.addEventListener('click', openBoardTutorial);
+
+  // Tooltip do botão "Ver ao vivo" inclui o nome da sala
+  var name = myRoomName || myRoomId || '';
+  if (vBtn && name) {
+    vBtn.dataset.tip = 'Abrir view do OBS: ' + (name.length > 28 ? name.slice(0, 26) + '…' : name);
+  }
+})();
+
+// ── Tutorial do board — ícones de giz (SVG roughened) ──────────────────────────
+const CHALK_ICONS_B = {
+  tools:   `<path d="M4 20l4-1 10-10-3-3-10 10-1 4z"/><path d="M14 7l3 3"/>`,
+  palette: `<path d="M12 3a9 9 0 100 18c1.5 0 2-.9 2-2 0-.6-.3-1-.6-1.4-.3-.4-.4-.7-.1-1.1.3-.4.9-.5 1.5-.5H16a4 4 0 004-4c0-5-3.6-9-8-9z"/><circle cx="8" cy="10" r="1" fill="currentColor" stroke="none"/><circle cx="12" cy="8" r="1" fill="currentColor" stroke="none"/><circle cx="16" cy="10" r="1" fill="currentColor" stroke="none"/>`,
+  gif:     `<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M10 9l5 3-5 3V9z" fill="currentColor" stroke="none"/>`,
+  exportI: `<path d="M12 15V4"/><path d="M8 8l4-4 4 4"/><rect x="4" y="15" width="16" height="5" rx="1.5"/>`,
+  spawn:   `<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M12 9v6"/><path d="M9 12h6"/>`,
+  layers:  `<path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/>`,
+  group:   `<rect x="3" y="3" width="10" height="10" rx="2"/><rect x="11" y="11" width="10" height="10" rx="2"/>`,
+  history: `<circle cx="12" cy="13" r="8"/><path d="M12 9v4l3 2"/><path d="M5 3l2 2M19 3l-2 2"/>`,
+  link:    `<path d="M9 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-3"/><path d="M14 4h6v6"/><path d="M20 4l-9 9"/>`,
+};
+function chalkIconB(key) {
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="filter:url(#chalk-rough-b)">${CHALK_ICONS_B[key] || ''}</svg>`;
+}
+function spawnChalkDustB(containerId, count) {
+  const c = document.getElementById(containerId);
+  if (!c || c.dataset.filled) return;
+  c.dataset.filled = '1';
+  let html = '';
+  for (let i = 0; i < count; i++) {
+    const left  = (Math.random() * 100).toFixed(1);
+    const dur   = (6 + Math.random() * 7).toFixed(1);
+    const delay = (Math.random() * 7).toFixed(1);
+    const size  = (1.5 + Math.random() * 2).toFixed(1);
+    const dx    = (Math.random() * 44 - 22).toFixed(0);
+    html += `<span class="dust-mote-b" style="left:${left}%;width:${size}px;height:${size}px;animation-duration:${dur}s;animation-delay:${delay}s;--dx:${dx}px"></span>`;
+  }
+  c.innerHTML = html;
+}
+
+const BTUT = [
+  { icon:'tools', title:'As ferramentas na bandeja de giz',
+    body:'A toolbar no topo tem todas as ferramentas, como uma bandeja de giz e apagador. Cada uma tem um <strong>atalho de teclado</strong> para trabalhar rápido durante a live.',
+    keys:['V Selecionar','H Pan','P Caneta','E Borracha','R Retângulo','C Elipse','L Linha','A Seta','T Texto'] },
+  { icon:'palette', title:'Cor, espessura e opacidade do giz',
+    body:'Ao selecionar uma ferramenta de desenho, aparece um painel abaixo da toolbar com <strong>paleta de cores</strong> (gizes coloridos), <strong>espessura</strong> (1–60px), <strong>opacidade</strong> e <strong>preenchimento</strong> para formas.' },
+  { icon:'gif', title:'Figuras e GIFs animados na lousa',
+    body:'Clique no ícone de imagem para fazer upload ou <strong>Ctrl+V</strong> para colar da área de transferência. GIFs ficam <strong>totalmente animados</strong> no canvas e na view do OBS. Suporte a JPG, PNG, GIF, WebP e SVG.' },
+  { icon:'exportI', title:'Copiar, colar e duplicar',
+    body:'Selecione qualquer objeto (ou vários, ou um grupo inteiro) e use:',
+    keys:['Ctrl+C Copiar','Ctrl+V Colar','Ctrl+D Duplicar','Ctrl+A Selecionar tudo','Del Excluir'] },
+  { icon:'spawn', title:'O canto reservado da sala de aula',
+    body:'O painel <strong>Spawn</strong> (centro, abaixo da toolbar) controla onde as coisas novas nascem. No modo <strong>"área reservada"</strong>, imagens, GIFs e tudo que você colar com Ctrl+V — um objeto, vários soltos ou um grupo inteiro — aparece numa área tracejada fora do viewport oficial, em vez de "pipocar" no meio da tela de quem está assistindo ao vivo. Depois é só arrastar pra posição final com calma.<br><br>Use <strong>"Mover área reservada"</strong> pra escolher onde ela fica — é uma preferência sua, cada pessoa tem a própria, e o board mostra a área de todo mundo (com nome e cor de cada um) pra ninguém colidir.' },
+  { icon:'layers', title:'Camadas: lousas empilhadas',
+    body:'O <strong>painel de Camadas</strong> fica na direita. Crie quantas camadas quiser, reordene por drag-and-drop e oculte camadas inteiras. Novos objetos vão sempre para a <strong>camada ativa</strong>.' },
+  { icon:'group', title:'Agrupar e desagrupar',
+    body:'Selecione 2+ objetos e use o botão <strong>Grupo</strong> no painel de camadas. Grupos se movem e escalam juntos. <em>GIFs animados não podem ser agrupados</em> — o botão fica desabilitado automaticamente.' },
+  { icon:'exportI', title:'Tirar uma foto do quadro (Exportar PNG)',
+    body:'O botão <strong>Exportar PNG</strong> gera uma imagem com fundo transparente:<br><br>• <strong>Nada selecionado</strong> → board inteiro no tamanho do viewport<br>• <strong>1 objeto</strong> → aquele objeto<br>• <strong>2+ objetos ou grupo</strong> → bounding box da seleção' },
+  { icon:'history', title:'Apagar, refazer e sincronização',
+    body:'Tudo é sincronizado em tempo real para todos. O <strong>Ctrl+Z / Ctrl+Y</strong> desfaz e refaz para todos ao mesmo tempo.',
+    keys:['Ctrl+Z Desfazer','Ctrl+Y Refazer','F Centralizar viewport','0 Zoom 100%'] },
+  { icon:'link', title:'Ver ao vivo (OBS)',
+    body:'Clique em <strong>"Ver ao vivo"</strong> no canto superior esquerdo para abrir a URL desta sala em nova aba. Configure no OBS como source <strong>Browser</strong> com o tamanho do stream — fundo transparente, pronto para overlay.' },
+];
+
+let btutIdx = 0;
+
+function openBoardTutorial() {
+  btutIdx = 0; renderBtut();
+  document.getElementById('board-tutorial-overlay').style.display = 'flex';
+  spawnChalkDustB('btut-dust', 16);
+}
+function closeBoardTutorial() {
+  const card = document.getElementById('btut-card');
+  card.classList.add('wiping');
+  setTimeout(() => {
+    document.getElementById('board-tutorial-overlay').style.display = 'none';
+    card.classList.remove('wiping');
+  }, 370);
+}
+function btutNav(dir) {
+  btutIdx = Math.max(0, Math.min(BTUT.length - 1, btutIdx + dir));
+  renderBtut();
+}
+function renderBtut() {
+  const s = BTUT[btutIdx], total = BTUT.length;
+  document.getElementById('btut-progress').innerHTML =
+    BTUT.map((_, i) => `<div class="btut-dot ${i < btutIdx ? 'done' : i === btutIdx ? 'active' : ''}"></div>`).join('');
+  const keysHtml = s.keys
+    ? `<div class="btut-keys">${s.keys.map(k => {
+        const [key, ...rest] = k.split(' ');
+        return `<div class="btut-key"><b>${key}</b> ${rest.join(' ')}</div>`;
+      }).join('')}</div>` : '';
+  document.getElementById('btut-body').innerHTML = `
+    <div class="btut-anim">
+      <div class="btut-icon">${chalkIconB(s.icon)}</div>
+      <p class="btut-h">${s.title}</p>
+      <p class="btut-p">${s.body}</p>
+      ${keysHtml}
+    </div>`;
+  document.getElementById('btut-counter').textContent = `${btutIdx + 1} de ${total}`;
+  document.getElementById('btut-prev').style.display = btutIdx === 0 ? 'none' : '';
+  const next = document.getElementById('btut-next');
+  if (btutIdx === total - 1) {
+    next.textContent = 'Apagar e fechar ✓'; next.onclick = closeBoardTutorial;
+  } else {
+    next.textContent = 'Próximo →'; next.onclick = () => btutNav(1);
+  }
+}
+
+document.getElementById('board-tutorial-overlay').addEventListener('click', e => {
+  if (e.target === e.currentTarget) closeBoardTutorial();
+});
+document.addEventListener('keydown', e => {
+  if (document.getElementById('board-tutorial-overlay').style.display === 'none') return;
+  if (e.key === 'Escape')      closeBoardTutorial();
+  if (e.key === 'ArrowRight')  btutNav(1);
+  if (e.key === 'ArrowLeft')   btutNav(-1);
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PONTE DE COMPATIBILIDADE COM ATRIBUTOS INLINE DO HTML (onclick/onchange/...)
+// ═══════════════════════════════════════════════════════════════════════════════
+// setFillShape substitui a antiga atribuição direta `fillShape=this.checked`
+// que existia inline no HTML — um módulo ES não permite que um handler inline
+// escreva diretamente numa variável de módulo (`let fillShape`, acima), então
+// precisa passar por uma função exposta na ponte abaixo.
+function setFillShape(v) { fillShape = v; }
+
+// Cada nome abaixo corresponde a um atributo onclick/onchange/oninput
+// encontrado em board.html. Se um atributo inline novo for adicionado ao HTML
+// referenciando uma função/objeto daqui, ele precisa ser adicionado nesta
+// lista também — senão o clique falha silenciosamente (function is not
+// defined) porque o módulo não vaza identificadores pro escopo global.
+Object.assign(window, {
+  setTool, setColor, setSz, setOp, setFillShape,
+  insertImg, exportSelectionOrBoardAsPNG,
+  undo, redo, fitViewport, resetZoom, clearAll, changeRoom,
+  setSelColor, setSelFill, toggleSelFill, setSelStroke, resizeSel, setSelOp,
+  sendBackFront, delSel,
+  toggleVpPanel, updateViewport,
+  toggleLayersPanel, addLayer, groupSelected, ungroupSelected,
+  scheduleLayersUpdate, toggleLayerVisibility, moveLayer, deleteLayer,
+  toggleObjVisibility, deleteObjById, togglePathGroup, deletePathGroup,
+  closeBoardTutorial, btutNav,
+});
+// `collapsedLayers`/`collapsedGroups` são Sets referenciados diretamente por
+// identificador em atributos inline (ex: collapsedLayers.has(...)) — por
+// serem objetos (tipo referência), expor a MESMA instância aqui é suficiente
+// pra inline e módulo lerem/escreverem o mesmo Set.
+window.collapsedLayers = collapsedLayers;
+window.collapsedGroups = collapsedGroups;

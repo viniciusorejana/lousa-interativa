@@ -63,8 +63,40 @@ server/
       > `fabric.Image` ser usado). Quando o resto do client virar ES Modules (Fase 3+),
       > esses dois arquivos viram módulos reais junto com o resto, com a ordem de
       > `import` resolvendo isso corretamente.
-- [ ] Fase 3 — client core + tools (inclui `event-bus.js`, adiado da Fase 2 porque
-      ainda não há nenhum consumidor real dele até essa fase — evita módulo morto)
+- [x] **Fase 3 (parte 1 — infraestrutura de módulos)** — `board.html` virou um módulo ES
+      de verdade: `public/js/board-app.js` (`<script type="module">`), importando
+      `public/js/core/canvas-manager.js` (cria e exporta o `fabric.Canvas`) e
+      `public/js/core/event-bus.js` (pub/sub, Observer pattern — ainda sem
+      consumidores, prontos pra Fase 4/5 desacoplar toolbar ⇄ canvas ⇄ socket).
+      `board.html`: 4.288 → **668 linhas** (só marcação/CSS agora).
+      > **Importante sobre o tamanho de `board-app.js` (3.661 linhas)**: esta fatia da
+      > Fase 3 troca a ARQUITETURA (script clássico global → módulo ES real), não ainda
+      > o tamanho por arquivo — o corpo da lógica (ferramentas, camadas, grupos, mídia,
+      > clipboard...) foi movido quase inteiro pra dentro de `board-app.js` por enquanto.
+      > A redução de linhas desse arquivo específico é o objetivo da Fase 4/5: puxar
+      > cada pedaço coeso pra seu próprio arquivo em `tools/` e `features/`, um de cada
+      > vez, testável isoladamente — a mesma abordagem incremental das Fases 1 e 2.
+      > **Ponte HTML ⇄ módulo**: `board.html` usa ~50 atributos inline
+      > (`onclick`/`onchange`/`oninput`) chamando ~35 funções distintas. Módulos ES não
+      > vazam declarações de nível superior pro escopo global (diferente de scripts
+      > clássicos) — então essas ~35 funções são expostas explicitamente em `window` no
+      > final de `board-app.js`, com comentário explicando o porquê. Documentado também
+      > no topo do arquivo.
+      > **Verificação nesta fase**: validei sintaxe ESM real (`node --input-type=module
+      > --check`, já que `node -c`/`node --check` comuns *não* detectam erro de sintaxe
+      > em arquivos com `import`/`export` sem `"type":"module"` no `package.json` — uma
+      > armadilha que só descobri testando de propósito), conferi que as 35 funções da
+      > ponte existem de fato no arquivo, chequei ausência de identificador duplicado no
+      > nível superior (risco real ao fundir os dois `<script>` que existiam antes em um
+      > só módulo), servidor no ar servindo os arquivos corretamente (conteúdo
+      > byte-idêntico), e rodei de novo o teste de fluxo via socket.io (regressão do
+      > server, que não foi tocado). **Não consegui** testar a execução real no
+      > navegador (tentei montar jsdom + node-canvas pra simular, mas o pacote `canvas`
+      > precisa baixar headers de `nodejs.org`, que não está liberado na rede deste
+      > ambiente) — essa é, de longe, a fase de maior risco até agora (é onde ~35
+      > funções de UI passaram por uma ponte manual), então o roteiro completo do
+      > `CHECKLIST.md` precisa ser rodado com atenção redobrada.
+- [ ] Fase 3 (parte 2) / Fase 4 — extrair tools/ e features/ de dentro de board-app.js
 - [ ] Fase 4 — client features
 - [ ] Fase 5 — client UI + entrypoints
 - [ ] Fase 6 — CSS
