@@ -349,6 +349,7 @@
     .vp-btn:hover { background:var(--border); }
     .vp-btn.accent { background:rgba(124,92,255,.3); border-color:var(--accent); color:var(--accent); }
     .vp-btn.accent:hover { background:rgba(124,92,255,.5); }
+    .vp-btn:disabled { opacity:.4; cursor:not-allowed; pointer-events:none; }
     .vp-sep { height:1px; background:var(--border); margin:8px 0; }
     #vp-coords { font-size:10px; color:var(--muted); text-align:center; margin-top:6px; }
 
@@ -442,7 +443,13 @@
   </div>
   <div class="cr"><span class="cl">Largura</span><input type="number" class="ci" id="cw" min="1" oninput="resizeSel('w',this.value)"></div>
   <div class="cr"><span class="cl">Altura</span><input type="number" class="ci" id="ch" min="1" oninput="resizeSel('h',this.value)"></div>
-  <div class="cr"><span class="cl">Opacidade</span><input type="number" class="ci" id="cop" min="0" max="100" oninput="setSelOp(this.value)"></div>
+  <div class="cr" id="ctx-op-row">
+    <span class="cl">Opacidade</span>
+    <div style="display:flex;gap:4px;align-items:center">
+      <input type="range" id="cop" min="0" max="100" value="100" style="width:60px;accent-color:var(--accent)" oninput="setSelOp(this.value)">
+      <span class="cl" id="cop-v">100%</span>
+    </div>
+  </div>
   <button class="cb" onclick="sendBackFront('back')">⬇ Para trás</button>
   <button class="cb" onclick="sendBackFront('front')">⬆ Para frente</button>
   <button class="cb" onclick="exportSelectionOrBoardAsPNG()">⬇ Exportar PNG</button>
@@ -469,7 +476,34 @@
     <div class="vp-sep"></div>
     <button class="vp-btn accent" onclick="fitViewport()">⊙ Ir para Viewport</button>
     <div id="vp-coords">1920 × 1080 px</div>
+    <div class="vp-sep"></div>
+    <div class="vp-row" style="margin-bottom:6px">
+      <span class="vp-label">📡 Live de fundo</span>
+    </div>
+    <select class="vp-input" id="live-bg-platform" style="width:100%;margin-bottom:6px">
+      <option value="auto">Auto-detectar</option>
+      <option value="youtube">YouTube</option>
+      <option value="twitch">Twitch</option>
+      <option value="kick">Kick</option>
+    </select>
+    <input type="text" class="vp-input" id="live-bg-url" placeholder="URL ou canal (ex: twitch.tv/canal)" style="width:100%;margin-bottom:6px" onkeydown="if(event.key==='Enter')applyLiveBg()">
+    <button class="vp-btn" id="live-bg-toggle-btn" onclick="toggleLiveBg()">▶ Mostrar transmissão</button>
+    <button class="vp-btn" id="live-bg-interact-btn" onclick="toggleLiveBgInteract()" disabled>🖱️ Interagir com a live</button>
+    <div class="vp-row" style="margin-top:8px">
+      <span class="vp-label">Opacidade</span>
+      <div style="display:flex;gap:4px;align-items:center">
+        <input type="range" id="live-bg-opacity" min="10" max="100" value="100" style="width:60px;accent-color:var(--accent)" oninput="setLiveBgOpacity(this.value)">
+        <span class="vp-label" id="live-bg-opacity-v">100%</span>
+      </div>
+    </div>
+    <div id="live-bg-status" style="font-size:10px;color:var(--muted);text-align:center;margin-top:6px;line-height:1.4">Visível só para você, enquanto edita — não aparece na view do OBS.</div>
   </div>
+</div>
+
+<!-- Camada de fundo com a transmissão ao vivo (referência local, NUNCA enviada
+     via socket e ausente em view.html — visível apenas para quem está editando) -->
+<div id="live-bg-layer" style="position:fixed;inset:0;overflow:hidden;pointer-events:none;z-index:0;display:none">
+  <iframe id="live-bg-iframe" style="position:absolute;border:0;background:#000" allow="autoplay; fullscreen" allowfullscreen></iframe>
 </div>
 
 <!-- ═══════════ PAINEL DE CAMADAS ═══════════ -->
@@ -1062,6 +1096,194 @@ function emitViewportSync() {
 function toggleVpPanel() {
   document.getElementById('vp-panel').classList.toggle('collapsed');
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// LIVE DE FUNDO (referência local da transmissão ao vivo)
+// ─────────────────────────────────────────────────────────────────────────────
+// Mostra a live (YouTube/Twitch/Kick) como fundo, posicionada exatamente atrás
+// do retângulo do viewport (a área que o OBS captura), só que:
+//  • é um <iframe> comum no DOM do editor — nunca passa pelo socket.io;
+//  • view.html é uma página totalmente separada e nunca inclui este elemento;
+// ou seja, é 100% local para quem está editando, e nunca aparece na
+// transmissão/overlay do OBS.
+let liveBgEnabled = false;
+let liveBgInteractive = false;
+
+function _liveBgStorageKey() {
+  return `lb_liveBg_${(typeof myRoomId !== 'undefined' && myRoomId) || 'default'}`;
+}
+
+function parseLiveStreamUrl(raw, platformHint) {
+  const input = (raw || '').trim();
+  if (!input) return null;
+
+  const detect = () => {
+    if (/youtube\.com|youtu\.be/i.test(input)) return 'youtube';
+    if (/twitch\.tv/i.test(input)) return 'twitch';
+    if (/kick\.com/i.test(input)) return 'kick';
+    return null;
+  };
+
+  const platform = (platformHint && platformHint !== 'auto') ? platformHint : detect();
+  if (!platform) return null;
+
+  if (platform === 'youtube') {
+    let m = input.match(/[?&]v=([^&/?]+)/) || input.match(/youtu\.be\/([^?&/]+)/) || input.match(/embed\/([^?&/]+)/);
+    if (m) return { platform, embed: `https://www.youtube.com/embed/${m[1]}?autoplay=1&mute=1&playsinline=1` };
+    m = input.match(/youtube\.com\/(?:channel\/|c\/|@)([^/?&]+)/);
+    const channel = m ? m[1] : input.replace(/^@/, '');
+    return { platform, embed: `https://www.youtube.com/embed/live_stream?channel=${encodeURIComponent(channel)}&autoplay=1&mute=1&playsinline=1` };
+  }
+
+  if (platform === 'twitch') {
+    let m = input.match(/twitch\.tv\/([^/?&]+)/);
+    const channel = m ? m[1] : input;
+    const parents = [...new Set([location.hostname, 'localhost', '127.0.0.1'].filter(Boolean))]
+      .map(h => `&parent=${encodeURIComponent(h)}`).join('');
+    return { platform, embed: `https://player.twitch.tv/?channel=${encodeURIComponent(channel)}${parents}&autoplay=true&muted=true` };
+  }
+
+  if (platform === 'kick') {
+    let m = input.match(/kick\.com\/([^/?&]+)/);
+    const channel = m ? m[1] : input;
+    return { platform, embed: `https://player.kick.com/${encodeURIComponent(channel)}?autoplay=true&muted=true` };
+  }
+
+  return null;
+}
+
+function positionLiveBgLayer() {
+  const iframe = document.getElementById('live-bg-iframe');
+  if (!iframe) return;
+  const vpt = canvas.viewportTransform;
+  const zoom = vpt[0];
+  iframe.style.left   = vpt[4] + 'px';
+  iframe.style.top    = vpt[5] + 'px';
+  iframe.style.width  = (vpW * zoom) + 'px';
+  iframe.style.height = (vpH * zoom) + 'px';
+}
+
+function setLiveBgOpacity(v) {
+  const layer = document.getElementById('live-bg-layer');
+  const lbl = document.getElementById('live-bg-opacity-v');
+  if (layer) layer.style.opacity = (parseInt(v) / 100);
+  if (lbl) lbl.textContent = v + '%';
+  try {
+    const saved = JSON.parse(localStorage.getItem(_liveBgStorageKey()) || '{}');
+    saved.opacity = parseInt(v);
+    localStorage.setItem(_liveBgStorageKey(), JSON.stringify(saved));
+  } catch (e) {}
+}
+
+function applyLiveBg() {
+  const urlInput = document.getElementById('live-bg-url');
+  const platformSel = document.getElementById('live-bg-platform');
+  const statusEl = document.getElementById('live-bg-status');
+  const parsed = parseLiveStreamUrl(urlInput.value, platformSel.value);
+
+  if (!parsed) {
+    statusEl.textContent = 'Não consegui reconhecer a URL/canal. Tente colar o link completo (YouTube, Twitch ou Kick).';
+    statusEl.style.color = '#ff6b6b';
+    return false;
+  }
+
+  const iframe = document.getElementById('live-bg-iframe');
+  iframe.src = parsed.embed;
+  const layerEl = document.getElementById('live-bg-layer');
+  layerEl.style.display = 'block';
+  const opacityInput = document.getElementById('live-bg-opacity');
+  layerEl.style.opacity = (parseInt(opacityInput.value) / 100);
+  liveBgEnabled = true;
+  // O Fabric pinta o backgroundColor DENTRO dos pixels do <canvas> — não é uma
+  // camada CSS por trás, então nenhum z-index resolve isso. Precisa zerar o
+  // fundo do canvas pra deixar o iframe (que fica atrás no DOM) aparecer.
+  canvas.backgroundColor = 'transparent';
+  canvas.renderAll();
+  positionLiveBgLayer();
+
+  const btn = document.getElementById('live-bg-toggle-btn');
+  btn.textContent = '⏸ Ocultar transmissão';
+  btn.classList.add('accent');
+  statusEl.style.color = '';
+  statusEl.textContent = 'Visível só para você, enquanto edita — não aparece na view do OBS.';
+  const interactBtn = document.getElementById('live-bg-interact-btn');
+  if (interactBtn) interactBtn.disabled = false;
+
+  try {
+    localStorage.setItem(_liveBgStorageKey(), JSON.stringify({
+      url: urlInput.value, platform: platformSel.value, enabled: true,
+      opacity: parseInt(opacityInput.value),
+    }));
+  } catch (e) {}
+  return true;
+}
+
+function hideLiveBg(persist = true) {
+  liveBgEnabled = false;
+  setLiveBgInteractive(false);
+  const layer = document.getElementById('live-bg-layer');
+  const iframe = document.getElementById('live-bg-iframe');
+  if (layer) layer.style.display = 'none';
+  if (iframe) iframe.src = 'about:blank';
+  canvas.backgroundColor = '#1e1e2a';
+  canvas.renderAll();
+  const btn = document.getElementById('live-bg-toggle-btn');
+  if (btn) { btn.textContent = '▶ Mostrar transmissão'; btn.classList.remove('accent'); }
+  const interactBtn = document.getElementById('live-bg-interact-btn');
+  if (interactBtn) interactBtn.disabled = true;
+  if (persist) {
+    try {
+      const saved = JSON.parse(localStorage.getItem(_liveBgStorageKey()) || '{}');
+      saved.enabled = false;
+      localStorage.setItem(_liveBgStorageKey(), JSON.stringify(saved));
+    } catch (e) {}
+  }
+}
+
+// Alterna entre "desenhar no board" (padrão) e "interagir com a live" — o
+// iframe fica com pointer-events:none o tempo todo pra não roubar cliques do
+// desenho; nesse modo, invertemos isso (canvas para de receber clique, o
+// iframe passa a receber) só enquanto o usuário precisa clicar em play/mudo
+// no player embutido. Funciona igual pras três plataformas, já que é só
+// passthrough de clique — não depende de API específica de cada uma.
+function setLiveBgInteractive(on) {
+  liveBgInteractive = on && liveBgEnabled;
+  const wrapper = canvas.wrapperEl;
+  if (wrapper) wrapper.style.pointerEvents = liveBgInteractive ? 'none' : '';
+  const layer = document.getElementById('live-bg-layer');
+  if (layer) layer.style.pointerEvents = liveBgInteractive ? 'auto' : 'none';
+  const btn = document.getElementById('live-bg-interact-btn');
+  if (btn) {
+    btn.textContent = liveBgInteractive ? '✏️ Voltar a desenhar' : '🖱️ Interagir com a live';
+    btn.classList.toggle('accent', liveBgInteractive);
+  }
+}
+function toggleLiveBgInteract() {
+  if (!liveBgEnabled) return;
+  setLiveBgInteractive(!liveBgInteractive);
+}
+
+function toggleLiveBg() {
+  if (liveBgEnabled) { hideLiveBg(); return; }
+  applyLiveBg();
+}
+
+// Restaura a última live configurada nesta sala (se havia uma ativa)
+function restoreLiveBg() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(_liveBgStorageKey()) || 'null');
+    if (!saved || !saved.url) return;
+    document.getElementById('live-bg-url').value = saved.url;
+    document.getElementById('live-bg-platform').value = saved.platform || 'auto';
+    const op = (saved.opacity !== undefined) ? saved.opacity : 100;
+    document.getElementById('live-bg-opacity').value = op;
+    document.getElementById('live-bg-opacity-v').textContent = op + '%';
+    if (saved.enabled) applyLiveBg();
+  } catch (e) {}
+}
+
+// Mantém o iframe alinhado ao retângulo do viewport durante pan/zoom/resize
+canvas.on('after:render', () => { if (liveBgEnabled) positionLiveBgLayer(); });
 function toggleLayersPanel() {
   document.getElementById('layers-panel').classList.toggle('collapsed');
   // Recolher/expandir muda quanto espaço o painel de Camadas precisa — o
@@ -2009,6 +2231,7 @@ const myUserName = sessionStorage.getItem('lb_username')
   || 'Anônimo';
 const myRoomId   = sessionStorage.getItem('lb_roomId')   || 'default';
 const myRoomName = sessionStorage.getItem('lb_roomName') || myRoomId;
+restoreLiveBg();
 
 // Identificador persistente POR NAVEGADOR — diferente do userId (que é por
 // conexão e muda a cada reconexão). Usado só pra saber "qual área reservada
@@ -2174,13 +2397,13 @@ socket.on('ungroup:commit', ({ groupId, children: childrenData, zorder }) => {
   scheduleLayersUpdate();
 });
 socket.on('board:clear', () => {
-  canvas.clear(); canvas.backgroundColor = '#1e1e2a'; canvas.renderAll();
+  canvas.clear(); canvas.backgroundColor = liveBgEnabled ? 'transparent' : '#1e1e2a'; canvas.renderAll();
   createViewportRect();
   hiddenObjects.clear();
   scheduleLayersUpdate();
 });
 socket.on('board:sync', st => {
-  canvas.clear(); canvas.backgroundColor = '#1e1e2a';
+  canvas.clear(); canvas.backgroundColor = liveBgEnabled ? 'transparent' : '#1e1e2a';
   hiddenObjects.clear();
   if (st && st.layers && st.layers.length) { boardLayers = st.layers; }
   ensureActiveLayer();
@@ -2704,6 +2927,7 @@ function updCtx() {
   document.getElementById('cw').value  = multi ? '' : Math.round(o.getScaledWidth());
   document.getElementById('ch').value  = multi ? '' : Math.round(o.getScaledHeight());
   document.getElementById('cop').value = Math.round((o.opacity || 1) * 100);
+  document.getElementById('cop-v').textContent = Math.round((o.opacity || 1) * 100) + '%';
 
   // Cor de stroke/texto
   const isText = o.type === 'i-text' || o.type === 'text';
@@ -2942,6 +3166,7 @@ function resizeSel(d, v) {
 }
 
 function setSelOp(v) {
+  const lbl = document.getElementById('cop-v'); if (lbl) lbl.textContent = v + '%';
   getSelObjs().forEach(o => { o.set({ opacity: parseInt(v) / 100 }); emitModifyWithAbsPos(o); });
   canvas.renderAll();
 }
