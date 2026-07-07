@@ -137,13 +137,14 @@ server/
         > importavam de lá e que agora moraram em `layers-panel.js`
         > (`activeLayerId`, `objectNames`, `typeCounters`, `assignDefaultName`,
         > `scheduleLayersUpdate`) — sem isso, aqueles três arquivos quebrariam.
-  - [ ] `features/spawn-area/` (área reservada)
-  - [ ] `features/groups/` (agrupar/desagrupar)
-  - [ ] `features/export/` (exportar PNG)
+  - [x] `features/onboarding/tooltip.js` (45 linhas) e `features/onboarding/tutorial.js`
+        (116 linhas) — ambos módulos autocontidos, zero dependência de
+        canvas/socket/estado (só DOM), então **sem import circular** — os primeiros
+        dois módulos desta refatoração que não precisaram desse padrão.
+        `board-app.js`: 2.642 → 2.495 linhas.
   - [ ] `features/spawn-area/` (área reservada)
   - [ ] `features/remote-users/` (cursores/traços remotos)
   - [ ] `features/clipboard/` (paste/drag-drop/copiar-colar)
-  - [ ] `features/onboarding/` (tooltip, tutorial)
   - [ ] `ui/` (toolbar, room switch, etc.)
 - [ ] Fase 4 — client features
 - [ ] Fase 5 — client UI + entrypoints

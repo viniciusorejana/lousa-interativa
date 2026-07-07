@@ -107,6 +107,12 @@ npm run dev
       drag-and-drop, colapsar/expandir grupos de traços no painel, excluir camada com
       objetos dentro (deve pedir confirmação) — é literalmente tudo que mudou de
       arquivo aqui.
+- [x] **`features/onboarding/tooltip.js` e `tutorial.js`** — extração de baixo risco
+      (sem estado compartilhado, sem import circular). Validado: sintaxe, zero
+      duplicata, ponte íntegra, arquivos servidos e byte-idênticos, socket saudável.
+      **Peça de atenção**: tooltip ao passar o mouse nos botões da toolbar, e o
+      tutorial completo (abrir pelo botão de ajuda, navegar com setas do teclado e
+      Escape, botão "Apagar e fechar" na última página).
 - [ ] Fase 3 (parte 2) / Fase 4 — rodar itens 7-11, 13, 14, 19 conforme cada feature for
       extraída de board-app.js pra seu próprio arquivo.
 - [ ] Fase 4 — rodar itens 7-11, 13, 14, 19 (foco: camadas, grupos, export, mídia,
