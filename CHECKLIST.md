@@ -82,9 +82,20 @@ npm run dev
       manda o nome exato da função no erro, é rápido de corrigir. Por favor rode o
       roteiro **completo** (itens 1-19), não só o recorte que eu geralmente sugiro,
       já que praticamente toda interação de UI passa por essa ponte agora.
-- [ ] Fase 3 (parte 2) / Fase 4 — rodar itens 7-11, 13, 14, 19 (foco: camadas, grupos,
-      export, mídia, clipboard, spawn area — conforme cada uma for extraída de
-      board-app.js pra seu próprio arquivo).
+- [x] **`features/media/gif-service.js`** — validado: sintaxe ESM, zero declaração
+      duplicada, ponte `window.*` continua 100% íntegra (reconferi as 35 funções),
+      servidor servindo o arquivo novo corretamente (byte-idêntico ao disco), fluxo de
+      socket.io saudável. **Peço que teste especificamente**: item 9 (upload de
+      imagem/GIF), item 10 (GIF anima, mover/redimensionar não quebra a animação) e
+      item 11 (copiar/colar interno de GIF) — é exatamente o código que mudou de
+      arquivo nesta entrega.
+- [x] **`features/export/png-exporter.js`** — validado: sintaxe, zero duplicata,
+      ponte íntegra, servidor servindo corretamente, socket saudável. **Peça de
+      atenção**: item 14 (exportar PNG — objeto único, seleção múltipla, e board
+      inteiro sem selecionar nada) e a parte de "copiar como imagem" dentro do item
+      11 (copiar/colar), que reaproveita a mesma função de renderização.
+- [ ] Fase 3 (parte 2) / Fase 4 — rodar itens 7-11, 13, 14, 19 conforme cada feature for
+      extraída de board-app.js pra seu próprio arquivo.
 - [ ] Fase 4 — rodar itens 7-11, 13, 14, 19 (foco: camadas, grupos, export, mídia,
       clipboard, spawn area).
 - [ ] Fase 5 — roteiro completo (1-19) — entrypoints e UI final montados.

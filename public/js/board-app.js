@@ -18,6 +18,8 @@
 // o módulo continua com import/export de verdade.
 import { canvas, setResizeHook } from './core/canvas-manager.js';
 import { eventBus } from './core/event-bus.js';
+import { isGifUrl, placeGif, placeImageFromUrl, insertImg, activeGifs } from './features/media/gif-service.js';
+import { renderObjectsAsDataURL, exportSelectionOrBoardAsPNG } from './features/export/png-exporter.js';
 
 // Conecta o resize do canvas (definido em canvas-manager.js) ao redesenho do
 // retângulo de viewport (definido mais abaixo neste arquivo). `drawViewportRect`
@@ -37,7 +39,7 @@ const remoteStrokes = {}, remoteCursors = {};
 
 // ── Sistema de camadas ────────────────────────────────────────────────────────
 let boardLayers    = [{ id: 'layer-default', name: 'Camada 1', visible: true }];
-let activeLayerId  = 'layer-default';
+export let activeLayerId  = 'layer-default';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ── FUNCIONALIDADE 1: PAN / NAVEGAÇÃO ──────────────────────────────────────────
@@ -250,7 +252,7 @@ function updateZoomInfo() {
 let vpRect = null;          // fabric.Rect do viewport (não faz parte do board)
 // Viewport é SEMPRE fixo em (0, 0) — a view sempre olha para essa origem.
 const vpX = 0, vpY = 0;
-let vpW = 1920, vpH = 1080;
+export let vpW = 1920, vpH = 1080;
 let isDraggingVp = false; // mantido para compatibilidade, nunca será true
 
 function createViewportRect() {
@@ -449,7 +451,7 @@ function toggleLayersPanel() {
 let layersUpdateTimer = null;
 const hiddenObjects   = new Set();
 const panelSelected   = new Set();
-const objectNames     = {};
+export const objectNames     = {};
 const collapsedLayers = new Set();
 const typeCounters    = {};
 
@@ -700,144 +702,6 @@ function ungroupSelected() {
   scheduleLayersUpdate();
 }
 
-// ── Exportar PNG ──────────────────────────────────────────────────────────────
-// 3 modos: objeto único, seleção/grupo (vários objetos), board inteiro (viewport).
-// Sempre fundo transparente, sem incluir o retângulo guia do viewport.
-
-function _downloadDataUrl(dataUrl, filename) {
-  const a = document.createElement('a');
-  a.href = dataUrl;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-}
-
-// Renderiza a bounding box exata de um conjunto de objetos (seleção, grupo, ou
-// objeto único) para um data URL PNG, sem baixar nada — usado tanto pelo export
-// para arquivo quanto pela cópia para a área de transferência do sistema.
-// Usa canvas.toDataURL com left/top/width/height = bounding box absoluta dos objetos,
-// e multiplier=1 para exportar no tamanho exato em que estão no board.
-function renderObjectsAsDataURL(objects) {
-  const targets = objects.filter(o => !o._isViewportRect);
-  if (!targets.length) return null;
-
-  // Para obter a bounding box correta no espaço lógico do canvas:
-  // - 1 objeto ou grupo real → usa os aCoords do próprio objeto
-  // - seleção múltipla (ActiveSelection) → o canvas.getActiveObject() É o
-  //   ActiveSelection (subclasse de Group) e tem seus próprios aCoords que
-  //   envolvem TODOS os filhos — exatamente como um grupo real funciona
-  const activeObj = canvas.getActiveObject();
-  const source = (activeObj && !activeObj._isViewportRect) ? activeObj : targets[0];
-  source.setCoords();
-
-  const coords = source.aCoords; // { tl, tr, bl, br } em coords do canvas
-  let minX, minY, maxX, maxY;
-
-  if (coords) {
-    const pts = [coords.tl, coords.tr, coords.bl, coords.br];
-    minX = Math.min(...pts.map(p => p.x));
-    minY = Math.min(...pts.map(p => p.y));
-    maxX = Math.max(...pts.map(p => p.x));
-    maxY = Math.max(...pts.map(p => p.y));
-  } else {
-    // Fallback: itera filhos individualmente
-    minX = Infinity; minY = Infinity; maxX = -Infinity; maxY = -Infinity;
-    targets.forEach(o => {
-      o.setCoords();
-      const c = o.aCoords;
-      if (c) {
-        [c.tl, c.tr, c.bl, c.br].forEach(pt => {
-          minX = Math.min(minX, pt.x); minY = Math.min(minY, pt.y);
-          maxX = Math.max(maxX, pt.x); maxY = Math.max(maxY, pt.y);
-        });
-      }
-    });
-  }
-
-  const w = Math.max(1, Math.ceil(maxX - minX));
-  const h = Math.max(1, Math.ceil(maxY - minY));
-
-  // Esconde objetos que não fazem parte do export
-  const allObjs = canvas.getObjects();
-  const prevVisible = new Map();
-  allObjs.forEach(o => {
-    prevVisible.set(o, o.visible);
-    if (o._isViewportRect || !targets.includes(o)) o.visible = false;
-  });
-
-  const prevBg  = canvas.backgroundColor;
-  const prevVpt = canvas.viewportTransform.slice();
-  canvas.backgroundColor = '';
-  canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
-  canvas.renderAll();
-
-  const dataUrl = canvas.toDataURL({
-    format: 'png',
-    left: minX, top: minY, width: w, height: h,
-    multiplier: 1,
-  });
-
-  canvas.setViewportTransform(prevVpt);
-  allObjs.forEach(o => { o.visible = prevVisible.get(o); o.setCoords(); });
-  canvas.backgroundColor = prevBg;
-  canvas.renderAll();
-
-  return dataUrl;
-}
-
-function exportObjectsAsPNG(objects, filename) {
-  const dataUrl = renderObjectsAsDataURL(objects);
-  if (!dataUrl) { showToast('Nada selecionado para exportar.', 2500); return; }
-  _downloadDataUrl(dataUrl, filename);
-}
-
-// Exporta o board inteiro na área do viewport (ex: 1920×1080), com todos os
-// objetos nas posições em que estão, fundo transparente, sem o retângulo guia.
-function exportBoardAsPNG() {
-  const allObjs = canvas.getObjects();
-  const prevVisible = new Map();
-  allObjs.forEach(o => {
-    prevVisible.set(o, o.visible);
-    if (o._isViewportRect) o.visible = false;
-  });
-
-  const prevBg = canvas.backgroundColor;
-  canvas.backgroundColor = '';
-
-  const prevVpt = canvas.viewportTransform.slice();
-  canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
-  canvas.renderAll();
-
-  const dataUrl = canvas.toDataURL({
-    format: 'png',
-    left: 0, top: 0, width: vpW, height: vpH,
-    multiplier: 1,
-  });
-
-  canvas.setViewportTransform(prevVpt);
-  allObjs.forEach(o => { o.visible = prevVisible.get(o); });
-  canvas.backgroundColor = prevBg;
-  canvas.renderAll();
-
-  _downloadDataUrl(dataUrl, `lousa-${Date.now()}.png`);
-}
-
-// Decide automaticamente qual modo usar baseado na seleção atual:
-// nenhuma seleção → exporta o board inteiro (viewport);
-// 1 objeto selecionado → exporta aquele objeto;
-// 2+ objetos selecionados (ou um grupo) → exporta a bounding box da seleção.
-function exportSelectionOrBoardAsPNG() {
-  const active = canvas.getActiveObjects().filter(o => !o._isViewportRect);
-  if (active.length === 0) {
-    exportBoardAsPNG();
-  } else if (active.length === 1) {
-    const name = (objectNames[active[0].id] || active[0].type || 'objeto').replace(/[^\w\-]+/g, '_');
-    exportObjectsAsPNG(active, `${name}-${Date.now()}.png`);
-  } else {
-    exportObjectsAsPNG(active, `selecao-${Date.now()}.png`);
-  }
-}
 
 // ── Render principal ──────────────────────────────────────────────────────────
 let layerDragSrcId = null;
@@ -1282,7 +1146,7 @@ function relativeImgPath(src) {
 
 // Converte path relativo para URL absoluta usando a origem do cliente atual.
 // Chamado APENAS na hora de carregar — nunca no estado salvo.
-function absoluteImgUrl(src) {
+export function absoluteImgUrl(src) {
   if (!src) return '';
   if (src.startsWith('blob:')) return '';
   if (src.startsWith('http://') || src.startsWith('https://')) {
@@ -1818,7 +1682,7 @@ function emitLiveTransform(target) {
   });
 }
 
-function emitFull(obj) {
+export function emitFull(obj) {
   if (obj._isViewportRect) return;
   if (!obj.id) obj.id = genId();
   ensureActiveLayer(); // garante que activeLayerId é válido antes de atribuir
@@ -1829,7 +1693,7 @@ function emitFull(obj) {
 
 // Wrapper para canvas.add que sempre reforça a ordem de camadas depois.
 // Usar em todo lugar que adiciona um objeto localmente (não via applyFull).
-function addToCanvas(obj) {
+export function addToCanvas(obj) {
   canvas.add(obj);
   applyLayerZOrder();
   if (vpRect) canvas.bringToFront(vpRect);
@@ -2396,18 +2260,18 @@ function addText(pos) {
 // chamada, pra um toast novo nunca ser escondido por um timer de um toast
 // anterior que ainda estava pendente.
 let _toastHideTimer = null;
-function showToast(msg, autoHideMs) {
+export function showToast(msg, autoHideMs) {
   document.getElementById('toast-msg').textContent = msg;
   document.getElementById('toast').classList.add('show');
   clearTimeout(_toastHideTimer);
   _toastHideTimer = autoHideMs ? setTimeout(hideToast, autoHideMs) : null;
 }
-function hideToast() {
+export function hideToast() {
   clearTimeout(_toastHideTimer);
   document.getElementById('toast').classList.remove('show');
 }
 
-async function uploadFile(file) {
+export async function uploadFile(file) {
   showToast('Enviando imagem...');
   const fd = new FormData(); fd.append('image', file);
   const res = await fetch('/upload', { method: 'POST', body: fd });
@@ -2550,7 +2414,7 @@ function placeStagingGroup(items) {
 // objeto do próprio board (pasteBoardObjects, tem sua própria lógica — ver
 // placeStagingGroup acima) ou drag-and-drop (a posição já é escolhida
 // explicitamente por onde a pessoa soltou o arquivo).
-function placeNewImage(img) {
+export function placeNewImage(img) {
   if (imageSpawnMode === 'staging') placeInStagingArea(img);
   else centerImgOnViewport(img);
 }
@@ -2703,218 +2567,6 @@ socket.on('staging:remove', ({ clientId } = {}) => {
   removeOtherStagingRect(clientId);
 });
 
-// ── Imagens e GIFs animados ───────────────────────────────────────────────────
-// GIFs são decodificados num WebWorker (gif.worker.js) fora da thread principal.
-// O Worker retorna frames como ImageBitmap[] + delays via postMessage.
-// Um único loop requestAnimationFrame global redesenha todos os GIFs ativos
-// no mesmo tick, sem múltiplos rAF concorrentes.
-
-function isGifUrl(url) {
-  if (!url) return false;
-  return url.toLowerCase().split('?')[0].endsWith('.gif');
-}
-
-// ── Worker singleton ──────────────────────────────────────────────────────────
-const _gifWorker = new Worker('/gif.worker.js');
-
-// Mapa de callbacks pendentes: workerRequestId → { resolve, reject }
-const _gifPending = new Map();
-let _gifReqId = 0;
-
-_gifWorker.onmessage = function(e) {
-  const { id, frames, canvasW, canvasH, error } = e.data;
-  const cb = _gifPending.get(id);
-  if (!cb) return;
-  _gifPending.delete(id);
-  if (error) cb.reject(new Error(error));
-  else       cb.resolve({ frames, canvasW, canvasH });
-};
-
-function decodeGifInWorker(url) {
-  return new Promise((resolve, reject) => {
-    const id = ++_gifReqId;
-    _gifPending.set(id, { resolve, reject });
-    _gifWorker.postMessage({ id, url });
-  });
-}
-
-// ── Registro de GIFs ativos ───────────────────────────────────────────────────
-// gifId → { fabricImg, frames:[{bitmap,delay}], frameIdx, lastTime }
-const _gifRegistry = new Map();
-
-// Conjunto legado para compatibilidade com o código de remoção
-const activeGifs = { add: id => {}, delete: id => { _gifRegistry.delete(id); }, size: 0 };
-
-// Loop único global — um único rAF para TODOS os GIFs
-let _rafId = null;
-
-function _gifTick(now) {
-  if (_gifRegistry.size === 0) { _rafId = null; return; }
-  _rafId = requestAnimationFrame(_gifTick);
-
-  let needsRender = false;
-
-  _gifRegistry.forEach((state, gifId) => {
-    const { fabricImg, frames } = state;
-    if (!frames || frames.length === 0) return;
-
-    const elapsed = now - state.lastTime;
-    const cur     = frames[state.frameIdx];
-
-    if (elapsed >= cur.delay) {
-      // Avança para o próximo frame
-      state.frameIdx = (state.frameIdx + 1) % frames.length;
-      state.lastTime = now;
-
-      // Atualiza o elemento canvas interno do Fabric com o novo bitmap
-      const nextBitmap = frames[state.frameIdx].bitmap;
-      fabricImg._element = nextBitmap;   // Fabric usa _element para renderizar
-      if (fabricImg._originalElement !== undefined) {
-        fabricImg._originalElement = nextBitmap;
-      }
-      needsRender = true;
-    }
-  });
-
-  if (needsRender) canvas.requestRenderAll();
-}
-
-function _ensureGifLoop() {
-  if (!_rafId) {
-    _rafId = requestAnimationFrame(_gifTick);
-  }
-}
-
-// ── Cria objeto Fabric a partir dos frames decodificados ──────────────────────
-function _buildFabricGif(frames, canvasW, canvasH, existingData, relUrl) {
-  return new Promise((resolve) => {
-    // Cria um ImageBitmap inicial para o Fabric
-    const firstBitmap = frames[0].bitmap;
-
-    // fabric.Image aceita um CanvasImageSource (ImageBitmap é válido)
-    const fabricImg = new fabric.Image(firstBitmap, {
-      left:    0,
-      top:     0,
-      id:      existingData ? existingData.id      : genId(),
-      layerId: existingData ? existingData.layerId : activeLayerId,
-      _gifUrl: relUrl,
-      _isGif:  true,
-      // Fabric usa width/height do elemento; forçamos as dimensões do GIF
-      width:   canvasW,
-      height:  canvasH,
-    });
-
-    if (existingData) {
-      fabricImg.set({
-        left:    existingData.left    ?? 0,
-        top:     existingData.top     ?? 0,
-        scaleX:  existingData.scaleX  ?? 1,
-        scaleY:  existingData.scaleY  ?? 1,
-        angle:   existingData.angle   ?? 0,
-        opacity: existingData.opacity ?? 1,
-        flipX:   existingData.flipX   ?? false,
-        flipY:   existingData.flipY   ?? false,
-      });
-    } else {
-      const maxW = (window.innerWidth * 0.5) / canvas.getZoom();
-      const s    = canvasW > maxW ? maxW / canvasW : 1;
-      fabricImg.scale(s);
-      placeNewImage(fabricImg);
-    }
-
-    fabricImg.setCoords();
-
-    // Registra no registry de animação
-    _gifRegistry.set(fabricImg.id, {
-      fabricImg,
-      frames,
-      frameIdx: 0,
-      lastTime: performance.now(),
-    });
-    _ensureGifLoop();
-
-    resolve(fabricImg);
-  });
-}
-
-// ── API pública ───────────────────────────────────────────────────────────────
-
-async function placeGif(url, existingData) {
-  const absUrl = absoluteImgUrl(url);
-  const relUrl = url;
-
-  // Decodifica no Worker
-  let frames, canvasW, canvasH;
-  try {
-    ({ frames, canvasW, canvasH } = await decodeGifInWorker(absUrl));
-  } catch (workerErr) {
-    // Fallback: usa <img> nativa (apenas primeiro frame em alguns browsers)
-    console.warn('[GIF] Worker falhou, usando fallback nativo:', workerErr);
-    return _gifFallback(absUrl, relUrl, existingData);
-  }
-
-  if (!frames || frames.length === 0) {
-    return _gifFallback(absUrl, relUrl, existingData);
-  }
-
-  return _buildFabricGif(frames, canvasW, canvasH, existingData, relUrl);
-}
-
-// Fallback usando <img> nativa (anima apenas se o browser suportar no canvas)
-function _gifFallback(absUrl, relUrl, existingData) {
-  return new Promise((resolve, reject) => {
-    const imgEl = new Image();
-    imgEl.crossOrigin = 'anonymous';
-    imgEl.onload = () => {
-      const fabricImg = new fabric.Image(imgEl, {
-        left:    0, top: 0,
-        id:      existingData ? existingData.id      : genId(),
-        layerId: existingData ? existingData.layerId : activeLayerId,
-        _gifUrl: relUrl, _isGif: true,
-      });
-      if (existingData) {
-        fabricImg.set({
-          left: existingData.left ?? 0, top: existingData.top ?? 0,
-          scaleX: existingData.scaleX ?? 1, scaleY: existingData.scaleY ?? 1,
-          angle: existingData.angle ?? 0, opacity: existingData.opacity ?? 1,
-          flipX: existingData.flipX ?? false, flipY: existingData.flipY ?? false,
-        });
-      } else {
-        const maxW = (window.innerWidth * 0.5) / canvas.getZoom();
-        const s = imgEl.naturalWidth > maxW ? maxW / imgEl.naturalWidth : 1;
-        fabricImg.scale(s);
-        placeNewImage(fabricImg);
-      }
-      fabricImg.setCoords();
-      resolve(fabricImg);
-    };
-    imgEl.onerror = () => reject(new Error('Falha ao carregar GIF: ' + absUrl));
-    imgEl.src = absUrl;
-  });
-}
-
-async function placeImageFromUrl(url) {
-  if (isGifUrl(url)) {
-    return placeGif(url, null);
-  }
-  return new Promise(resolve => {
-    fabric.Image.fromURL(absoluteImgUrl(url), img => {
-      img.id = genId();
-      placeNewImage(img);
-      resolve(img);
-    }, { crossOrigin: 'anonymous' });
-  });
-}
-
-async function insertImg(inp) {
-  const file = inp.files[0]; if (!file) return; inp.value = '';
-  try {
-    const url = await uploadFile(file);
-    const img = await placeImageFromUrl(url);  // placeImageFromUrl já trata GIFs
-    addToCanvas(img);
-    canvas.setActiveObject(img); canvas.renderAll(); emitFull(img); hideToast();
-  } catch (e) { hideToast(); alert('Erro: ' + e.message); }
-}
 
 // ── Helpers de inserção de imagem externa ─────────────────────────────────────
 async function insertFromExternalUrl(rawUrl, dropPos) {
@@ -3198,7 +2850,7 @@ function loadState(state) {
 }
 
 function pts2path(pts) { return pts.reduce((a, p, i) => i === 0 ? 'M ' + p.x + ' ' + p.y : a + ' L ' + p.x + ' ' + p.y, ''); }
-function genId() { return Math.random().toString(36).slice(2, 10) + Date.now().toString(36); }
+export function genId() { return Math.random().toString(36).slice(2, 10) + Date.now().toString(36); }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ATALHOS DE TECLADO

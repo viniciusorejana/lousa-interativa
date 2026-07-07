@@ -97,6 +97,33 @@ server/
       > funções de UI passaram por uma ponte manual), então o roteiro completo do
       > `CHECKLIST.md` precisa ser rodado com atenção redobrada.
 - [ ] Fase 3 (parte 2) / Fase 4 — extrair tools/ e features/ de dentro de board-app.js
+  - [x] `features/media/gif-service.js` (227 linhas) — subsistema completo de GIFs
+        animados (decodificação em WebWorker, loop de animação, registro de GIFs
+        ativos). `board-app.js`: 3.661 → 3.450 linhas.
+        > **Padrão de import "circular" adotado a partir daqui**: `gif-service.js`
+        > importa `genId`, `activeLayerId`, `placeNewImage`, `addToCanvas`,
+        > `emitFull`, `hideToast`, `absoluteImgUrl`, `uploadFile` de volta de
+        > `board-app.js` (que por sua vez importa `gif-service.js`). Isso é seguro
+        > em ES Modules **desde que nenhum dos dois lados use o binding importado
+        > no nível superior do módulo** — só dentro de corpo de função, chamado em
+        > resposta a um evento (clique, socket, timer), bem depois de todos os
+        > módulos já terem terminado de avaliar. Confirmei isso manualmente nesta
+        > extração antes de fechar. Extrair um "core/board-state.js" próprio pra
+        > eliminar esses ciclos por completo exigiria consolidar ~15-20 helpers
+        > genéricos de uma vez só — um investimento grande por si só; o ciclo
+        > controlado é a opção mais segura e incremental por enquanto.
+  - [x] `features/export/png-exporter.js` (147 linhas) — as 3 estratégias de export
+        (objeto único, seleção, board inteiro) e o helper compartilhado de
+        renderização usado também pelo "copiar como imagem" do clipboard.
+        `board-app.js`: 3.450 → 3.313 linhas.
+  - [ ] `features/layers/` (painel de camadas)
+  - [ ] `features/groups/` (agrupar/desagrupar)
+  - [ ] `features/export/` (exportar PNG)
+  - [ ] `features/spawn-area/` (área reservada)
+  - [ ] `features/remote-users/` (cursores/traços remotos)
+  - [ ] `features/clipboard/` (paste/drag-drop/copiar-colar)
+  - [ ] `features/onboarding/` (tooltip, tutorial)
+  - [ ] `ui/` (toolbar, room switch, etc.)
 - [ ] Fase 4 — client features
 - [ ] Fase 5 — client UI + entrypoints
 - [ ] Fase 6 — CSS
