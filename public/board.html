@@ -92,7 +92,13 @@
   </div>
   <div class="cr"><span class="cl">Largura</span><input type="number" class="ci" id="cw" min="1" oninput="resizeSel('w',this.value)"></div>
   <div class="cr"><span class="cl">Altura</span><input type="number" class="ci" id="ch" min="1" oninput="resizeSel('h',this.value)"></div>
-  <div class="cr"><span class="cl">Opacidade</span><input type="number" class="ci" id="cop" min="0" max="100" oninput="setSelOp(this.value)"></div>
+  <div class="cr" id="ctx-op-row">
+    <span class="cl">Opacidade</span>
+    <div style="display:flex;gap:4px;align-items:center">
+      <input type="range" id="cop" min="0" max="100" value="100" style="width:60px;accent-color:var(--accent)" oninput="setSelOp(this.value)">
+      <span class="cl" id="cop-v">100%</span>
+    </div>
+  </div>
   <button class="cb" onclick="sendBackFront('back')">⬇ Para trás</button>
   <button class="cb" onclick="sendBackFront('front')">⬆ Para frente</button>
   <button class="cb" onclick="exportSelectionOrBoardAsPNG()">⬇ Exportar PNG</button>
@@ -119,7 +125,34 @@
     <div class="vp-sep"></div>
     <button class="vp-btn accent" onclick="fitViewport()">⊙ Ir para Viewport</button>
     <div id="vp-coords">1920 × 1080 px</div>
+    <div class="vp-sep"></div>
+    <div class="vp-row" style="margin-bottom:6px">
+      <span class="vp-label">📡 Live de fundo</span>
+    </div>
+    <select class="vp-input" id="live-bg-platform" style="width:100%;margin-bottom:6px">
+      <option value="auto">Auto-detectar</option>
+      <option value="youtube">YouTube</option>
+      <option value="twitch">Twitch</option>
+      <option value="kick">Kick</option>
+    </select>
+    <input type="text" class="vp-input" id="live-bg-url" placeholder="URL ou canal (ex: twitch.tv/canal)" style="width:100%;margin-bottom:6px" onkeydown="if(event.key==='Enter')applyLiveBg()">
+    <button class="vp-btn" id="live-bg-toggle-btn" onclick="toggleLiveBg()">▶ Mostrar transmissão</button>
+    <button class="vp-btn" id="live-bg-interact-btn" onclick="toggleLiveBgInteract()" disabled>🖱️ Interagir com a live</button>
+    <div class="vp-row" style="margin-top:8px">
+      <span class="vp-label">Opacidade</span>
+      <div style="display:flex;gap:4px;align-items:center">
+        <input type="range" id="live-bg-opacity" min="10" max="100" value="100" style="width:60px;accent-color:var(--accent)" oninput="setLiveBgOpacity(this.value)">
+        <span class="vp-label" id="live-bg-opacity-v">100%</span>
+      </div>
+    </div>
+    <div id="live-bg-status" style="font-size:10px;color:var(--muted);text-align:center;margin-top:6px;line-height:1.4">Visível só para você, enquanto edita — não aparece na view do OBS.</div>
   </div>
+</div>
+
+<!-- Camada de fundo com a transmissão ao vivo (referência local, NUNCA enviada
+     via socket e ausente em view.html — visível apenas para quem está editando) -->
+<div id="live-bg-layer" style="position:fixed;inset:0;overflow:hidden;pointer-events:none;z-index:0;display:none">
+  <iframe id="live-bg-iframe" style="position:absolute;border:0;background:#000" allow="autoplay; fullscreen" allowfullscreen></iframe>
 </div>
 
 <!-- ═══════════ PAINEL DE CAMADAS ═══════════ -->

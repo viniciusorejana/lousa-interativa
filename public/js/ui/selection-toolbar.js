@@ -67,6 +67,7 @@ export function resizeSel(d, v) {
 }
 
 export function setSelOp(v) {
+  document.getElementById('cop-v').textContent = v + '%';
   getSelObjs().forEach(o => { o.set({ opacity: parseInt(v) / 100 }); emitModifyWithAbsPos(o); });
   canvas.renderAll();
 }

@@ -60,6 +60,7 @@ function drawStagingRect() {
     width: STAGING_RECT_W, height: STAGING_RECT_H,
     visible: imageSpawnMode === 'staging' || _stagingPlacementMode,
     strokeDashArray: [12, 6],
+    stroke: '#fbbf24',
     opacity: _stagingPlacementMode ? 0.65 : 1,
   });
   stagingRect.setCoords();
@@ -125,6 +126,12 @@ function _loadStagingPosIfNeeded() {
 }
 
 let _stagingPlacementMode = false; // true enquanto a pessoa está escolhendo a nova posição
+let _stagingPlacementInvalid = false; // true quando a posição atual do "mira" cai em cima do viewport
+
+// Testa sobreposição entre dois retângulos axis-aligned (left, top, w, h).
+function rectsOverlap(ax, ay, aw, ah, bx, by, bw, bh) {
+  return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
+}
 
 function getStagingOrigin() {
   _loadStagingPosIfNeeded();
@@ -263,6 +270,7 @@ updateSpawnBtnUI();
 function startStagingPlacement() {
   if (document.getElementById('trp-spawn-move').disabled) return;
   _stagingPlacementMode = true;
+  _stagingPlacementInvalid = false;
   document.getElementById('trp-spawn-move').classList.add('active');
   drawStagingRect();
   showToast('Clique no board pra definir a posição da área reservada (Esc cancela)', 4000);
@@ -270,14 +278,43 @@ function startStagingPlacement() {
 
 function cancelStagingPlacement() {
   _stagingPlacementMode = false;
+  _stagingPlacementInvalid = false;
   document.getElementById('trp-spawn-move').classList.remove('active');
   drawStagingRect();
 }
 
+// Segue o ponteiro em tempo real (só localmente) enquanto o modo "mira" está
+// ativo — chamado pelo dispatcher central de mouse:move em board-app.js.
+// Fica vermelho quando a posição atual sobrepõe o viewport oficial (que o
+// OBS captura), sinalizando que aquele clique seria recusado.
+function previewStagingPlacement(p) {
+  if (!stagingRect) return;
+  _stagingPlacementInvalid = rectsOverlap(
+    p.x, p.y, STAGING_RECT_W, STAGING_RECT_H,
+    0, 0, vpW, vpH
+  );
+  stagingRect.set({
+    left: p.x, top: p.y, visible: true,
+    stroke: _stagingPlacementInvalid ? '#ff4d4d' : '#fbbf24',
+  });
+  stagingRect.setCoords();
+  canvas.bringToFront(stagingRect);
+  canvas.renderAll();
+}
+
 function confirmStagingPlacement(pointer) {
+  const invalid = rectsOverlap(
+    pointer.x, pointer.y, STAGING_RECT_W, STAGING_RECT_H,
+    0, 0, vpW, vpH
+  );
+  if (invalid) {
+    showToast('A área reservada não pode ficar dentro do viewport — escolha outro lugar', 2600);
+    return; // permanece no modo mira pra tentar de novo
+  }
   const pos = { left: pointer.x, top: pointer.y };
   saveStagingPos(pos);
   _stagingPlacementMode = false;
+  _stagingPlacementInvalid = false;
   document.getElementById('trp-spawn-move').classList.remove('active');
   drawStagingRect();
   emitStagingSync(pos);
@@ -384,4 +421,5 @@ export {
   _stagingPlacementMode, confirmStagingPlacement, placeStagingGroup,
   initStagingSocketListeners, setStagingAreaEntries, renderAllOtherStagingAreas,
   imageSpawnMode, getStagingOrigin, emitStagingSync, cancelStagingPlacement,
+  previewStagingPlacement,
 };

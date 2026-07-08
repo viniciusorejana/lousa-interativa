@@ -340,6 +340,7 @@ input[type="color"] { width:28px; height:28px; border:1px solid var(--border); b
 .vp-btn:hover { background:var(--border); }
 .vp-btn.accent { background:rgba(124,92,255,.3); border-color:var(--accent); color:var(--accent); }
 .vp-btn.accent:hover { background:rgba(124,92,255,.5); }
+.vp-btn:disabled { opacity:.4; cursor:not-allowed; pointer-events:none; }
 .vp-sep { height:1px; background:var(--border); margin:8px 0; }
 #vp-coords { font-size:10px; color:var(--muted); text-align:center; margin-top:6px; }
 

@@ -29,6 +29,7 @@ import {
   _stagingPlacementMode, confirmStagingPlacement, placeStagingGroup,
   initStagingSocketListeners, setStagingAreaEntries,
   imageSpawnMode, getStagingOrigin, emitStagingSync, cancelStagingPlacement,
+  previewStagingPlacement,
 } from './features/spawn-area/staging-area.js';
 import {
   boardLayers, activeLayerId, hiddenObjects, objectNames, collapsedLayers,
@@ -50,6 +51,7 @@ import {
   delSel, sendBackFront, dupSel,
 } from './ui/selection-toolbar.js';
 import { changeRoom, clearAll, initHeaderButtons } from './ui/room-controls.js';
+import { initLiveBg, toggleLiveBg, toggleLiveBgInteract, applyLiveBg, setLiveBgOpacity, isLiveBgEnabled } from './features/live-bg/live-bg.js';
 // Re-exportadas: outros módulos já extraídos (gif-service, png-exporter,
 // group-service, drawing-tools, selection-toolbar, room-controls) importam
 // essas de volta daqui — ver comentário no topo deste arquivo sobre o padrão
@@ -328,10 +330,7 @@ canvas.on('mouse:move', opt => {
   // Modo "mira" de reposicionamento da área reservada: o retângulo tracejado
   // segue o ponteiro em tempo real (só localmente) até o próximo clique.
   if (_stagingPlacementMode && stagingRect) {
-    stagingRect.set({ left: p.x, top: p.y, visible: true });
-    stagingRect.setCoords();
-    canvas.bringToFront(stagingRect);
-    canvas.renderAll();
+    previewStagingPlacement(p);
     return;
   }
 
@@ -429,6 +428,7 @@ export const myClientId = localStorage.getItem('lb_clientId') || (() => {
 
 export const socket = LB.createSocket({ type: 'editor', userName: myUserName, roomId: myRoomId, clientId: myClientId });
 initStagingSocketListeners(); // precisa rodar só depois que `socket` acima existe (ver staging-area.js)
+initLiveBg(); // idem — depende de myRoomId acima (ver live-bg.js)
 
 socket.on('connect', () => {
   document.getElementById('sdot').className = 'sdot on';
@@ -578,13 +578,13 @@ socket.on('ungroup:commit', ({ groupId, children: childrenData, zorder }) => {
   scheduleLayersUpdate();
 });
 socket.on('board:clear', () => {
-  canvas.clear(); canvas.backgroundColor = '#1e1e2a'; canvas.renderAll();
+  canvas.clear(); canvas.backgroundColor = isLiveBgEnabled() ? 'transparent' : '#1e1e2a'; canvas.renderAll();
   createViewportRect();
   hiddenObjects.clear();
   scheduleLayersUpdate();
 });
 socket.on('board:sync', st => {
-  canvas.clear(); canvas.backgroundColor = '#1e1e2a';
+  canvas.clear(); canvas.backgroundColor = isLiveBgEnabled() ? 'transparent' : '#1e1e2a';
   hiddenObjects.clear();
   if (st && st.layers && st.layers.length) { boardLayers.length = 0; boardLayers.push(...st.layers); }
   ensureActiveLayer();
@@ -1198,6 +1198,7 @@ Object.assign(window, {
   scheduleLayersUpdate, toggleLayerVisibility, moveLayer, deleteLayer,
   toggleObjVisibility, deleteObjById, togglePathGroup, deletePathGroup,
   closeBoardTutorial, btutNav,
+  toggleLiveBg, toggleLiveBgInteract, applyLiveBg, setLiveBgOpacity,
 });
 // `collapsedLayers`/`collapsedGroups` são Sets referenciados diretamente por
 // identificador em atributos inline (ex: collapsedLayers.has(...)) — por

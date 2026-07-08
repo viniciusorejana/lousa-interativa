@@ -179,6 +179,7 @@ export function updCtx() {
   document.getElementById('cw').value  = multi ? '' : Math.round(o.getScaledWidth());
   document.getElementById('ch').value  = multi ? '' : Math.round(o.getScaledHeight());
   document.getElementById('cop').value = Math.round((o.opacity || 1) * 100);
+  document.getElementById('cop-v').textContent = Math.round((o.opacity || 1) * 100) + '%';
 
   // Cor de stroke/texto
   const isText = o.type === 'i-text' || o.type === 'text';
