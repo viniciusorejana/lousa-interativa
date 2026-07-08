@@ -28,6 +28,52 @@ export const objectNames     = {};
 const collapsedLayers = new Set();
 export const typeCounters    = {};
 
+// ── Seleção múltipla pelo painel (shift/ctrl+click) ───────────────────────────
+// clickableEntries: lista, na ordem visual (topo→fundo, cruzando camadas), de
+// cada item clicável do painel → array de ids de objetos fabric que ele representa
+// (1 id para um objeto normal, N ids para um grupo de traços "N traços").
+// selectionAnchor: ids da última entrada clicada sem shift, usada como âncora do range.
+let clickableEntries = [];
+let selectionAnchor  = null;
+
+function objectsFromIds(ids) { return ids.map(id => findById(id)).filter(Boolean); }
+
+function applyPanelSelection(objs) {
+  if (!objs.length) { canvas.discardActiveObject(); }
+  else if (objs.length === 1) { canvas.setActiveObject(objs[0]); }
+  else {
+    canvas.discardActiveObject();
+    canvas.setActiveObject(new fabric.ActiveSelection(objs, { canvas }));
+  }
+  canvas.renderAll();
+  scheduleLayersUpdate();
+}
+
+// Trata o clique num item do painel considerando shift (range) e ctrl/cmd (toggle).
+// entryIds = ids representados por esse item específico.
+function handlePanelItemClick(e, entryIds) {
+  if (e.shiftKey && selectionAnchor) {
+    const anchorIdx  = clickableEntries.findIndex(ids => ids[0] === selectionAnchor[0]);
+    const currentIdx = clickableEntries.findIndex(ids => ids[0] === entryIds[0]);
+    if (anchorIdx !== -1 && currentIdx !== -1) {
+      const [from, to] = anchorIdx < currentIdx ? [anchorIdx, currentIdx] : [currentIdx, anchorIdx];
+      const rangeIds = clickableEntries.slice(from, to + 1).flat();
+      applyPanelSelection(objectsFromIds(rangeIds));
+      return;
+    }
+  }
+  if (e.ctrlKey || e.metaKey) {
+    const current = new Set(canvas.getActiveObjects().map(o => o.id));
+    const allPresent = entryIds.every(id => current.has(id));
+    entryIds.forEach(id => allPresent ? current.delete(id) : current.add(id));
+    applyPanelSelection(objectsFromIds([...current]));
+    selectionAnchor = entryIds;
+    return;
+  }
+  applyPanelSelection(objectsFromIds(entryIds));
+  selectionAnchor = entryIds;
+}
+
 export function scheduleLayersUpdate()  { clearTimeout(layersUpdateTimer); layersUpdateTimer = setTimeout(updateLayersPanel, 80); }
 function scheduleLayersPanel()   { scheduleLayersUpdate(); }
 
@@ -209,6 +255,7 @@ function updateLayersPanel() {
 
   const canvasSel = new Set(canvas.getActiveObjects().map(o => o.id));
   list.innerHTML = '';
+  clickableEntries = [];
 
   // Renderiza do topo para o fundo (boardLayers[0] = topo)
   boardLayers.forEach(layer => {
@@ -351,12 +398,16 @@ function updateLayersPanel() {
           startRename(obj.id, e.currentTarget);
         });
 
-        // Click simples → selecionar (delay de 200ms para não conflitar com dblclick)
+        clickableEntries.push([obj.id]);
+
+        // Click simples → selecionar; shift+click = intervalo; ctrl/cmd+click = alternar
+        // (delay de 200ms para não conflitar com dblclick)
         item.addEventListener('click', e => {
           if (e.target.closest('.layer-action-btn,.layer-drag-handle,.layer-expand-btn')) return;
           clearTimeout(item._clickTimer);
+          const shiftKey = e.shiftKey, ctrlKey = e.ctrlKey, metaKey = e.metaKey;
           item._clickTimer = setTimeout(() => {
-            canvas.setActiveObject(obj); canvas.renderAll(); scheduleLayersUpdate();
+            handlePanelItemClick({ shiftKey, ctrlKey, metaKey }, [obj.id]);
           }, 200);
         });
 
@@ -431,8 +482,9 @@ function updateLayersPanel() {
             ? `<svg width="11" height="11" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`
             : `<svg width="11" height="11" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
 
+          const pathItemSelected = pathGroup.some(p => canvasSel.has(p.id));
           const pathItem = document.createElement('div');
-          pathItem.className = 'layer-item';
+          pathItem.className = 'layer-item' + (pathItemSelected ? ' selected' : '');
           pathItem.style.paddingLeft = '18px';
           pathItem.style.cursor = 'default';
           pathItem.draggable = true;
@@ -457,18 +509,13 @@ function updateLayersPanel() {
               </button>
             </div>`;
 
+          const pathGroupIds = pathGroup.map(p => p.id);
+          clickableEntries.push(pathGroupIds);
+
+          // Seleciona todos os traços do grupo no canvas; shift = intervalo, ctrl/cmd = alternar
           pathItem.addEventListener('click', e => {
             if (e.target.closest('.layer-action-btn,.layer-drag-handle')) return;
-            // Seleciona todos os traços do grupo no canvas
-            const pathObjs = pathGroup.map(p => findById(p.id)).filter(Boolean);
-            if (pathObjs.length === 1) {
-              canvas.setActiveObject(pathObjs[0]);
-            } else if (pathObjs.length > 1) {
-              const sel = new fabric.ActiveSelection(pathObjs, { canvas });
-              canvas.setActiveObject(sel);
-            }
-            canvas.renderAll();
-            scheduleLayersUpdate();
+            handlePanelItemClick(e, pathGroupIds);
           });
           pathItem.addEventListener('dragstart', e => {
             layerDragSrcId = pathGroup[0].id;
