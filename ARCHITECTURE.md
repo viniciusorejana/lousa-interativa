@@ -36,6 +36,97 @@ server/
 └── utils/          → helpers puros (slugify, arquivos)
 ```
 
+## ⚠️ Bug real encontrado (fase 4g) — corrigido
+
+Ao testar `lousa-interativa-fase4g.zip`, apareceu em produção:
+```
+Uncaught ReferenceError: Cannot access 'myRoomId' before initialization
+    at staging-area.js:107:41
+```
+
+**Causa**: violei minha própria regra do padrão de import circular ("só usar o
+binding importado dentro de corpo de função, nunca no nível superior do
+módulo") em dois pontos de `staging-area.js` sem perceber:
+1. `const _stagingPosKey = \`lb_stagingPos_${myRoomId}\`;` — lia `myRoomId`
+   (de `board-app.js`) direto no nível superior do módulo.
+2. `socket.on('staging:sync', ...)` / `socket.on('staging:remove', ...)` —
+   registrados direto no nível superior, lendo `socket` (também de
+   `board-app.js`) antes da hora.
+
+Como `board-app.js` importa `staging-area.js`, e `staging-area.js` importa de
+volta `myRoomId`/`socket` de `board-app.js`, na hora em que o loader de
+módulos avalia `staging-area.js` (no meio da resolução dos imports de
+`board-app.js`, **antes** do corpo do próprio `board-app.js` rodar), essas
+duas variáveis ainda estão em TDZ (declaradas, mas não inicializadas).
+
+**Correção**: `_stagingPosKey` virou uma função (calcula a chave só quando
+chamada, nunca no nível superior) e `_stagingPos` passou a ser carregado do
+`localStorage` de forma preguiçosa, no primeiro uso real. Os dois
+`socket.on(...)` foram movidos pra dentro de uma função
+`initStagingSocketListeners()`, exportada e chamada por `board-app.js`
+**depois** que sua própria `const socket = ...` já rodou.
+
+**Rede de segurança nova**: criei `test-harness/` (mocks mínimos de
+`fabric`/`socket.io`/DOM/`localStorage` + `test-harness/import-test.mjs`), que
+**importa de verdade** o grafo inteiro de módulos em Node — e Node implementa
+a mesma semântica de import circular/TDZ que o navegador. Isso reproduz
+exatamente esse tipo de bug sem precisar de navegador. Confirmei que ele pega
+esse bug específico (reintroduzi de propósito, o teste falhou com a mensagem
+exata que você viu; corrigido, passa). Rodo isso a partir de agora em toda
+extração futura, além das validações que já fazia. Para rodar manualmente:
+```bash
+node test-harness/import-test.mjs
+```
+Também reauditei **todos** os módulos já extraídos (grep sistemático por uso
+de binding circular fora de corpo de função) — só `staging-area.js` tinha o
+problema; os outros 7 módulos já extraídos passam no teste de importação.
+
+## ⚠️ Mais 2 bugs encontrados (mesma rodada) — corrigidos, e o teste ficou mais forte
+
+Depois da correção acima, você reportou um SEGUNDO erro:
+```
+Uncaught (in promise) ReferenceError: _stagingAreaEntries is not defined
+    at board-app.js:458
+```
+
+Esse era de uma classe **diferente** do primeiro: não é TDZ de import circular,
+é simplesmente eu ter esquecido de exportar/importar uma variável durante a
+extração — `_stagingAreaEntries` era privada de `staging-area.js`, e
+`board-app.js` tentava reatribuí-la direto (o que também não seria válido pra
+um binding importado; virou um setter exportado `setStagingAreaEntries()`).
+
+Isso me fez desconfiar de mais casos assim, então rodei uma auditoria
+sistemática (script comparando identificadores privados de cada módulo contra
+o que `board-app.js` referencia) e achei **mais 4**: `cancelStagingPlacement`,
+`emitStagingSync`, `getStagingOrigin`, `imageSpawnMode` — todos usados em
+`board-app.js` (atalho de teclado Esc, e a lógica de colar com "spawn: área
+reservada" ativo) sem terem sido exportados. Corrigidos.
+
+**Por que meu harness anterior não pegou isso**: `import-test.mjs` só testava
+se o grafo de módulos **importava** sem erro (avaliação de nível superior).
+Esses bugs só se manifestam quando um **handler de evento roda de verdade**
+(ex: o servidor manda `board:init`) — código que só executa em resposta a
+algo, não na importação. Reforcei o teste: agora, depois de importar o grafo,
+ele **dispara os 17 eventos de socket** que o client escuta (com payloads
+realistas) e falha especificamente em `ReferenceError` (a assinatura exata de
+"esqueci de exportar/importar"). Rodando esse teste reforçado eu achei mais um:
+`vpRect is not defined` dentro do handler de `staging:sync` — também
+corrigido (esquecimento simples de import).
+
+Depois dessas 3 correções + o teste reforçado, rodei tudo de novo do zero e
+está limpo (só resta um aviso cosmético de `TypeError` num mock incompleto do
+harness, sem relação com bug real). Fiz também as duas auditorias sistemáticas
+(módulo→board-app.js e board-app.js→módulos) nos 8 módulos já extraídos —
+nenhum outro caso encontrado.
+
+**Lição pra mim**: extrações que tocam em handlers de evento (socket, teclado)
+precisam do teste disparando o evento de verdade, não só verificando que o
+arquivo importa. Vou rodar `node test-harness/import-test.mjs` (versão
+reforçada) em toda extração daqui pra frente, e vou revisar com mais cuidado
+cada `export`/`import` antes de considerar uma extração pronta.
+
+---
+
 ## Status por fase
 
 - [x] **Fase 0** — estrutura de pastas criada, nenhuma lógica movida ainda. App continua
@@ -142,7 +233,28 @@ server/
         canvas/socket/estado (só DOM), então **sem import circular** — os primeiros
         dois módulos desta refatoração que não precisaram desse padrão.
         `board-app.js`: 2.642 → 2.495 linhas.
-  - [ ] `features/spawn-area/` (área reservada)
+  - [x] `core/serialization.js` (120 linhas) — converte objetos Fabric em dados
+        serializáveis (`ser`, `serTransform`, `serTransformAbsolute`) usados por
+        socket, histórico de undo/redo, grupos e camadas. `board-app.js`: 2.495 →
+        2.386 linhas.
+        > Diferente das extrações anteriores, este módulo **não precisou** do
+        > padrão de import circular — só depende de `canvas`. Aproveitei pra
+        > **reduzir** a circularidade dos módulos já extraídos: `gif-service.js` e
+        > `group-service.js`/`layers-panel.js` agora importam `absoluteImgUrl`/`ser`
+        > direto daqui, em vez de circularmente de volta de `board-app.js`.
+  - [x] `features/spawn-area/staging-area.js` (359 linhas) — onde novas
+        imagens/gifs/objetos colados "nascem" (centralizado ou em área
+        reservada), posição por cliente, e áreas dos outros usuários mostradas
+        no board. `board-app.js`: 2.386 → 2.052 linhas.
+        > Esta extração ficou espalhada em duas partes não-contíguas do arquivo
+        > original (uma delas — criar/desenhar o retângulo tracejado — vivia
+        > perto do dispatcher central de mouse). O dispatcher (`canvas.on('mouse:
+        > move'/'down')`) continua em `board-app.js` de propósito: ele decide entre
+        > pan/desenho/seleção/reposicionar-área a cada evento, então é um hub
+        > compartilhado por várias features, não algo que pertence só à área
+        > reservada. Ele importa de volta `stagingRect`/`_stagingPlacementMode`/
+        > `confirmStagingPlacement` (circular). Também simplifiquei: `gif-service.js`
+        > agora importa `placeNewImage` direto daqui, sem passar por `board-app.js`.
   - [ ] `features/remote-users/` (cursores/traços remotos)
   - [ ] `features/clipboard/` (paste/drag-drop/copiar-colar)
   - [ ] `ui/` (toolbar, room switch, etc.)

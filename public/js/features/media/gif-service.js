@@ -6,9 +6,11 @@
 // módulos já terminaram de avaliar). Ver ARCHITECTURE.md para o racional
 // completo desse padrão.
 import { canvas } from '../../core/canvas-manager.js';
+import { absoluteImgUrl } from '../../core/serialization.js';
+import { placeNewImage } from '../spawn-area/staging-area.js';
 import {
-  genId, activeLayerId, placeNewImage, addToCanvas, emitFull, hideToast,
-  absoluteImgUrl, uploadFile,
+  genId, activeLayerId, addToCanvas, emitFull, hideToast,
+  uploadFile,
 } from '../../board-app.js';
 
 // ── Imagens e GIFs animados ───────────────────────────────────────────────────

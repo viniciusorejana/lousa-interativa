@@ -1,5 +1,35 @@
 # Checklist de testes manuais por fase
 
+## ⚠️ Bug real encontrado e corrigido (obrigado por reportar!)
+
+A fase4g quebrou: `ReferenceError: Cannot access 'myRoomId' before initialization`
+em `staging-area.js`. Causa e correção completas em `ARCHITECTURE.md`. Resumo: dois
+pontos usavam uma variável de import circular no nível superior do módulo (fora de
+função) — violei minha própria regra de segurança nesses dois pontos específicos.
+Corrigido, e criei `test-harness/import-test.mjs`, que agora roda em toda extração
+futura e teria pego esse bug antes de eu te mandar o zip (confirmei reproduzindo o
+bug de propósito e vendo o teste falhar com a mensagem exata que você viu).
+
+**Por favor, antes de continuar**: testa o zip desta mensagem (fase4g corrigida) —
+principalmente item 13 (área reservada) de novo, e o roteiro completo se tiver tempo,
+já que esse erro na inicialização do módulo poderia ter afetado o carregamento da
+página inteira, não só a área reservada.
+
+## ⚠️ Mais 2 bugs na mesma rodada — corrigidos, e o teste automático ficou mais forte
+
+Depois da primeira correção, apareceu `_stagingAreaEntries is not defined` — variável
+esquecida na extração (não exportada). Auditando sistematicamente achei mais 4 casos
+do mesmo tipo (`cancelStagingPlacement`, `emitStagingSync`, `getStagingOrigin`,
+`imageSpawnMode`), e reforcei `test-harness/import-test.mjs` pra disparar os 17
+eventos de socket que o client escuta (não só testar a importação) — isso pegou mais
+um (`vpRect`). Detalhes completos em `ARCHITECTURE.md`. Tudo corrigido e revalidado.
+
+**Por favor, testa esse zip com o roteiro completo (itens 1-19)?** Essa rodada de bugs
+tocou em bastante coisa: atalho de teclado Esc, colar com "spawn: área reservada"
+ativo, e sincronização de área reservada entre usuários.
+
+---
+
 Sem testes automatizados no projeto, cada fase da refatoração deve ser validada
 manualmente com este roteiro antes de seguir para a próxima. Rode com:
 
@@ -113,6 +143,18 @@ npm run dev
       **Peça de atenção**: tooltip ao passar o mouse nos botões da toolbar, e o
       tutorial completo (abrir pelo botão de ajuda, navegar com setas do teclado e
       Escape, botão "Apagar e fechar" na última página).
+- [x] **`core/serialization.js`** — validado: sintaxe (5 arquivos tocados), zero
+      duplicata, ponte íntegra, todos os arquivos servidos e byte-idênticos, socket
+      saudável. Essa mudança é "invisível" pro usuário (não muda nenhum
+      comportamento visível) — o roteiro completo continua sendo a melhor forma de
+      validar, já que serialização entra em quase tudo (undo/redo, grupos, camadas,
+      streaming de formas).
+- [x] **`features/spawn-area/staging-area.js`** — validado: sintaxe, zero duplicata,
+      ponte íntegra, arquivos servidos e byte-idênticos, socket saudável. **Peço
+      atenção no item 13**: ligar "Spawn: área reservada", mover a área reservada
+      (modo mira + clique pra confirmar), clique direito pra resetar posição,
+      inserir imagem/gif com o modo ativo, e — se possível — testar com 2 abas pra
+      ver a área reservada de outro usuário aparecer com o nome/cor dele.
 - [ ] Fase 3 (parte 2) / Fase 4 — rodar itens 7-11, 13, 14, 19 conforme cada feature for
       extraída de board-app.js pra seu próprio arquivo.
 - [ ] Fase 4 — rodar itens 7-11, 13, 14, 19 (foco: camadas, grupos, export, mídia,

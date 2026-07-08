@@ -5,9 +5,10 @@
 // camadas. Import circular controlado com board-app.js — só usado dentro de
 // corpo de função (ver ARCHITECTURE.md).
 import { canvas } from '../../core/canvas-manager.js';
+import { ser } from '../../core/serialization.js';
 import { activeGifs } from '../media/gif-service.js';
 import { updateLayerToolbar } from '../groups/group-service.js';
-import { socket, ser, genId, showToast, findById, vpRect } from '../../board-app.js';
+import { socket, genId, showToast, findById, vpRect } from '../../board-app.js';
 
 // ── Sistema de camadas ────────────────────────────────────────────────────────
 export const boardLayers = [{ id: 'layer-default', name: 'Camada 1', visible: true }];
