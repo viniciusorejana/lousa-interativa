@@ -46,6 +46,13 @@ const events = {
   'staging:remove': { clientId: 'c2' },
   'cursor:move': { userId: 'u2', userName: 'Outro', color: 'blue', x: 10, y: 10 },
   'cursor:remove': 'u2',
+  'draw:start': { userId: 'u2', x: 0, y: 0, color: 'blue', width: 4, opacity: 1 },
+  'draw:move': { userId: 'u2', x: 5, y: 5 },
+  'draw:end': { userId: 'u2', object: null },
+  'shape:start': { userId: 'u2', shapeId: 's1', tool: 'rect', x: 0, y: 0, color: 'blue', width: 4, opacity: 1, fillShape: false },
+  'shape:move': { userId: 'u2', x: 5, y: 5 },
+  'shape:end': { userId: 'u2', object: null },
+  'shape:cancel': { userId: 'u2' },
   'board:sync': { objects: {}, layers: [{ id: 'layer-default', name: 'Camada 1', visible: true }], viewport: { x: 0, y: 0, w: 1920, h: 1080 }, stagingAreas: {} },
   'board:clear': undefined,
 };

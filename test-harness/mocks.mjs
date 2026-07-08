@@ -18,6 +18,11 @@ class FakeFabricObject extends EventEmitter {
   get() { return undefined; }
   remove() {}
 }
+// fabric.Path tem assinatura (pathString, opts) — diferente dos outros
+// construtores fabric.* usados aqui, que recebem só (opts).
+class FakePath extends FakeFabricObject {
+  constructor(path, opts) { super(opts); this.path = path; }
+}
 class FakeCanvas extends EventEmitter {
   constructor() {
     super();
@@ -46,6 +51,7 @@ globalThis.fabric = {
   Textbox: FakeFabricObject,
   Circle: FakeFabricObject,
   Line: FakeFabricObject,
+  Path: FakePath,
   Group: Object.assign(FakeFabricObject, {
     fromObject: (obj, cb) => cb(new FakeFabricObject(obj)),
   }),
@@ -86,6 +92,7 @@ class FakeElement {
   removeEventListener() {}
   appendChild(child) { this.children.push(child); return child; }
   removeChild() {}
+  remove() {}
   querySelector() { return new FakeElement(); }
   querySelectorAll() { return []; }
   setAttribute() {} getAttribute() { return null; }

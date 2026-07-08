@@ -155,6 +155,44 @@ npm run dev
       (modo mira + clique pra confirmar), clique direito pra resetar posição,
       inserir imagem/gif com o modo ativo, e — se possível — testar com 2 abas pra
       ver a área reservada de outro usuário aparecer com o nome/cor dele.
+- [x] **`features/remote-users/remote-users.js`** — validado: sintaxe, zero duplicata,
+      ponte íntegra (nenhuma dessas funções é chamada por `onclick` inline), servidor
+      real testado via handshake Engine.IO (sem `socket.io-client` instalado como
+      dependência, não dá pra testar via cliente real fora do navegador), arquivos
+      servidos e byte-idênticos. **Peço atenção no item 15**: abrir 2 abas na mesma
+      sala e confirmar que aparecem, em tempo real na outra aba: (a) o cursor remoto
+      com nome/cor, (b) o traço da caneta enquanto está sendo desenhado (não só no
+      final), e (c) o preview de forma (retângulo/elipse/linha/seta) enquanto está
+      sendo arrastada.
+- [x] **`features/clipboard/clipboard.js`** — validado: sintaxe, zero duplicata,
+      ponte íntegra (`copySel` só é usado pelo atalho Ctrl+C, não por `onclick`
+      inline), servidor real testado (HTTP 200 + byte-idêntico), handshake
+      Engine.IO OK. **Peço atenção especial aqui** — paste/drag-drop são
+      eventos de DOM real (não passam pelo socket), o `test-harness/` não
+      consegue simular isso, então esta extração depende ainda mais do teu
+      teste manual. Roteiro: item 9 (colar imagem de URL/arquivo/screenshot),
+      item 11 (copiar Ctrl+C e colar Ctrl+V um objeto do board — deve
+      reconstruir editável, não virar imagem estática), arrastar um arquivo de
+      imagem do sistema operacional pro board, arrastar uma imagem de outra
+      aba/site pro board, e copiar/cola r com "Spawn: área reservada" ativo
+      (deve nascer dentro da área reservada, não na posição original).
+- [x] **`features/drawing-tools/drawing-tools.js`** — validado: sintaxe, zero duplicata,
+      ponte íntegra (`setTool`/`setColor`/`setSz`/`setOp`/`setFillShape` continuam
+      sendo as únicas 5 funções chamadas por `onclick`/`onchange`/`oninput` inline
+      relacionadas a ferramentas — conferido contra `board.html`), test-harness
+      25/25 eventos OK (nenhum novo evento de socket foi introduzido — a mudança é
+      só de organização interna), servidor real testado (HTTP 200 + byte-idêntico
+      para os dois arquivos), handshake Engine.IO OK. Era a extração mais arriscada
+      pendente (o dispatcher central de pointer down/move/up) — os listeners brutos
+      de mouse/touch continuam em `board-app.js` (hub compartilhado com pan/staging),
+      só a lógica de "o que cada ferramenta faz" migrou. **Peço atenção redobrada**
+      nos itens 3 (desenho: caneta + as 4 formas), 4 (select/transform), 5
+      (cor/espessura/opacidade, inclusive durante o desenho da forma, não só antes),
+      6 (pan — inclusive alternar pan ↔ ferramenta de desenho e o atalho de espaço),
+      e explicitamente: trocar de ferramenta no meio de um desenho de forma (deve
+      cancelar o preview e emitir `shape:cancel`), usar a borracha, e testar em touch
+      (celular/tablet ou emulação no DevTools) já que os handlers de touch continuam
+      em `board-app.js` chamando de volta as funções deste módulo.
 - [ ] Fase 3 (parte 2) / Fase 4 — rodar itens 7-11, 13, 14, 19 conforme cada feature for
       extraída de board-app.js pra seu próprio arquivo.
 - [ ] Fase 4 — rodar itens 7-11, 13, 14, 19 (foco: camadas, grupos, export, mídia,

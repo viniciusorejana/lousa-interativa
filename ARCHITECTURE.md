@@ -255,8 +255,93 @@ cada `export`/`import` antes de considerar uma extração pronta.
         > reservada. Ele importa de volta `stagingRect`/`_stagingPlacementMode`/
         > `confirmStagingPlacement` (circular). Também simplifiquei: `gif-service.js`
         > agora importa `placeNewImage` direto daqui, sem passar por `board-app.js`.
-  - [ ] `features/remote-users/` (cursores/traços remotos)
-  - [ ] `features/clipboard/` (paste/drag-drop/copiar-colar)
+  - [x] `features/remote-users/remote-users.js` (114 linhas) — renderização de
+        cursores, traço livre (pen) e formas (retângulo/elipse/linha/seta) de
+        outros usuários conectados na sala, recebidos via socket (`draw:*`,
+        `shape:*`, `cursor:move`/`cursor:remove`). `board-app.js`: 2.055 →
+        **1.954 linhas**.
+        > Extração isolada e "burra": só renderiza o que chega do servidor,
+        > nenhum estado é compartilhado com outro módulo já extraído. Precisou
+        > do padrão de import circular de sempre — importa `socket`, `vpRect`,
+        > `myId`, `applyFull`, `mkShape`, `pts2path` de volta de `board-app.js`,
+        > usados só dentro dos corpos das callbacks de `socket.on(...)` (nunca
+        > no nível superior do módulo). Segue o mesmo padrão de
+        > `initStagingSocketListeners()`: exporta `initRemoteUsersSocketListeners()`,
+        > chamada em `board-app.js` só depois de `socket` já existir. `myId`
+        > virou `export let` (só leitura por quem importa, continua reatribuído
+        > normalmente dentro do próprio `board-app.js`); `applyFull`/`mkShape`/
+        > `pts2path` ganharam `export` (já existiam, usados por várias outras
+        > partes de `board-app.js` — não migraram, só passaram a ser
+        > reexportados).
+        > Reforcei o `test-harness/`: os eventos `draw:start/move/end` e
+        > `shape:start/move/end/cancel` nunca tinham sido cobertos pelo teste
+        > automático (só `cursor:move`/`cursor:remove` estavam lá) — adicionei
+        > os 7 que faltavam em `import-test.mjs` (17 → 25 eventos cobertos) e
+        > completei o mock `fabric` com `Path` (assinatura própria, diferente
+        > dos outros construtores fabric.*) e `FakeElement.remove()` em
+        > `mocks.mjs`, que faltavam e geravam avisos de falso-positivo.
+  - [x] `features/clipboard/clipboard.js` (310 linhas) — paste do clipboard do
+        sistema (objetos do board via marcador oculto, arquivo de imagem, URL
+        de imagem/texto), drag-and-drop (arquivo do SO ou imagem de outra aba),
+        e copiar/colar interno (`copySel`/`pasteBoardObjects`, grava PNG +
+        dados originais no clipboard do sistema). `board-app.js`: 1.954 →
+        **1.666 linhas**.
+        > Maior redução de linhas desde `layers-panel.js`. Precisou do padrão
+        > de import circular de sempre — importa `socket`, `vpRect`, `deser`,
+        > `genId`, `emitFull`, `addToCanvas`, `showToast`, `hideToast`,
+        > `uploadFile` de volta de `board-app.js` (ganharam `export`; já
+        > existiam, usados por outras partes do arquivo — não migraram). Os
+        > demais imports (`ser`, `renderObjectsAsDataURL`, `isGifUrl`/
+        > `placeGif`/`placeImageFromUrl`, `activeLayerId`/`assignDefaultName`/
+        > `scheduleLayersUpdate`, `imageSpawnMode`/`placeStagingGroup`/
+        > `stagingRect`) vieram direto dos módulos donos (serialization,
+        > png-exporter, gif-service, layers-panel, staging-area), sem passar
+        > por `board-app.js` — reduz a circularidade em vez de empilhar mais
+        > uma camada nela.
+        > Diferente de `remote-users.js` (que precisou de um `init...()` chamado
+        > depois de `socket` existir), aqui os listeners de `window`/`canvas`
+        > (`paste`, `dragover`, `drop`) são registrados direto no nível
+        > superior do módulo — seguro porque `canvas` não é circular (vem de
+        > `core/canvas-manager.js`, já totalmente avaliado antes) e nenhum
+        > binding circular (`socket`, `vpRect`, etc.) é lido fora do corpo das
+        > próprias callbacks, só chamadas muito depois, quando o usuário cola/
+        > arrasta algo.
+        > `copySel` é exportado e importado de volta em `board-app.js` só para
+        > o atalho Ctrl+C do teclado — não é chamado por `onclick` inline.
+  - [x] `features/drawing-tools/drawing-tools.js` (178 linhas) — estado da
+        ferramenta ativa (`tool`/`color`/`sz`/`op`/`fillShape`) e a lógica de
+        pointer down/move/up que decide o que cada ferramenta faz a cada
+        evento: `getCanvasPoint`, `handlePointerDown`, `updateTmpShape`,
+        `handlePointerUp`, `setTool`, `setColor`, `setSz`, `setOp`,
+        `setFillShape`. `board-app.js`: 1.666 → **1.522 linhas**.
+        > Esta era a peça mais arriscada que faltava (ver nota da fase 3): o
+        > registro bruto dos listeners de mouse/touch (`wheel`, `mousedown`
+        > de pan, `touchstart/move/end`, `canvas.on('mouse:move'/'down'/
+        > 'up')`) **continua** em `board-app.js` de propósito — é um hub
+        > compartilhado por pan e pela área reservada (staging) além deste
+        > módulo, então não pertence só a "ferramentas de desenho". O que
+        > migrou foi a "Strategy" de cada ferramenta: o que fazer no
+        > pointer-down/move/up dado o `tool` ativo.
+        > Import circular de sempre: `socket`, `vpRect`, `findById`, `genId`,
+        > `mkShape`, `addToCanvas`, `emitFull`, `throttle60`, `addText`,
+        > `isPanMode`, `spaceHeld`, `enterPanMode`, `exitPanMode`,
+        > `layoutSidePanels`, `scheduleLayersUpdate` vêm de volta de
+        > `board-app.js` (ganharam `export`; usados só dentro de corpo de
+        > função). `ser` veio direto de `core/serialization.js`, sem passar
+        > por `board-app.js`.
+        > Caso especial: `penActive` precisou de um setter exportado
+        > (`setPenActive`) em vez de só um `export let` — os handlers de
+        > touch/mouse que ficaram em `board-app.js` (`touchstart`, `touchend`,
+        > `canvas.on('mouse:up')`) reatribuíam `penActive` diretamente antes
+        > da extração, e um binding importado não pode ser reatribuído por
+        > quem importa, só mutado por quem o exporta. `tool`, `isDrawing`,
+        > `drawStart`, `color`, `sz`, `op`, `fillShape` continuam só lidos
+        > (nunca reatribuídos) fora do novo módulo, então bastou `export let`.
+        > **Não é ainda** o Strategy pattern completo mencionado na Fase 3
+        > (arquivos separados por ferramenta em `tools/`) — é a extração que
+        > isola a lógica hoje toda num módulo só; separar select/pan/pen/
+        > shape/text em arquivos próprios fica para uma fase futura, quando
+        > fizer sentido revisitar.
   - [ ] `ui/` (toolbar, room switch, etc.)
 - [ ] Fase 4 — client features
 - [ ] Fase 5 — client UI + entrypoints

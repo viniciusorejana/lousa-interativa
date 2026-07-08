@@ -37,6 +37,13 @@ import {
   toggleLayerVisibility, moveLayer, applyLayerZOrder, updateLayersPanel,
   toggleObjVisibility, togglePathGroup, deletePathGroup, deleteObjById,
 } from './features/layers/layers-panel.js';
+import { initRemoteUsersSocketListeners } from './features/remote-users/remote-users.js';
+import { copySel } from './features/clipboard/clipboard.js';
+import {
+  tool, color, sz, op, fillShape, isDrawing, drawStart, penActive,
+  getCanvasPoint, handlePointerDown, updateTmpShape, handlePointerUp,
+  setTool, setColor, setSz, setOp, setFillShape, setPenActive,
+} from './features/drawing-tools/drawing-tools.js';
 // Re-exportadas: outros módulos já extraídos (gif-service, png-exporter,
 // group-service) importam essas de volta daqui — ver comentário no topo
 // deste arquivo sobre o padrão de import circular.
@@ -52,27 +59,23 @@ setResizeHook(() => drawViewportRect());
 // ═══════════════════════════════════════════════════════════════════════════════
 // ESTADO GERAL
 // ═══════════════════════════════════════════════════════════════════════════════
-let tool = 'select', color = '#ffffff', sz = 4, op = 1, fillShape = false;
-let myId = null;
-let isDrawing = false, drawStart = null, tmpShapeId = null;
-let penActive = false;
-const remoteStrokes = {}, remoteCursors = {};
+export let myId = null;
 
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ── FUNCIONALIDADE 1: PAN / NAVEGAÇÃO ──────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════════
-let isPanMode   = false;   // ferramenta pan ativa
+export let isPanMode = false;   // ferramenta pan ativa
 let isPanning   = false;   // está arrastando agora
 let panLastX    = 0, panLastY = 0;
-let spaceHeld   = false;   // espaço pressionado = pan temporário
+export let spaceHeld = false;   // espaço pressionado = pan temporário
 let prevTool    = 'select';
 
 // Dois dedos mobile
 let touchLastDist = null, touchLastMidX = null, touchLastMidY = null;
 let isTwoFinger = false;
 
-function enterPanMode() {
+export function enterPanMode() {
   isPanMode = true;
   canvas.isDrawingMode = false;
   canvas.selection = false;
@@ -80,7 +83,7 @@ function enterPanMode() {
   canvas.hoverCursor  = 'grab';
   document.body.classList.add('pan-mode');
 }
-function exitPanMode() {
+export function exitPanMode() {
   isPanMode = false;
   canvas.hoverCursor = 'move';
   document.body.classList.remove('pan-mode');
@@ -168,7 +171,7 @@ canvasEl.addEventListener('touchstart', e => {
 
   // Fallback para lógica normal (ferramenta de desenho)
   if (tool === 'pen' && !spaceHeld) {
-    penActive = true;
+    setPenActive(true);
     const p = getCanvasPoint(e);
     socket.emit('draw:start', { x: p.x, y: p.y, color, width: sz, opacity: op });
     return;
@@ -241,7 +244,7 @@ canvasEl.addEventListener('touchmove', e => {
 canvasEl.addEventListener('touchend', e => {
   if (isTwoFinger) { isTwoFinger = false; touchLastDist = null; e.preventDefault(); return; }
   if (isPanMode && isPanning) { isPanning = false; e.preventDefault(); return; }
-  if (tool === 'pen') { penActive = false; return; }
+  if (tool === 'pen') { setPenActive(false); return; }
   e.preventDefault();
   const p = getCanvasPoint(e);
   handlePointerUp({ x: p.x, y: p.y });
@@ -336,7 +339,7 @@ canvas.on('mouse:move', opt => {
 });
 
 canvas.on('mouse:up', opt => {
-  if (tool === 'pen') { penActive = false; return; }
+  if (tool === 'pen') { setPenActive(false); return; }
   handlePointerUp(canvas.getPointer(opt.e));
 });
 
@@ -635,110 +638,9 @@ socket.on('layers:update', layers => {
   scheduleLayersPanel();
 });
 
-// Stroke streaming
-socket.on('draw:start', ({ userId, x, y, color: c, width: w, opacity: opa }) => {
-  if (userId === myId) return;
-  const p = new fabric.Path('M ' + x + ' ' + y, {
-    stroke: c, strokeWidth: w, fill: null, opacity: opa,
-    strokeLineCap: 'round', strokeLineJoin: 'round', selectable: false, evented: false
-  });
-  remoteStrokes[userId] = { path: p, pts: [{ x, y }] };
-  canvas.add(p); canvas.renderAll();
-});
-socket.on('draw:move', ({ userId, x, y }) => {
-  if (userId === myId) return;
-  const s = remoteStrokes[userId];
-  if (!s) return;
-  s.pts.push({ x, y });
-  // IMPORTANTE: mutar path.set({path: ...}) num fabric.Path já existente NÃO
-  // recalcula left/top/width/height/pathOffset — o objeto fica "travado" na
-  // caixa delimitadora minúscula do primeiro ponto, fazendo o traço parecer
-  // comprimido numa área pequena perto do início. A correção é recriar o
-  // objeto Path do zero a cada frame (mesma estratégia já usada nas formas).
-  const styleOpts = {
-    stroke: s.path.stroke, strokeWidth: s.path.strokeWidth, fill: null,
-    opacity: s.path.opacity, strokeLineCap: 'round', strokeLineJoin: 'round',
-    selectable: false, evented: false,
-  };
-  canvas.remove(s.path);
-  s.path = new fabric.Path(pts2path(s.pts), styleOpts);
-  canvas.add(s.path);
-  if (vpRect) canvas.bringToFront(vpRect);
-  canvas.requestRenderAll();
-});
-socket.on('draw:end', ({ userId, object }) => {
-  if (userId === myId) return;
-  const s = remoteStrokes[userId];
-  if (s) { canvas.remove(s.path); delete remoteStrokes[userId]; }
-  if (object) applyFull(object); else canvas.renderAll();
-});
-
-// ── Streaming de formas (retângulo, elipse, linha, seta) em tempo real ───────
-// Mesmo padrão do draw:start/move/end: cada usuário remoto tem no máximo um
-// preview temporário em andamento por vez, guardado em remoteShapes[userId].
-const remoteShapes = {};
-
-socket.on('shape:start', ({ userId, shapeId, tool: t, x, y, color: c, width: w, opacity: opa, fillShape: fs }) => {
-  if (userId === myId) return;
-  const style = { color: c, sz: w, op: opa, fillShape: fs };
-  const sh = mkShape(t, { x, y }, { x, y }, null, style);
-  if (!sh) return;
-  sh.selectable = false; sh.evented = false;
-  remoteShapes[userId] = { shapeId, tool: t, start: { x, y }, style, obj: sh };
-  canvas.add(sh);
-  if (vpRect) canvas.bringToFront(vpRect);
-  canvas.renderAll();
-});
-
-socket.on('shape:move', ({ userId, x, y }) => {
-  if (userId === myId) return;
-  const rs = remoteShapes[userId];
-  if (!rs) return;
-  canvas.remove(rs.obj);
-  const sh = mkShape(rs.tool, rs.start, { x, y }, null, rs.style);
-  if (!sh) return;
-  sh.selectable = false; sh.evented = false;
-  rs.obj = sh;
-  canvas.add(sh);
-  if (vpRect) canvas.bringToFront(vpRect);
-  canvas.requestRenderAll();
-});
-
-socket.on('shape:end', ({ userId, object }) => {
-  if (userId === myId) return;
-  const rs = remoteShapes[userId];
-  if (rs) { canvas.remove(rs.obj); delete remoteShapes[userId]; }
-  if (object) applyFull(object); else canvas.renderAll();
-});
-
-socket.on('shape:cancel', ({ userId }) => {
-  if (userId === myId) return;
-  const rs = remoteShapes[userId];
-  if (rs) { canvas.remove(rs.obj); delete remoteShapes[userId]; canvas.renderAll(); }
-});
-
-// Cursores remotos — recebidos em coordenadas do board, convertidos para tela
-socket.on('cursor:move', ({ userId, userName: uName, color: c, x, y }) => {
-  if (userId === myId) return;
-  if (!remoteCursors[userId]) {
-    const el = document.createElement('div');
-    el.className = 'rcursor';
-    const label = uName || userId; // usa nome se disponível, cai para ID
-    el.innerHTML = `<svg width="20" height="20" viewBox="0 0 20 20" fill="${c}"><path d="M5 2l12 7.5-6.5.5-3 6.5z"/></svg><span class="rcname" style="background:${c}">${label}</span>`;
-    document.body.appendChild(el);
-    remoteCursors[userId] = el;
-  }
-  // Converte do espaço do board para a tela, respeitando zoom e pan atuais
-  const zoom = canvas.getZoom();
-  const vpt  = canvas.viewportTransform;
-  const sx   = x * zoom + vpt[4];
-  const sy   = y * zoom + vpt[5];
-  remoteCursors[userId].style.left = sx + 'px';
-  remoteCursors[userId].style.top  = sy + 'px';
-});
-socket.on('cursor:remove', uid => {
-  if (remoteCursors[uid]) { remoteCursors[uid].remove(); delete remoteCursors[uid]; }
-});
+// Streaming de traço/formas de outros usuários e cursores remotos — ver
+// features/remote-users/remote-users.js (init chamado logo após `socket` acima).
+initRemoteUsersSocketListeners();
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // APLICAÇÃO DE DADOS RECEBIDOS
@@ -749,7 +651,7 @@ socket.on('cursor:remove', uid => {
 const loadingQueue = {};  // id → último data recebido enquanto carregando
 const loadingNow   = new Set();  // ids que estão no meio de um fromURL
 
-function applyFull(data, render = true) {
+export function applyFull(data, render = true) {
   if (!data || !data.id) return;
 
   // Se já está carregando esse objeto, guarda o update mais recente para depois
@@ -835,7 +737,7 @@ function applyTransformOnly(data) {
 // EMIT — SYNC
 // ═══════════════════════════════════════════════════════════════════════════════
 let lastSyncMs = 0;
-function throttle60(fn) {
+export function throttle60(fn) {
   const now = Date.now();
   if (now - lastSyncMs < 16) return;
   lastSyncMs = now;
@@ -936,156 +838,13 @@ canvas.on('object:modified',   updCtx);
 canvas.on('selection:cleared', () => { document.getElementById('ctx').style.display = 'none'; layoutSidePanels(); });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// POINTER LOGIC
+// POINTER LOGIC / FERRAMENTAS
 // ═══════════════════════════════════════════════════════════════════════════════
-function getCanvasPoint(e) {
-  const rect = canvas.upperCanvasEl.getBoundingClientRect();
-  let clientX, clientY;
-  if (e.touches && e.touches.length > 0) { clientX = e.touches[0].clientX; clientY = e.touches[0].clientY; }
-  else if (e.changedTouches && e.changedTouches.length > 0) { clientX = e.changedTouches[0].clientX; clientY = e.changedTouches[0].clientY; }
-  else { clientX = e.clientX; clientY = e.clientY; }
-  const zoom = canvas.getZoom();
-  const vpt  = canvas.viewportTransform;
-  return {
-    x: (clientX - rect.left - vpt[4]) / zoom,
-    y: (clientY - rect.top  - vpt[5]) / zoom,
-    clientX, clientY
-  };
-}
-
-function handlePointerDown(p, target) {
-  if (isPanMode || spaceHeld) return;
-  if (tool === 'eraser') {
-    if (target && target.id && !target._isViewportRect) { const id = target.id; canvas.remove(target); canvas.renderAll();
-      socket.emit('object:remove', [id]);
-      scheduleLayersUpdate();
-    }
-    return;
-  }
-  if (tool === 'text') { addText(p); return; }
-  if (tool === 'pen') {
-    penActive = true;
-    socket.emit('draw:start', { x: p.x, y: p.y, color, width: sz, opacity: op });
-    return;
-  }
-  if (['rect','circle','line','arrow'].includes(tool)) {
-    isDrawing = true;
-    drawStart = { x: p.x, y: p.y };
-    tmpShapeId = genId();
-    // Notifica outros clientes que uma forma começou a ser desenhada — eles vão
-    // criar um preview local que acompanha o arraste em tempo real (mesmo
-    // mecanismo do draw:start/move/end usado pela caneta livre).
-    socket.emit('shape:start', {
-      shapeId: tmpShapeId, tool, x: p.x, y: p.y,
-      color, width: sz, opacity: op, fillShape,
-    });
-  }
-}
-
-function updateTmpShape(p) {
-  if (!isDrawing || !drawStart) return;
-  const prev = findById(tmpShapeId);
-  if (prev) canvas.remove(prev);
-  const sh = mkShape(tool, drawStart, p, tmpShapeId);
-  if (!sh) return;
-  canvas.add(sh);
-  if (vpRect) canvas.bringToFront(vpRect);
-  canvas.requestRenderAll();
-  throttle60(() => {
-    socket.emit('shape:move', { shapeId: tmpShapeId, x: p.x, y: p.y });
-  });
-}
-
-function handlePointerUp(p) {
-  penActive = false;
-  if (!isDrawing) return;
-  isDrawing = false;
-  const prev = findById(tmpShapeId);
-  if (prev) canvas.remove(prev);
-  const dx = Math.abs(p.x - drawStart.x), dy = Math.abs(p.y - drawStart.y);
-  if (dx > 3 || dy > 3) {
-    const sh = mkShape(tool, drawStart, p, tmpShapeId);
-    if (sh) {
-      addToCanvas(sh);
-      canvas.renderAll();
-      emitFull(sh);
-      // Avisa os outros clientes para removerem o preview temporário e mostra
-      // o objeto final (mesmo padrão do draw:end da caneta livre).
-      socket.emit('shape:end', { shapeId: tmpShapeId, object: ser(sh) });
-    }
-  } else {
-    socket.emit('shape:cancel', { shapeId: tmpShapeId });
-  }
-  drawStart = null; tmpShapeId = null;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// FERRAMENTAS
-// ═══════════════════════════════════════════════════════════════════════════════
-function setTool(t) {
-  // Sai do pan mode se estava nele
-  if (isPanMode && t !== 'pan') exitPanMode();
-
-  tool = t;
-  document.querySelectorAll('.tb-btn').forEach(b => b.classList.remove('active'));
-  const btn = document.getElementById('t-' + t); if (btn) btn.classList.add('active');
-  const opts = document.getElementById('opts');
-  isDrawing = false; drawStart = null;
-  const prev = findById(tmpShapeId);
-  if (prev) { canvas.remove(prev); canvas.renderAll(); socket.emit('shape:cancel', { shapeId: tmpShapeId }); }
-  tmpShapeId = null;
-
-  // Uma seleção que ficou "presa" de uma ação anterior bloqueia silenciosamente
-  // o mouse:down de qualquer ferramenta de desenho (o guard abaixo checa
-  // getActiveObjects().length > 0). Ao trocar para qualquer ferramenta que não
-  // seja "select", garante que não sobrou nada selecionado.
-  if (t !== 'select' && canvas.getActiveObjects().length > 0) {
-    canvas.discardActiveObject();
-    canvas.renderAll();
-  }
-
-  if (t === 'pan') {
-    enterPanMode();
-    opts.classList.add('hidden');
-    layoutSidePanels();
-    return;
-  }
-  if (t === 'select') {
-    canvas.isDrawingMode = false; canvas.selection = true;
-    canvas.skipTargetFind = false;
-    canvas.defaultCursor = 'default'; opts.classList.add('hidden');
-  } else if (t === 'pen') {
-    canvas.isDrawingMode = true; canvas.selection = false;
-    canvas.skipTargetFind = true;
-    canvas.freeDrawingBrush = new fabric.PencilBrush(canvas);
-    canvas.freeDrawingBrush.color = color; canvas.freeDrawingBrush.width = sz;
-    opts.classList.remove('hidden');
-  } else {
-    canvas.isDrawingMode = false; canvas.selection = false;
-    // skipTargetFind impede que o Fabric selecione/arraste um objeto já
-    // existente ao clicar em cima dele com uma ferramenta de desenho — o
-    // clique deve sempre iniciar uma forma/texto novo, nunca selecionar o que
-    // já está no board. A borracha é a exceção: ela precisa que o Fabric
-    // identifique o objeto sob o cursor pra saber o que apagar.
-    canvas.skipTargetFind = (t !== 'eraser');
-    canvas.defaultCursor = t === 'eraser' ? 'cell' : 'crosshair';
-    opts.classList.remove('hidden');
-  }
-
-  // Mantém o painel de spawn, o painel view/ajuda (canto superior esquerdo),
-  // o painel de propriedades do objeto selecionado (#ctx) e o painel de
-  // Camadas todos coordenados entre si — ver layoutSidePanels().
-  layoutSidePanels();
-}
-
-function setColor(c, el) {
-  color = c;
-  document.querySelectorAll('.swatch').forEach(s => s.classList.remove('sel'));
-  if (el) el.classList.add('sel');
-  if (canvas.freeDrawingBrush) canvas.freeDrawingBrush.color = c;
-}
-function setSz(v) { sz = parseInt(v); document.getElementById('szv').textContent = v; if (canvas.freeDrawingBrush) canvas.freeDrawingBrush.width = sz; }
-function setOp(v) { op = parseInt(v) / 100; document.getElementById('opv').textContent = v + '%'; if (canvas.freeDrawingBrush) canvas.freeDrawingBrush.opacity = op; }
+// getCanvasPoint, handlePointerDown/Up, updateTmpShape, setTool, setColor,
+// setSz, setOp, setFillShape — ver features/drawing-tools/drawing-tools.js
+// (importado no topo deste arquivo). O registro bruto dos listeners de
+// mouse/touch (acima e no wheel/mousedown de pan) continua aqui: é um hub
+// compartilhado também por pan e pela área reservada.
 
 function updCtx() {
   const objs = canvas.getActiveObjects().filter(o => !o._isViewportRect);
@@ -1273,7 +1032,7 @@ function repositionLayersPanel() {
 // dele, que por sua vez precisa se acomodar antes do #layers-panel medir a
 // borda dele; top-left-panel depende da mesma área acomodada também; e o
 // vp-panel depende do top-left-panel já estar no lugar certo).
-function layoutSidePanels() {
+export function layoutSidePanels() {
   updSpawnPanelPos();
   updTopLeftPanelPos();
   updVpPanelPos();
@@ -1359,7 +1118,7 @@ function delSel() {
 // ═══════════════════════════════════════════════════════════════════════════════
 // CRIAÇÃO DE FORMAS
 // ═══════════════════════════════════════════════════════════════════════════════
-function mkShape(t, s, e, id, style) {
+export function mkShape(t, s, e, id, style) {
   const st   = style || { color, sz, op, fillShape };
   const oid  = id || genId();
   const base = {
@@ -1407,7 +1166,7 @@ function mkShape(t, s, e, id, style) {
 // ═══════════════════════════════════════════════════════════════════════════════
 // TEXTO
 // ═══════════════════════════════════════════════════════════════════════════════
-function addText(pos) {
+export function addText(pos) {
   const t = new fabric.IText('Texto', {
     left: pos.x, top: pos.y, id: genId(),
     fill: color, fontSize: Math.max(16, sz * 4),
@@ -1459,159 +1218,9 @@ export async function uploadFile(file) {
 
 
 
-// ── Helpers de inserção de imagem externa ─────────────────────────────────────
-async function insertFromExternalUrl(rawUrl, dropPos) {
-  const url = rawUrl.trim();
-  const imgUrlRe = /^https?:\/\/.+\.(png|jpe?g|gif|webp|svg|bmp)(\?.*)?$/i;
-  if (!imgUrlRe.test(url) && !dropPos) return false; // só exige extensão no paste; drop tenta qualquer src
-
-  showToast('Carregando imagem...');
-  try {
-    const proxyUrl = '/api/img-proxy?url=' + encodeURIComponent(url);
-    if (isGifUrl(url)) {
-      const gif = await placeGif(proxyUrl, dropPos || null);
-      if (dropPos) {
-        gif.set({ left: dropPos.x - gif.getScaledWidth()/2, top: dropPos.y - gif.getScaledHeight()/2 });
-        gif.setCoords();
-      }
-      addToCanvas(gif);
-      canvas.setActiveObject(gif); canvas.renderAll(); emitFull(gif); hideToast();
-    } else {
-      const r = await fetch(proxyUrl);
-      if (!r.ok) throw new Error('Status ' + r.status);
-      const blob = await r.blob();
-      if (!blob.type.startsWith('image/')) throw new Error('Não é uma imagem');
-      const ext  = url.split('?')[0].split('.').pop().toLowerCase() || 'png';
-      const file = new File([blob], 'imagem.' + ext, { type: blob.type });
-      const uploadUrl = await uploadFile(file);
-      const img = await placeImageFromUrl(uploadUrl);
-      if (dropPos) {
-        img.set({ left: dropPos.x - img.getScaledWidth()/2, top: dropPos.y - img.getScaledHeight()/2 });
-        img.setCoords();
-      }
-      addToCanvas(img);
-      canvas.setActiveObject(img); canvas.renderAll(); emitFull(img); hideToast();
-    }
-    return true;
-  } catch (err) {
-    hideToast();
-    alert('Erro ao carregar imagem: ' + err.message);
-    return false;
-  }
-}
-
-// ── Paste ─────────────────────────────────────────────────────────────────────
-// Tudo passa pelo clipboard do sistema (evento 'paste' nativo do navegador),
-// não existe mais um clipboard interno próprio do board. Ao copiar (copySel),
-// gravamos no clipboard do sistema tanto uma imagem PNG da seleção (para colar
-// em qualquer outro app) quanto os dados originais dos objetos, escondidos
-// dentro do text/html sob o marcador BOARD_CLIPBOARD_MARKER. Ao colar, se esse
-// marcador estiver presente, reconstruímos os objetos originais (editáveis);
-// caso contrário, tratamos como imagem/URL externa normalmente.
-window.addEventListener('paste', async e => {
-  // Não intercepta colagem de texto normal em campos de edição (inputs,
-  // textarea, contentEditable — inclui a textarea oculta que o Fabric usa
-  // para edição de texto no board).
-  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return;
-
-  // 1. Dados de objetos do board colados via clipboard do sistema (copiados
-  //    dentro do próprio LiveBoard, nesta ou em outra sessão/aba). Tem
-  //    prioridade sobre a imagem: reconstrói os objetos originais e editáveis.
-  const html = e.clipboardData?.getData('text/html') || '';
-  const boardMatch = html.match(BOARD_CLIPBOARD_RE);
-  if (boardMatch) {
-    e.preventDefault();
-    try {
-      const data = JSON.parse(b64DecodeUtf8(boardMatch[1]));
-      await pasteBoardObjects(data);
-    } catch (err) {
-      console.error('Falha ao colar objetos do board:', err);
-    }
-    return;
-  }
-
-  const items = Array.from(e.clipboardData?.items || []);
-
-  // 2. Arquivo de imagem no clipboard (screenshot, Ctrl+C de imagem, ou PNG
-  //    copiado deste próprio board sem o marcador acima — ex: colado em outra
-  //    aba/dispositivo onde o texto/html não foi preservado)
-  const imgFile = items.find(i => i.type.startsWith('image/'));
-  if (imgFile) {
-    e.preventDefault();
-    try {
-      const url = await uploadFile(imgFile.getAsFile());
-      const img = await placeImageFromUrl(url);
-      addToCanvas(img);
-      canvas.setActiveObject(img); canvas.renderAll(); emitFull(img); hideToast();
-    } catch (err) { hideToast(); alert('Erro: ' + err.message); }
-    return;
-  }
-
-  // 3. URL de imagem colada como texto (colar link)
-  const imgUrlRe = /^https?:\/\/.+\.(png|jpe?g|gif|webp|svg|bmp)(\?.*)?$/i;
-  const text = (e.clipboardData.getData('text/plain') || '').trim();
-  if (imgUrlRe.test(text)) {
-    e.preventDefault();
-    await insertFromExternalUrl(text, null);
-  }
-});
-
-// ── Drag-and-drop ─────────────────────────────────────────────────────────────
-// IMPORTANTE: o Fabric.js envolve o <canvas> original num wrapperEl e cria um
-// upper-canvas por cima dele — é o upper-canvas que recebe todos os eventos de
-// ponteiro. Ligar dragover/drop no elemento <canvas> original nunca funciona;
-// precisa ser no wrapperEl (contêiner pai comum a lower e upper canvas).
-const _boardEl = canvas.wrapperEl;
-
-// Proteção global: impede que o browser abra a imagem em nova aba/navegue caso
-// o usuário solte fora da área exata do canvas (fora do wrapperEl).
-window.addEventListener('dragover', e => e.preventDefault());
-window.addEventListener('drop', e => { if (e.target !== _boardEl && !_boardEl.contains(e.target)) e.preventDefault(); });
-
-_boardEl.addEventListener('dragover', e => {
-  e.preventDefault();
-  e.dataTransfer.dropEffect = 'copy';
-});
-
-_boardEl.addEventListener('drop', async e => {
-  e.preventDefault();
-  e.stopPropagation();
-
-  const rect = _boardEl.getBoundingClientRect();
-  const zoom = canvas.getZoom();
-  const vpt  = canvas.viewportTransform;
-  const dropPos = {
-    x: (e.clientX - rect.left - vpt[4]) / zoom,
-    y: (e.clientY - rect.top  - vpt[5]) / zoom,
-  };
-
-  // 1. Arquivo(s) do sistema operacional
-  const files = Array.from(e.dataTransfer.files || []).filter(f => f.type.startsWith('image/'));
-  if (files.length) {
-    for (const file of files) {
-      try {
-        showToast('Enviando...');
-        const url = await uploadFile(file);
-        const img = await placeImageFromUrl(url);
-        img.set({ left: dropPos.x - img.getScaledWidth()/2, top: dropPos.y - img.getScaledHeight()/2 });
-        img.setCoords();
-        addToCanvas(img); canvas.setActiveObject(img); canvas.renderAll(); emitFull(img); hideToast();
-      } catch (err) { hideToast(); alert('Erro: ' + err.message); }
-    }
-    return;
-  }
-
-  // 2. Imagem arrastada de outra aba — extrai src do HTML ou URI
-  const html    = e.dataTransfer.getData('text/html') || '';
-  const srcMatch = html.match(/src=["']([^"']+)["']/i);
-  const uriList  = e.dataTransfer.getData('text/uri-list') || '';
-  const plainUrl = e.dataTransfer.getData('text/plain') || '';
-  const srcUrl   = (srcMatch && srcMatch[1]) || uriList.split('\n')[0].trim() || plainUrl.trim();
-
-  if (srcUrl && srcUrl.startsWith('http')) {
-    await insertFromExternalUrl(srcUrl, dropPos);
-  }
-});
+// Paste, drag-and-drop e o listener de 'paste' do sistema — ver
+// features/clipboard/clipboard.js (import por efeito colateral: registra os
+// listeners de window/canvas assim que o módulo carrega).
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // HISTÓRICO (colaborativo — servidor é a fonte da verdade)
@@ -1665,7 +1274,7 @@ function getFabricType(type) {
   return type in map ? map[type] : fabric[type.charAt(0).toUpperCase() + type.slice(1)];
 }
 
-function deser(data, cb) {
+export function deser(data, cb) {
   if (!data || !data.type) return;
   if (data.type === 'image') {
     if (data._isGif && (data._gifUrl || data.src)) {
@@ -1740,7 +1349,7 @@ function loadState(state) {
   }));
 }
 
-function pts2path(pts) { return pts.reduce((a, p, i) => i === 0 ? 'M ' + p.x + ' ' + p.y : a + ' L ' + p.x + ' ' + p.y, ''); }
+export function pts2path(pts) { return pts.reduce((a, p, i) => i === 0 ? 'M ' + p.x + ' ' + p.y : a + ' L ' + p.x + ' ' + p.y, ''); }
 export function genId() { return Math.random().toString(36).slice(2, 10) + Date.now().toString(36); }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1851,147 +1460,8 @@ function dupSel() {
   }, ['id', 'layerId', '_isArrow', '_isGif', '_gifUrl']));
 }
 
-// ── Copiar / Colar ──────────────────────────────────────────────────────────────
-// Usa exclusivamente o clipboard do sistema (navigator.clipboard / evento
-// 'paste'), sem clipboard interno próprio. Ao copiar, grava no clipboard do
-// sistema DUAS representações da mesma seleção:
-//   - image/png  → a seleção renderizada como imagem (igual ao "Exportar PNG"),
-//                   para colar em qualquer outro app (Word, WhatsApp, etc.)
-//   - text/html  → os dados originais dos objetos (serializados), escondidos
-//                   sob o marcador BOARD_CLIPBOARD_MARKER dentro de um
-//                   comentário HTML. Ao colar de volta no board, esses dados
-//                   têm prioridade e reconstroem os objetos originais,
-//                   editáveis — não apenas a imagem.
-const BOARD_CLIPBOARD_MARKER = 'LOUSA_BOARD_DATA';
-const BOARD_CLIPBOARD_RE = new RegExp(`<!--${BOARD_CLIPBOARD_MARKER}:([A-Za-z0-9+/=]+)-->`);
-
-let _pasteCount = 0; // incrementa a cada colagem para o offset não empilhar no mesmo lugar
-
-// Codifica/decodifica JSON (com acentos etc.) em base64 com segurança de UTF-8.
-function b64EncodeUtf8(str) { return btoa(unescape(encodeURIComponent(str))); }
-function b64DecodeUtf8(str) { return decodeURIComponent(escape(atob(str))); }
-
-// Converte um data URL (ex: "data:image/png;base64,...") em Blob, para poder
-// ser gravado no clipboard do sistema via ClipboardItem.
-function dataURLToBlob(dataUrl) {
-  const [header, base64] = dataUrl.split(',');
-  const mime = (header.match(/data:(.*?);base64/) || [])[1] || 'image/png';
-  const bin = atob(base64);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return new Blob([bytes], { type: mime });
-}
-
-async function copySel() {
-  const objs = canvas.getActiveObjects().filter(o => !o._isViewportRect);
-  if (!objs.length) return;
-
-  const serialized = objs.map(o => ser(o)).filter(Boolean);
-  if (!serialized.length) return;
-
-  _pasteCount = 0;
-
-  // Mesma renderização usada pelo "Exportar como PNG" (bounding box exata da seleção).
-  const dataUrl = renderObjectsAsDataURL(objs);
-  const html = `<!--${BOARD_CLIPBOARD_MARKER}:${b64EncodeUtf8(JSON.stringify(serialized))}-->`;
-
-  try {
-    const clipboardData = { 'text/html': new Blob([html], { type: 'text/html' }) };
-    if (dataUrl) clipboardData['image/png'] = dataURLToBlob(dataUrl);
-
-    await navigator.clipboard.write([new ClipboardItem(clipboardData)]);
-    showToast(`${serialized.length} objeto(s) copiado(s)`, 2000);
-  } catch (err) {
-    console.error('Falha ao copiar para a área de transferência do sistema:', err);
-    showToast('Não foi possível copiar para a área de transferência.', 3000);
-  }
-}
-
-// Reconstrói objetos do board a partir de dados serializados vindos do clipboard
-// do sistema (ver BOARD_CLIPBOARD_MARKER acima). Sempre gera objetos 100% novos,
-// com novos ids/elementos — nunca reaproveita referências de objetos vivos.
-async function pasteBoardObjects(dataArray) {
-  if (!dataArray || !dataArray.length) return;
-
-  canvas.discardActiveObject();
-  const pasted = [];
-
-  // Cópia profunda de tudo primeiro (nunca reaproveita refs dos dados originais).
-  const items = dataArray.map(d => JSON.parse(JSON.stringify(d)));
-
-  // Onde o conjunto colado (1 objeto, vários soltos ou grupos) vai nascer:
-  //  - 'staging' → todo o conjunto é traduzido (e, se preciso, encolhido) pra
-  //    dentro da área reservada, preservando o arranjo relativo entre as peças,
-  //    em cascata pra não empilhar exatamente sobre a colagem anterior.
-  //  - padrão ('view') → comportamento de sempre: cada colagem sucessiva sai
-  //    um pouco deslocada da posição original copiada.
-  if (imageSpawnMode === 'staging') {
-    placeStagingGroup(items);
-  } else {
-    _pasteCount++;
-    const offset = 24 * _pasteCount;
-    for (const data of items) {
-      data.left = (data.left || 0) + offset;
-      data.top  = (data.top  || 0) + offset;
-    }
-  }
-
-  for (const data of items) {
-    const newId = genId();
-
-    if (data.type === 'image' && data._isGif) {
-      // GIFs precisam passar por placeGif() para entrar no _gifRegistry
-      // e animar corretamente — clone() não registra o loop de animação.
-      data.id = newId;
-      data.layerId = activeLayerId;
-      try {
-        const gifObj = await placeGif(data._gifUrl || data.src, data);
-        addToCanvas(gifObj);
-        pasted.push(gifObj);
-      } catch (_) { /* ignora gif que falhou ao colar */ }
-      continue;
-    }
-
-    // Demais tipos (imagem comum, formas, texto, traços, grupos): deser() já
-    // resolve cada caso (inclusive grupos recursivamente e imagens via cache).
-    data.id = newId;
-    data.layerId = activeLayerId;
-    assignDefaultName(data);
-
-    await new Promise(resolve => {
-      deser(data, obj => {
-        addToCanvas(obj);
-        pasted.push(obj);
-        resolve();
-      });
-    });
-    hideToast();
-  }
-
-  if (vpRect) canvas.bringToFront(vpRect);
-  if (stagingRect) canvas.bringToFront(stagingRect);
-
-  // IMPORTANTE: serializa (captura left/top absolutos) ANTES de agrupar numa
-  // ActiveSelection. O Fabric recalcula left/top de cada objeto pra relativo
-  // ao CENTRO da seleção assim que ela é criada — se a gente serializasse
-  // depois, os outros clientes receberiam essas coordenadas relativas como
-  // se fossem absolutas, e o conjunto colado apareceria deslocado pra perto
-  // da origem do board (era exatamente o bug: só quem colou via a posição
-  // certa — os próprios objetos locais já tinham sido adicionados com a
-  // posição absoluta correta — mas o payload enviado pra rede é que saía
-  // errado).
-  const serialized = pasted.map(ser).filter(Boolean);
-
-  canvas.setActiveObject(pasted.length > 1
-    ? new fabric.ActiveSelection(pasted, { canvas })
-    : pasted[0]);
-  canvas.renderAll();
-
-  // objects:batch → applyFull no destino trata cada tipo corretamente,
-  // inclusive _isGif (decodifica via Worker e registra no _gifRegistry).
-  socket.emit('objects:batch', serialized);
-  scheduleLayersUpdate();
-}
+// copySel() — ver features/clipboard/clipboard.js (importado no topo deste
+// arquivo); chamada pelo atalho Ctrl+C mais abaixo.
 
 // ── Tooltip flutuante da toolbar ────────────────────────────────────────────
 // Substitui o .tb-tip antigo (que ficava preso dentro do overflow do #toolbar,
@@ -2024,11 +1494,8 @@ function openViewUrl() {
 // ═══════════════════════════════════════════════════════════════════════════════
 // PONTE DE COMPATIBILIDADE COM ATRIBUTOS INLINE DO HTML (onclick/onchange/...)
 // ═══════════════════════════════════════════════════════════════════════════════
-// setFillShape substitui a antiga atribuição direta `fillShape=this.checked`
-// que existia inline no HTML — um módulo ES não permite que um handler inline
-// escreva diretamente numa variável de módulo (`let fillShape`, acima), então
-// precisa passar por uma função exposta na ponte abaixo.
-function setFillShape(v) { fillShape = v; }
+// setTool/setColor/setSz/setOp/setFillShape vêm de
+// features/drawing-tools/drawing-tools.js (importadas no topo deste arquivo).
 
 // Cada nome abaixo corresponde a um atributo onclick/onchange/oninput
 // encontrado em board.html. Se um atributo inline novo for adicionado ao HTML
