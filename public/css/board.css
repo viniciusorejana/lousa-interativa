@@ -308,9 +308,11 @@ input[type="color"] { width:28px; height:28px; border:1px solid var(--border); b
      conteúdo (largura/altura/botão) é curto e fixo). Deixamos a altura
      natural do conteúdo mandar, e só entra um teto de segurança
      (max-height + scroll interno) quando a janela é curta demais pra
-     caber os ~230px que ele naturalmente precisa. */
+     caber o conteúdo. Sem teto fixo em pixels: em telas normais/altas o
+     painel cresce livremente (sem scrollbar); só telas baixas acionam o
+     scroll interno. */
   top:max(130px, 12vh);
-  max-height:min(400px, calc(100vh - 160px));
+  max-height:calc(100vh - 160px);
   transition: transform .2s, opacity .2s, top .2s;
 }
 #vp-panel.collapsed { transform:translateX(-182px); }

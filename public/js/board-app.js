@@ -785,13 +785,16 @@ function emitModifyGroup(target) {
   const isMulti = target.type === 'activeSelection';
   if (!isMulti) { emitModify(target); return; }
   const gm = target.calcTransformMatrix();
-  target.getObjects().filter(o => o.id).forEach(o => {
+  // Emite tudo junto num único evento de commit, pra virar UMA ação de
+  // histórico (senão o Ctrl+Z desfaz só o último sub-objeto do grupo).
+  const updates = target.getObjects().filter(o => o.id).map(o => {
     const abs  = serTransformAbsolute(o, gm);
     const data = ser(o);
-    if (!data) return;
+    if (!data) return null;
     Object.assign(data, abs);
-    socket.emit('object:modify', data);
-  });
+    return data;
+  }).filter(Boolean);
+  if (updates.length) socket.emit('objects:modify:commit', updates);
 }
 
 // sendBackFront vem de ui/selection-toolbar.js (importada no topo deste
@@ -813,6 +816,7 @@ canvas.on('object:modified', opt => {
 canvas.on('path:created', opt => {
   const path = opt.path; path.id = genId();
   path.layerId = activeLayerId;
+  path.set('opacity', op);
   // O Fabric já adicionou o path ao canvas automaticamente (no topo) — reforça
   // a ordem de camadas para que ele respeite a hierarquia correta.
   applyLayerZOrder();
@@ -900,7 +904,7 @@ export function mkShape(t, s, e, id, style) {
 export function addText(pos) {
   const t = new fabric.IText('Texto', {
     left: pos.x, top: pos.y, id: genId(),
-    fill: color, fontSize: Math.max(16, sz * 4),
+    fill: color, fontSize: Math.max(16, sz * 4), opacity: op,
     fontFamily: 'Segoe UI, system-ui, sans-serif',
     selectable: true, editable: true
   }); addToCanvas(t);

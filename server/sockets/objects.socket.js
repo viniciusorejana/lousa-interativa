@@ -48,6 +48,24 @@ function register(ctx) {
     scheduleSave(roomId);
   });
 
+  // Commit de transformação de multi-seleção (rotacionar/redimensionar vários
+  // objetos de uma vez) — mesma ideia do object:modify:commit, mas grava UMA
+  // única ação no histórico pra todos os objetos do grupo (Ctrl+Z desfaz o
+  // grupo inteiro de uma vez, não objeto por objeto).
+  socket.on('objects:modify:commit', list => {
+    if (!Array.isArray(list) || !list.length) return;
+    const before = {}, after = {};
+    list.forEach(data => {
+      before[data.id] = room.state.objects[data.id] || null;
+      room.state.objects[data.id] = { ...data, ts: Date.now() };
+      after[data.id] = room.state.objects[data.id];
+    });
+    pushUserAction(room, userId, { objectsBefore: before, objectsAfter: after });
+    list.forEach(data => bcast('object:modify', data));
+    broadcastHistoryFlags(io, roomId, room);
+    scheduleSave(roomId);
+  });
+
   socket.on('object:remove', ids => {
     const list = Array.isArray(ids) ? ids : [ids];
     const before = {}, after = {};
@@ -89,17 +107,18 @@ function register(ctx) {
     scheduleSave(roomId);
   });
 
+  // Eventos "ao vivo" (durante o arraste, antes de soltar o mouse) — só
+  // retransmite pros outros clientes verem o preview em tempo real. NÃO
+  // grava em room.state.objects: se gravasse aqui, o 'before' capturado
+  // pelo commit (object:modify:commit / objects:modify:commit) logo abaixo
+  // já estaria contaminado com um frame intermediário do próprio arraste, e
+  // um Ctrl+Z depois não conseguiria voltar ao estado anterior ao arraste
+  // (e ainda podia disparar falso "outro usuário alterou" no applyActionPatch).
   socket.on('object:transform', data => {
-    if (room.state.objects[data.id])
-      room.state.objects[data.id] = { ...room.state.objects[data.id], ...data };
     socket.broadcast.to(roomId).volatile.emit('object:transform', data);
   });
 
   socket.on('objects:transform', updates => {
-    updates.forEach(d => {
-      if (room.state.objects[d.id])
-        room.state.objects[d.id] = { ...room.state.objects[d.id], ...d };
-    });
     socket.broadcast.to(roomId).volatile.emit('objects:transform', updates);
   });
 

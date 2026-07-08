@@ -72,13 +72,24 @@ function updTopLeftPanelPos() {
 // Viewport (top:max(130px,12vh) do CSS) pra sobrepor os dois. O valor do CSS
 // continua sendo o mínimo — só sobe daqui se o painel view/ajuda precisar de
 // mais espaço que isso.
+//
+// Além do "top", também recalcula o max-height: reserva espaço até a borda
+// SUPERIOR real do #users (contador de editores, fixo no rodapé esquerdo —
+// mesmo canto do vp-panel), pra ele encolher (ganha scroll interno) só
+// quando estiver perto o bastante de encostar no #users, em vez de usar um
+// teto fixo em vh que não sabe da existência desse painel no rodapé.
 function updVpPanelPos() {
   const vp = document.getElementById('vp-panel');
   const tlp = document.getElementById('top-left-panel');
   if (!vp || !tlp) return;
   const cssMinTop = Math.max(130, window.innerHeight * 0.12); // espelha o "top:max(130px,12vh)" do CSS
   const tlpBottom = tlp.getBoundingClientRect().bottom;
-  vp.style.top = Math.max(cssMinTop, tlpBottom + 10) + 'px';
+  const top = Math.max(cssMinTop, tlpBottom + 10);
+  vp.style.top = top + 'px';
+
+  const users = document.getElementById('users');
+  const bottomLimit = users ? users.getBoundingClientRect().top - 12 : window.innerHeight - 12;
+  vp.style.maxHeight = Math.max(120, bottomLimit - top) + 'px';
 }
 
 // Posiciona o painel de propriedades do objeto selecionado (#ctx) logo abaixo
@@ -144,6 +155,33 @@ export function layoutSidePanels() {
   repositionLayersPanel();
 }
 window.addEventListener('resize', layoutSidePanels);
+// A chamada inicial (via setTool('select') no início do board-app.js) roda
+// antes da rede/fontes terminarem de carregar — nesse instante o toolbar/
+// opts/spawn-panel podem ainda não ter o tamanho final, então o cálculo do
+// top-left-panel/vp-panel sai errado (ex: vp-panel sobreposto pelos botões
+// do top-left-panel). 'load' garante mais um recálculo depois que tudo
+// (imagens, fontes) já assentou.
+window.addEventListener('load', layoutSidePanels);
+
+// Além dos gatilhos manuais espalhados pelo código (troca de ferramenta,
+// seleção, resize), qualquer um dos painéis "de entrada" do cálculo acima
+// (toolbar, opções da ferramenta ativa, spawn, top-left, users) pode mudar
+// de tamanho por motivos que nenhum call-site conhece — texto do nome da
+// sala/usuário que muda a largura do #users, um novo botão condicional na
+// toolbar, etc. Um ResizeObserver nesses elementos cobre TODOS esses casos
+// de uma vez, sem precisar caçar cada call-site que poderia ter esquecido
+// de chamar layoutSidePanels(). Importante: só observamos as ENTRADAS do
+// cálculo (nunca #vp-panel/#ctx/#layers-panel, que são as SAÍDAS que este
+// mesmo código escreve) — senão vira loop infinito de resize→reposiciona→
+// resize.
+if (window.ResizeObserver) {
+  const layoutInputIds = ['toolbar', 'opts', 'spawn-panel', 'top-left-panel', 'users'];
+  const ro = new ResizeObserver(() => layoutSidePanels());
+  layoutInputIds.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) ro.observe(el);
+  });
+}
 
 export function toggleVpPanel() {
   document.getElementById('vp-panel').classList.toggle('collapsed');
