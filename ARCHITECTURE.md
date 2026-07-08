@@ -342,7 +342,41 @@ cada `export`/`import` antes de considerar uma extração pronta.
         > isola a lógica hoje toda num módulo só; separar select/pan/pen/
         > shape/text em arquivos próprios fica para uma fase futura, quando
         > fizer sentido revisitar.
-  - [ ] `ui/` (toolbar, room switch, etc.)
+  - [x] `ui/` (toolbar, room switch, etc.) — última peça da Fase 4, dividida em
+        3 módulos de baixo risco (nenhum tem a lógica de canvas/desenho que
+        tornou `drawing-tools.js` arriscado):
+        - `ui/panel-layout.js` (215 linhas): posicionamento coordenado de todos
+          os painéis flutuantes (spawn, propriedades do objeto `#ctx`,
+          Camadas, Viewport, view/ajuda) e o preenchimento do painel `#ctx`
+          (`updCtx`) conforme a seleção do canvas. **Zero import circular** —
+          só depende de `canvas` (de `core/canvas-manager.js`) e do DOM, nunca
+          de `socket` ou estado compartilhado.
+        - `ui/selection-toolbar.js` (112 linhas): ações do painel `#ctx` sobre
+          `canvas.getActiveObjects()` — mudar cor/preenchimento/espessura/
+          opacidade, redimensionar, excluir, mandar pra trás/frente, duplicar
+          (Ctrl+D).
+        - `ui/room-controls.js` (40 linhas): trocar de lousa, limpar o quadro,
+          abrir a view do OBS, e o bind dos botões do painel superior direito
+          (ver ao vivo / ajuda).
+        `board-app.js`: 1.522 → **1.207 linhas** (maior redução desde
+        `layers-panel.js`).
+        > Import circular de sempre (`selection-toolbar.js`/`room-controls.js`):
+        > `socket`, `vpRect`, `scheduleLayersUpdate`, `emitModify`, `genId`,
+        > `myRoomId`, `myRoomName` vêm de volta de `board-app.js` (as duas
+        > últimas, e `emitModify`, ganharam `export` — já existiam, usadas só
+        > aqui). `ser`/`serTransformAbsolute` vêm direto de
+        > `core/serialization.js`, e `applyLayerZOrder` direto de
+        > `features/layers/layers-panel.js` — sem passar por `board-app.js`,
+        > reduzindo a circularidade em vez de empilhar mais uma camada nela.
+        > `layoutSidePanels` continua sendo **reexportada** por `board-app.js`
+        > (mesmo padrão de `activeLayerId`/`scheduleLayersUpdate`), porque
+        > `drawing-tools.js` já a importava de lá — evita ter que tocar num
+        > módulo já extraído e validado só por causa de onde a função mora
+        > agora.
+        > `sendBackFront` foi o único ponto onde troquei a forma de acessar
+        > `vpRect`: em vez de reimplementar a busca, simplesmente importei o
+        > `vpRect` (já exportado) de `board-app.js` como os outros módulos já
+        > fazem.
 - [ ] Fase 4 — client features
 - [ ] Fase 5 — client UI + entrypoints
 - [ ] Fase 6 — CSS

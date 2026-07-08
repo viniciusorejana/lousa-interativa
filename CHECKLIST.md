@@ -193,10 +193,33 @@ npm run dev
       cancelar o preview e emitir `shape:cancel`), usar a borracha, e testar em touch
       (celular/tablet ou emulação no DevTools) já que os handlers de touch continuam
       em `board-app.js` chamando de volta as funções deste módulo.
-- [ ] Fase 3 (parte 2) / Fase 4 — rodar itens 7-11, 13, 14, 19 conforme cada feature for
-      extraída de board-app.js pra seu próprio arquivo.
-- [ ] Fase 4 — rodar itens 7-11, 13, 14, 19 (foco: camadas, grupos, export, mídia,
-      clipboard, spawn area).
+- [x] **`ui/panel-layout.js`, `ui/selection-toolbar.js`, `ui/room-controls.js`** —
+      última peça da Fase 4 (a lista de `ui/` do ARCHITECTURE.md), dividida em 3
+      módulos de baixo risco (nenhum toca a lógica de canvas/desenho que
+      tornou `drawing-tools.js` arriscado — só leem `canvas.getActiveObjects()`
+      e o DOM, ou emitem eventos de socket já existentes). `board-app.js`:
+      1.522 → **1.207 linhas**. Validado: sintaxe ESM (4 arquivos tocados/
+      criados), zero identificador duplicado, ponte `window.*` conferida
+      contra `board.html` (todos os `onclick`/`onchange`/`oninput` inline
+      resolvidos: `setSelColor`, `setSelFill`, `toggleSelFill`,
+      `setSelStroke`, `resizeSel`, `setSelOp`, `sendBackFront`, `delSel`,
+      `toggleVpPanel`, `toggleLayersPanel`, `clearAll`, `changeRoom`, entre os
+      já existentes), test-harness 25/25 eventos OK, servidor real testado
+      (HTTP 200 + byte-idêntico para os 4 arquivos), handshake Engine.IO OK,
+      log do servidor limpo. **Peço atenção especial** nos itens 4
+      (select/transform — mudar cor/preenchimento/espessura/opacidade pelo
+      painel `#ctx`, redimensionar por largura/altura, excluir com Delete/
+      Backspace e pelo botão), 8 (mandar objeto/grupo pra trás/frente),
+      Ctrl+D (duplicar seleção), e o layout responsivo dos painéis flutuantes
+      (redimensionar a janela do navegador com um objeto selecionado e o
+      painel de Camadas aberto/fechado, pra conferir que nenhum painel
+      sobrepõe o outro) — é tudo que mudou de arquivo aqui. Também: botão
+      "Trocar de Lousa", "Limpar" (com confirmação), e o botão "Ver ao vivo"
+      no canto superior direito (deve abrir a `/view/<sala>` numa aba nova
+      com o tooltip mostrando o nome certo da sala).
+      >  Isso fecha a lista de extrações da Fase 3 (parte 2) / Fase 4 —
+      >  todo o conteúdo de `tools/`/`features/`/`ui/` planejado para essa fase
+      >  já saiu de dentro de `board-app.js`.
 - [ ] Fase 5 — roteiro completo (1-19) — entrypoints e UI final montados.
 - [ ] Fase 6 — roteiro completo (1-19), com atenção visual a cada tela (CSS).
 - [ ] Fase 7 — roteiro completo (1-19) como validação final.

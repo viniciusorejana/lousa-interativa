@@ -22,7 +22,7 @@ import { absoluteImgUrl, ser, serTransform, serTransformAbsolute } from './core/
 import { isGifUrl, placeGif, placeImageFromUrl, insertImg, activeGifs } from './features/media/gif-service.js';
 import { renderObjectsAsDataURL, exportSelectionOrBoardAsPNG } from './features/export/png-exporter.js';
 import { updateLayerToolbar, groupSelected, ungroupSelected } from './features/groups/group-service.js';
-import { openBoardTutorial, closeBoardTutorial, btutNav } from './features/onboarding/tutorial.js';
+import { closeBoardTutorial, btutNav } from './features/onboarding/tutorial.js';
 import './features/onboarding/tooltip.js';
 import {
   stagingRect, STAGING_RECT_W, STAGING_RECT_H, createStagingRect, drawStagingRect,
@@ -44,10 +44,17 @@ import {
   getCanvasPoint, handlePointerDown, updateTmpShape, handlePointerUp,
   setTool, setColor, setSz, setOp, setFillShape, setPenActive,
 } from './features/drawing-tools/drawing-tools.js';
+import { layoutSidePanels, toggleVpPanel, toggleLayersPanel, updCtx } from './ui/panel-layout.js';
+import {
+  setSelColor, setSelFill, toggleSelFill, setSelStroke, resizeSel, setSelOp,
+  delSel, sendBackFront, dupSel,
+} from './ui/selection-toolbar.js';
+import { changeRoom, clearAll, initHeaderButtons } from './ui/room-controls.js';
 // Re-exportadas: outros módulos já extraídos (gif-service, png-exporter,
-// group-service) importam essas de volta daqui — ver comentário no topo
-// deste arquivo sobre o padrão de import circular.
-export { activeLayerId, objectNames, typeCounters, assignDefaultName, scheduleLayersUpdate };
+// group-service, drawing-tools, selection-toolbar, room-controls) importam
+// essas de volta daqui — ver comentário no topo deste arquivo sobre o padrão
+// de import circular.
+export { activeLayerId, objectNames, typeCounters, assignDefaultName, scheduleLayersUpdate, layoutSidePanels };
 
 // Conecta o resize do canvas (definido em canvas-manager.js) ao redesenho do
 // retângulo de viewport (definido mais abaixo neste arquivo). `drawViewportRect`
@@ -395,16 +402,8 @@ function emitViewportSync() {
   socket.emit('viewport:sync', { x: 0, y: 0, w: vpW, h: vpH });
 }
 
-function toggleVpPanel() {
-  document.getElementById('vp-panel').classList.toggle('collapsed');
-}
-function toggleLayersPanel() {
-  document.getElementById('layers-panel').classList.toggle('collapsed');
-  // Recolher/expandir muda quanto espaço o painel de Camadas precisa — o
-  // painel de seleção (#ctx) reserva menos altura quando ele está recolhido.
-  layoutSidePanels();
-}
-
+// toggleVpPanel/toggleLayersPanel/layoutSidePanels/updCtx vêm de
+// ui/panel-layout.js (importadas no topo deste arquivo).
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SOCKET
@@ -414,7 +413,7 @@ const myUserName = sessionStorage.getItem('lb_username')
   || localStorage.getItem('lb_username')
   || 'Anônimo';
 export const myRoomId   = sessionStorage.getItem('lb_roomId')   || 'default';
-const myRoomName = sessionStorage.getItem('lb_roomName') || myRoomId;
+export const myRoomName = sessionStorage.getItem('lb_roomName') || myRoomId;
 
 // Identificador persistente POR NAVEGADOR — diferente do userId (que é por
 // conexão e muda a cada reconexão). Usado só pra saber "qual área reservada
@@ -775,7 +774,7 @@ export function addToCanvas(obj) {
   if (vpRect) canvas.bringToFront(vpRect);
 }
 
-function emitModify(obj) {
+export function emitModify(obj) {
   if (obj._isViewportRect || !obj.id) return;
   const s = ser(obj);
   if (s) socket.emit('object:modify:commit', s);
@@ -795,17 +794,8 @@ function emitModifyGroup(target) {
   });
 }
 
-function sendBackFront(dir) {
-  canvas.getActiveObjects().forEach(o => {
-    if (o._isViewportRect) return;
-    dir === 'back' ? canvas.sendToBack(o) : canvas.bringToFront(o);
-  });
-  if (vpRect) canvas.bringToFront(vpRect);
-  canvas.renderAll();
-  const order = canvas.getObjects().filter(o => o.id && !o._isViewportRect).map(o => o.id);
-  socket.emit('zorder:sync', order);
-  scheduleLayersUpdate();
-}
+// sendBackFront vem de ui/selection-toolbar.js (importada no topo deste
+// arquivo).
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // EVENTOS DO CANVAS
@@ -846,274 +836,15 @@ canvas.on('selection:cleared', () => { document.getElementById('ctx').style.disp
 // mouse/touch (acima e no wheel/mousedown de pan) continua aqui: é um hub
 // compartilhado também por pan e pela área reservada.
 
-function updCtx() {
-  const objs = canvas.getActiveObjects().filter(o => !o._isViewportRect);
-  if (!objs.length) { document.getElementById('ctx').style.display = 'none'; layoutSidePanels(); return; }
-  const ctx = document.getElementById('ctx');
-  ctx.style.display = 'block';
-  // Usa o primeiro objeto como referência para preencher os campos
-  const o = objs[0];
-  const multi = objs.length > 1;
-
-  // Título
-  const typeNames = { 'path':'Traço', 'rect':'Retângulo', 'ellipse':'Elipse', 'circle':'Elipse',
-    'line':'Linha', 'i-text':'Texto', 'text':'Texto', 'image':'Imagem', 'group':'Grupo' };
-  document.getElementById('ctx-title').textContent = multi
-    ? `${objs.length} objetos`
-    : (typeNames[o.type] || 'Objeto');
-
-  // Dimensões (só para seleção única)
-  document.getElementById('cw').value  = multi ? '' : Math.round(o.getScaledWidth());
-  document.getElementById('ch').value  = multi ? '' : Math.round(o.getScaledHeight());
-  document.getElementById('cop').value = Math.round((o.opacity || 1) * 100);
-
-  // Cor de stroke/texto
-  const isText = o.type === 'i-text' || o.type === 'text';
-  const strokeColor = isText ? (o.fill || '#ffffff') : (o.stroke || '#ffffff');
-  const colorEl = document.getElementById('ctx-color');
-  colorEl.value = strokeColor.startsWith('#') ? strokeColor : '#ffffff';
-  document.getElementById('ctx-color-lbl').textContent = isText ? 'texto' : 'linha';
-  const hideColor = o.type === 'image' || o.type === 'group';
-  document.getElementById('ctx-color-row').style.display = hideColor ? 'none' : 'flex';
-
-  // Preenchimento
-  const hasFill = !multi &&
-    o.type !== 'i-text' && o.type !== 'text' &&
-    o.type !== 'image' && o.type !== 'line' && o.type !== 'path';
-  document.getElementById('ctx-fill-row').style.display = hasFill ? 'flex' : 'none';
-  if (hasFill) {
-    const fillActive = o.fill && o.fill !== 'transparent' && o.fill !== '';
-    document.getElementById('ctx-fill-on').checked = !!fillActive;
-    const fillEl = document.getElementById('ctx-fill');
-    fillEl.value    = fillActive && o.fill.startsWith('#') ? o.fill : '#ffffff';
-    fillEl.disabled = !fillActive;
-  }
-
-  // Espessura
-  const hasSz = objs.every(x => x.type !== 'image' && x.type !== 'i-text' && x.type !== 'text' && x.type !== 'group');
-  document.getElementById('ctx-sz-row').style.display = hasSz ? 'flex' : 'none';
-  if (hasSz) {
-    const sw = o.strokeWidth || 1;
-    document.getElementById('ctx-sz').value = sw;
-    document.getElementById('ctx-sz-v').textContent = sw;
-  }
-
-  layoutSidePanels();
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Layout coordenado dos painéis do topo/direita (spawn-panel → #ctx →
-// #layers-panel), mais o painel superior esquerdo (view/ajuda). Cada um mede
-// a borda real do anterior via getBoundingClientRect() — nunca um número fixo
-// "no chute" — e por isso funciona igual não importa o tamanho da tela, zoom,
-// idioma dos textos, etc. Sempre chamar layoutSidePanels() (nunca as funções
-// individuais soltas), pra garantir que rodem na ordem certa: cada painel só
-// sabe se posicionar depois que o anterior já se acomodou.
-// ─────────────────────────────────────────────────────────────────────────────
-
-const LAYERS_PANEL_MIN_RESERVE = 190; // min-height do #layers-panel (180px) + folga
-
-// Borda inferior da "área ocupada" no topo-centro: toolbar + painel de opções
-// da ferramenta ativa (se visível) + painel de spawn (que fica sempre
-// centralizado logo abaixo). Usado por quem precisa saber onde essa área
-// termina pra não ficar embaixo dela (#ctx, #layers-panel).
-function getTopClearArea() {
-  const toolbar = document.getElementById('toolbar');
-  const opts = document.getElementById('opts');
-  const spawnPanel = document.getElementById('spawn-panel');
-  let bottom = toolbar.getBoundingClientRect().bottom;
-  if (opts && !opts.classList.contains('hidden')) {
-    bottom = Math.max(bottom, opts.getBoundingClientRect().bottom);
-  }
-  if (spawnPanel) bottom = Math.max(bottom, spawnPanel.getBoundingClientRect().bottom);
-  return bottom;
-}
-
-// Posiciona o painel de spawn logo abaixo da toolbar/opções — sempre
-// centralizado, em qualquer tamanho de tela (diferente do painel view/ajuda,
-// que mora num canto e só se move quando a toolbar ameaça encostar nele).
-function updSpawnPanelPos() {
-  const sp = document.getElementById('spawn-panel');
-  if (!sp) return;
-  const toolbar = document.getElementById('toolbar');
-  const opts = document.getElementById('opts');
-  let bottom = toolbar.getBoundingClientRect().bottom;
-  if (opts && !opts.classList.contains('hidden')) {
-    bottom = Math.max(bottom, opts.getBoundingClientRect().bottom);
-  }
-  sp.style.top = (bottom + 8) + 'px';
-}
-
-// Posiciona o painel "view do OBS / como usar" (canto superior esquerdo). Em
-// telas largas ele mora fixo no canto (CSS cuida disso — só limpamos qualquer
-// inline style residual). Em telas estreitas, a toolbar central (que pode
-// esticar bem perto das bordas) arrisca encostar nele, então empurramos pra
-// baixo da área ocupada no topo (toolbar/opções/spawn) só nesse caso.
-function updTopLeftPanelPos() {
-  const tlp = document.getElementById('top-left-panel');
-  if (!tlp) return;
-
-  if (window.innerWidth >= 1200) {
-    tlp.style.top = '';
-    return;
-  }
-  tlp.style.top = (getTopClearArea() + 8) + 'px';
-}
-
-// Posiciona o painel de Viewport (canto superior esquerdo, abaixo do painel
-// view/ajuda) — mede a borda inferior REAL do painel view/ajuda, pra nunca
-// ficar embaixo dele. Isso importa principalmente em telas estreitas, onde o
-// painel view/ajuda desce (empurrado pela toolbar central, ver
-// updTopLeftPanelPos) e pode chegar perto o suficiente do topo padrão do
-// Viewport (top:max(130px,12vh) do CSS) pra sobrepor os dois. O valor do CSS
-// continua sendo o mínimo — só sobe daqui se o painel view/ajuda precisar de
-// mais espaço que isso.
-function updVpPanelPos() {
-  const vp = document.getElementById('vp-panel');
-  const tlp = document.getElementById('top-left-panel');
-  if (!vp || !tlp) return;
-  const cssMinTop = Math.max(130, window.innerHeight * 0.12); // espelha o "top:max(130px,12vh)" do CSS
-  const tlpBottom = tlp.getBoundingClientRect().bottom;
-  vp.style.top = Math.max(cssMinTop, tlpBottom + 10) + 'px';
-}
-
-// Posiciona o painel de propriedades do objeto selecionado (#ctx) logo abaixo
-// de toda a área ocupada no topo (toolbar/opções/spawn) — nunca embaixo dela.
-// E, além disso, ENCOLHE a altura máxima dele (max-height) reservando espaço
-// suficiente pro painel de Camadas logo abaixo, em vez de simplesmente
-// empurrá-lo pra fora da tela. Se o de Camadas estiver recolhido (.collapsed),
-// a reserva de espaço é bem menor, já que ele não ocupa lugar nenhum nesse caso.
-function positionCtxPanel() {
-  const ctx = document.getElementById('ctx');
-  if (!ctx) return;
-
-  const top = getTopClearArea() + 12;
-  ctx.style.top = top + 'px';
-
-  const layersPanel = document.getElementById('layers-panel');
-  const layersCollapsed = layersPanel && layersPanel.classList.contains('collapsed');
-  const reserve = layersCollapsed ? 24 : (LAYERS_PANEL_MIN_RESERVE + 24); // +24 = folgas/gaps
-  const maxH = Math.max(120, window.innerHeight - top - reserve);
-  ctx.style.maxHeight = maxH + 'px';
-}
-
-// Empurra o painel de Camadas pra baixo do painel de propriedades do objeto
-// selecionado (#ctx) sempre que ele estiver visível — medindo a altura REAL
-// dele (getBoundingClientRect), não um número fixo. Funciona igual pra
-// qualquer tipo de objeto (retângulo, texto, imagem, grupo...), já que cada
-// um mostra uma quantidade diferente de campos e portanto uma altura
-// diferente. Quando não há objeto selecionado, volta a usar a posição padrão
-// definida em CSS (top:max(130px, 30vh)).
-//
-// O "top" calculado é sempre limitado (clamp) entre a área ocupada no topo
-// (nunca perto demais da toolbar/spawn) e "innerHeight - 180px" (sempre sobra
-// pelo menos 180px de altura utilizável pro painel de Camadas acima do
-// rodapé) — isso evita depender só da resolução automática do CSS quando os
-// valores ficam sobre-restringidos (top + bottom não cabem), que era o que
-// deixava o painel espremido/quebrado em telas muito curtas.
-function repositionLayersPanel() {
-  const layersPanel = document.getElementById('layers-panel');
-  const ctx = document.getElementById('ctx');
-  if (!layersPanel || !ctx) return;
-
-  if (ctx.style.display !== 'none') {
-    const ctxBottom = ctx.getBoundingClientRect().bottom;
-    const minTop = getTopClearArea() + 12;
-    const desiredTop = Math.max(ctxBottom + 12, minTop);
-    const maxTop = Math.max(window.innerHeight - 180, minTop);
-    layersPanel.style.top = Math.min(desiredTop, maxTop) + 'px';
-  } else {
-    layersPanel.style.top = ''; // volta pro valor padrão do CSS
-  }
-}
-
-// Orquestrador — sempre chamar este, nunca as funções acima isoladas: a
-// ordem importa (spawn-panel precisa se acomodar antes do #ctx medir a borda
-// dele, que por sua vez precisa se acomodar antes do #layers-panel medir a
-// borda dele; top-left-panel depende da mesma área acomodada também; e o
-// vp-panel depende do top-left-panel já estar no lugar certo).
-export function layoutSidePanels() {
-  updSpawnPanelPos();
-  updTopLeftPanelPos();
-  updVpPanelPos();
-  positionCtxPanel();
-  repositionLayersPanel();
-}
-window.addEventListener('resize', layoutSidePanels);
+// updCtx e todo o layout dos painéis flutuantes (spawn/ctx/camadas/viewport/
+// view-ajuda) vêm de ui/panel-layout.js (importados no topo deste arquivo).
 
 // ── Funções de edição ao vivo ─────────────────────────────────────────────────
 // Funcionam tanto em seleção única quanto em multi-seleção.
 // IMPORTANTE: quando há activeSelection, o Fabric converte left/top dos filhos
 // para coordenadas relativas — precisamos serializar com coordenadas absolutas.
-function getSelObjs() {
-  return canvas.getActiveObjects().filter(o => !o._isViewportRect);
-}
-
-// Emite modificação de objeto respeitando se está em activeSelection
-function emitModifyWithAbsPos(o) {
-  if (!o.id || o._isViewportRect) return;
-  const active = canvas.getActiveObject();
-  if (active && active.type === 'activeSelection') {
-    // Objeto dentro de uma seleção múltipla — calcular posição absoluta
-    const gm  = active.calcTransformMatrix();
-    const abs = serTransformAbsolute(o, gm);
-    const data = ser(o);
-    if (!data) return;
-    Object.assign(data, abs);
-    socket.emit('object:modify:commit', data);
-  } else {
-    emitModify(o);
-  }
-}
-
-function setSelColor(val) {
-  getSelObjs().forEach(o => {
-    const isText = o.type === 'i-text' || o.type === 'text';
-    if (isText) o.set({ fill: val });
-    else        o.set({ stroke: val });
-    emitModifyWithAbsPos(o);
-  });
-  canvas.renderAll();
-}
-
-function setSelFill(val) {
-  if (!document.getElementById('ctx-fill-on').checked) return;
-  getSelObjs().forEach(o => { o.set({ fill: val }); emitModifyWithAbsPos(o); });
-  canvas.renderAll();
-}
-
-function toggleSelFill(checked) {
-  const fillInput = document.getElementById('ctx-fill');
-  fillInput.disabled = !checked;
-  const fillVal = checked ? (fillInput.value || '#ffffff') : 'transparent';
-  getSelObjs().forEach(o => { o.set({ fill: fillVal }); emitModifyWithAbsPos(o); });
-  canvas.renderAll();
-}
-
-function setSelStroke(val) {
-  const n = parseInt(val);
-  document.getElementById('ctx-sz-v').textContent = n;
-  getSelObjs().forEach(o => { o.set({ strokeWidth: n }); emitModifyWithAbsPos(o); });
-  canvas.renderAll();
-}
-
-function resizeSel(d, v) {
-  const o = canvas.getActiveObject(); if (!o || !v || o._isViewportRect) return;
-  d === 'w' ? o.scaleToWidth(parseFloat(v)) : o.scaleToHeight(parseFloat(v));
-  o.setCoords(); canvas.renderAll(); emitModifyWithAbsPos(o);
-}
-
-function setSelOp(v) {
-  getSelObjs().forEach(o => { o.set({ opacity: parseInt(v) / 100 }); emitModifyWithAbsPos(o); });
-  canvas.renderAll();
-}
-function delSel() {
-  const ids = canvas.getActiveObjects().filter(o => !o._isViewportRect).map(o => o.id).filter(Boolean);
-  canvas.getActiveObjects().filter(o => !o._isViewportRect).forEach(o => canvas.remove(o));
-  canvas.discardActiveObject(); canvas.renderAll();
-  socket.emit('object:remove', ids);
-  scheduleLayersUpdate();
-}
+// setSelColor/setSelFill/toggleSelFill/setSelStroke/resizeSel/setSelOp/delSel
+// vêm de ui/selection-toolbar.js (importadas no topo deste arquivo).
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CRIAÇÃO DE FORMAS
@@ -1245,21 +976,8 @@ socket.on('history:conflict', ({ count, action }) => {
   const verbo = action === 'undo' ? 'desfazer' : 'refazer';
   showToast(`Não foi possível ${verbo} ${count} item(ns) — outro usuário alterou depois.`, 3500);
 });
-function changeRoom() {
-  // Volta para a tela de login direto no passo 2 (escolha de sala).
-  // A senha já está válida (cookie de sessão), não precisa redigitar.
-  // Guarda um flag para o index.html saber que deve pular o passo 1.
-  sessionStorage.setItem('lb_skip_pw', '1');
-  window.location.href = '/';
-}
-
-function clearAll() {
-  if (!confirm('Limpar todo o quadro?')) return;
-  canvas.getObjects().filter(o => !o._isViewportRect).forEach(o => canvas.remove(o));
-  canvas.renderAll();
-  socket.emit('board:clear');
-  scheduleLayersUpdate();
-}
+// changeRoom/clearAll vêm de ui/room-controls.js (importadas no topo deste
+// arquivo).
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DESERIALIZAÇÃO
@@ -1440,28 +1158,9 @@ window.addEventListener('keyup', e => {
   }
 });
 
-function dupSel() {
-  const objs = canvas.getActiveObjects().filter(o => !o._isViewportRect); if (!objs.length) return; canvas.discardActiveObject();
-  const clones = []; let done = 0;
-  objs.forEach(o => o.clone(cl => {
-    cl.id = genId(); cl.set({ left: o.left + 20, top: o.top + 20 });
-    canvas.add(cl); clones.push(cl);
-    if (++done === objs.length) {
-      applyLayerZOrder();
-      // Serializa ANTES de virar ActiveSelection (mesmo motivo do comentário
-      // em pasteBoardObjects: o Fabric muda left/top pra relativo ao grupo
-      // assim que a seleção múltipla é criada).
-      const serialized = clones.map(ser).filter(Boolean);
-      canvas.setActiveObject(new fabric.ActiveSelection(clones, { canvas }));
-      canvas.renderAll();
-      socket.emit('objects:batch', serialized);
-      scheduleLayersUpdate();
-    }
-  }, ['id', 'layerId', '_isArrow', '_isGif', '_gifUrl']));
-}
-
-// copySel() — ver features/clipboard/clipboard.js (importado no topo deste
-// arquivo); chamada pelo atalho Ctrl+C mais abaixo.
+// dupSel() vem de ui/selection-toolbar.js; copySel() vem de
+// features/clipboard/clipboard.js (ambas importadas no topo deste arquivo) —
+// chamadas pelos atalhos Ctrl+D/Ctrl+C acima.
 
 // ── Tooltip flutuante da toolbar ────────────────────────────────────────────
 // Substitui o .tb-tip antigo (que ficava preso dentro do overflow do #toolbar,
@@ -1471,24 +1170,10 @@ function dupSel() {
 
 // Init
 setTool('select');
-// ── Ver ao vivo ───────────────────────────────────────────────────────────────
-function openViewUrl() {
-  window.open(window.location.origin + '/view/' + (myRoomId || 'default'), '_blank');
-}
-
-// Liga os botões do painel superior direito
-(function bindPanelButtons() {
-  var vBtn = document.getElementById('trp-view');
-  var hBtn = document.getElementById('trp-help');
-  if (vBtn) vBtn.addEventListener('click', openViewUrl);
-  if (hBtn) hBtn.addEventListener('click', openBoardTutorial);
-
-  // Tooltip do botão "Ver ao vivo" inclui o nome da sala
-  var name = myRoomName || myRoomId || '';
-  if (vBtn && name) {
-    vBtn.dataset.tip = 'Abrir view do OBS: ' + (name.length > 28 ? name.slice(0, 26) + '…' : name);
-  }
-})();
+// openViewUrl/initHeaderButtons vêm de ui/room-controls.js (importadas no
+// topo deste arquivo) — liga os botões do painel superior direito (ver ao
+// vivo / ajuda).
+initHeaderButtons();
 
 
 // ═══════════════════════════════════════════════════════════════════════════════
