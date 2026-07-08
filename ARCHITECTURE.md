@@ -16,13 +16,27 @@ public/
 ├── index.html / board.html / view.html   → apenas marcação
 ├── css/            → estilos extraídos (tokens compartilhados + por página)
 └── js/
-    ├── shared/     → código usado por mais de uma página (patch do Fabric, socket, event-bus)
-    ├── core/       → canvas, estado central do editor, undo/redo
-    ├── tools/      → ferramentas do editor (select/pan/pen/shape/text) — Strategy pattern
-    ├── features/   → uma pasta por funcionalidade (camadas, grupos, export, mídia, clipboard...)
-    ├── ui/         → toolbar, modais, toast
-    └── net/        → handlers de socket.io do lado do client
+    ├── shared/     → código usado por mais de uma página (patch do Fabric, socket-client)
+    ├── core/       → canvas, event-bus, serialização
+    ├── features/   → uma pasta por funcionalidade (camadas, grupos, export, mídia,
+    │                 clipboard, ferramentas de desenho, área reservada, usuários
+    │                 remotos, onboarding)
+    ├── ui/         → toolbar/painéis flutuantes, ações de seleção, controles de sala
+    ├── board-app.js  → entrypoint do board.html (hub: dispatcher de mouse/touch,
+    │                   sockets, ponte window.*)
+    ├── view-app.js   → entrypoint do view.html (cliente somente-leitura, independente)
+    └── index-app.js  → entrypoint do index.html (login + tutorial)
 ```
+
+> **Nota (Fase 7)**: o plano original desta seção previa pastas `tools/` (Strategy
+> pattern por ferramenta) e `net/` (handlers de socket do client). Na prática, a
+> lógica de ferramentas ficou coesa o suficiente dentro de
+> `features/drawing-tools/drawing-tools.js` (ver nota da Fase 4) e os handlers de
+> socket.io do client nunca precisaram de uma pasta própria — cada feature registra
+> os seus (`initStagingSocketListeners()`, `initRemoteUsersSocketListeners()`, etc.)
+> e os eventos "hub" (dispatcher de mouse/touch, sockets de board-app.js) ficam no
+> próprio entrypoint. As duas pastas vazias foram removidas nesta fase para o
+> diagrama não prometer uma estrutura que não existe.
 
 ## Estrutura de pastas (server)
 
@@ -378,6 +392,98 @@ cada `export`/`import` antes de considerar uma extração pronta.
         > `vpRect` (já exportado) de `board-app.js` como os outros módulos já
         > fazem.
 - [ ] Fase 4 — client features
-- [ ] Fase 5 — client UI + entrypoints
-- [ ] Fase 6 — CSS
-- [ ] Fase 7 — limpeza final
+- [x] **Fase 5 — client UI + entrypoints**: os dois entrypoints que ainda eram
+      scripts clássicos inteiros viraram módulos ES de verdade, mesma
+      mecânica da Fase 3 (parte 1) com `board.html`.
+      - `view.html` → `public/js/view-app.js` (`<script type="module">`).
+        `view.html`: 501 → **20 linhas** (só marcação/CSS + as 4 tags
+        `<script>` clássicas de sempre + a nova tag `type="module"`).
+        **Zero atributo onclick/onchange/oninput** existia em `view.html` —
+        diferente de `board-app.js`/`index-app.js`, este módulo não precisou
+        de nenhuma ponte com `window`.
+      - `index.html` → `public/js/index-app.js` (`<script type="module">`,
+        fusão dos 2 `<script>` clássicos que existiam ali — o que injeta o
+        botão de tutorial e o que tem toda a lógica dos 3 passos de login +
+        tutorial da lousa de giz). `index.html`: 668 → **341 linhas** (CSS
+        inline não foi tocado — fica para a Fase 6). Precisou da mesma ponte
+        `window.*` de `board-app.js`, pelo mesmo motivo (atributos onclick
+        inline): `checkPassword`, `chooseRoom`, `goStep`, `enterBoard`,
+        `goBackToStep2`, `openTutorial`, `closeTutorial`, `tutNav`.
+      > **Por que a duplicação entre `view-app.js` e `board-app.js` foi
+      > mantida** (`deser`/`applyFull`/`loadState`/`findById`/`pts2path`/
+      > `absoluteImgUrl`/o worker de GIF existem nos dois arquivos, quase
+      > idênticos): a view é deliberadamente um cliente "somente leitura"
+      > independente, sem nenhum objeto selecionável/editável, e já tinha
+      > zero import circular / zero dependência de `core/canvas-
+      > manager.js` (cria seu próprio `fabric.Canvas` do tamanho da janela,
+      > diferente do board). Unificar os dois exigiria puxar `core/
+      > serialization.js`+`deser`+GIF-decode pra um módulo compartilhado
+      > entre board e view — um projeto por si só, fora do escopo mecânico
+      > desta fase (só trocar script clássico → módulo ES, sem mudar nenhuma
+      > lógica). Fica anotado como possível trabalho futuro, não urgente.
+      > **Nenhuma lógica mudou** em nenhum dos dois arquivos — é uma extração
+      > 100% mecânica (mesmo texto, só movido pra um arquivo `.js` externo
+      > com `export`/`window` bridge onde necessário), sem nenhum import
+      > circular novo (nenhum dos dois módulos importa de `board-app.js` nem
+      > vice-versa — são três entrypoints irmãos, não uma árvore).
+- [x] **Fase 6 — CSS**: os 4 blocos `<style>` inline que restavam (2 em
+      `board.html`, 1 em `index.html`, 1 em `view.html`) viraram arquivos em
+      `public/css/`, referenciados via `<link rel="stylesheet">` — mesma
+      extração mecânica das fases anteriores, zero regra CSS reescrita ou
+      reordenada.
+      - `public/css/board.css` (349 linhas) — estilos principais do editor
+        (toolbar, painéis, camadas, viewport etc). `board.html`: 668 → 319
+        linhas (nesse passo).
+      - `public/css/board-tutorial.css` (72 linhas) — o segundo `<style>` de
+        `board.html`, específico do tutorial do editor (classes `btut-*`),
+        que vivia aninhado dentro da própria marcação do overlay do
+        tutorial (HTML válido, mas incomum) — mantive o `<link>` exatamente
+        no mesmo ponto onde a `<style>` estava, pra não mudar a estrutura do
+        documento nesta passada. `board.html` final: **246 linhas**.
+      - `public/css/index.css` (210 linhas) — estilos da tela de login (os 3
+        passos, o card, e o tutorial "lousa de giz" da tela de login —
+        classes `tut-*`, diferente do `btut-*` do board). `index.html`: 668
+        → **130 linhas**.
+      - `public/css/view.css` (3 linhas) — reset mínimo da view (fundo
+        transparente, canvas full-screen). `view.html`: 20 → **16 linhas**.
+      > **Duplicação mantida de propósito**: `board-tutorial.css` (`btut-*`)
+      > e `index.css`'s trecho de tutorial (`tut-*`) implementam o mesmo
+      > visual "lousa de giz" com nomes de classe deliberadamente diferentes
+      > (evita colisão caso algum dia as duas páginas compartilhem contexto).
+      > Unificar isso num só arquivo de tema compartilhado é possível no
+      > futuro, mas está fora do escopo mecânico desta fase (só mover CSS
+      > existente pra fora do HTML, sem redesenhar nada).
+      > Nenhuma regra de CSS foi alterada, removida, reordenada ou
+      > combinada — cada arquivo novo tem exatamente o conteúdo que estava
+      > entre as tags `<style>`/`</style>` correspondentes.
+- [x] **Fase 7 — limpeza final**: nenhuma extração de código nesta fase, só
+      auditoria e organização.
+      - Removidas 3 pastas vazias que sobraram da Fase 0 e nunca foram usadas
+        (`public/js/tools/`, `public/js/net/`, `public/js/features/viewport/`)
+        — o plano original previa Strategy pattern por ferramenta e uma pasta
+        própria pra handlers de socket do client, mas na prática essas
+        responsabilidades ficaram coesas o suficiente dentro de
+        `features/drawing-tools/` e de cada módulo de feature (ver nota da
+        Fase 4). Diagrama de pastas no topo deste documento atualizado pra
+        refletir a estrutura real.
+      - Auditoria de exports órfãos: script comparando toda `export
+        function/const/let` de `public/js/**` contra o resto do código —
+        nenhuma exportação sem uso encontrada.
+      - Auditoria de resíduos de debug: busca por `console.log`/`TODO`/
+        `FIXME`/`XXX` em `public/js` e `server` — os únicos `console.log`
+        encontrados são logs de operação do servidor (startup, conexão/
+        desconexão de sala, eviction, varredura de uploads órfãos),
+        intencionais; nenhum `TODO`/`FIXME` real (só falsos-positivos da
+        palavra "TODOS" em comentários em português).
+      - Busca por arquivos de backup/transição (`.bak`, `.orig`, `*copy*`) —
+        nenhum encontrado.
+      - `package.json`/`.gitignore` conferidos — nada a limpar.
+      - Validação final completa: sintaxe ESM de todos os arquivos
+        `public/js/**` e `server/**`, `test-harness/import-test.mjs` (25/25
+        eventos), servidor real no ar (login via `/auth` com JSON, `/board.html`
+        autenticado, `css/board.css` com `content-type` correto), log do
+        servidor limpo, artefatos de teste removidos ao final.
+      > Esta fase não teve risco de regressão de comportamento (nenhuma linha
+      > de lógica foi tocada) — o roteiro completo (1-19) pedido no
+      > `CHECKLIST.md` é a validação final de todo o processo de refatoração
+      > da Fase 0 até aqui, não desta fase isoladamente.

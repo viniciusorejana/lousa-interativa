@@ -1,0 +1,72 @@
+@keyframes bf-in{from{opacity:0;transform:scale(.92) translateY(14px)}to{opacity:1;transform:none}}
+@keyframes bf-slide{from{opacity:0;transform:translateX(16px)}to{opacity:1;transform:none}}
+@keyframes bf-reveal{to{clip-path:inset(0 0 0 0)}}
+@keyframes bf-draw{to{stroke-dashoffset:0}}
+@keyframes bf-pulse{0%,100%{opacity:1}50%{opacity:.55}}
+@keyframes bf-dustfall{0%{transform:translateY(-10px) translateX(0);opacity:0}8%{opacity:.75}92%{opacity:.3}100%{transform:translateY(420px) translateX(var(--dx));opacity:0}}
+@keyframes bf-wipe{0%{filter:none;opacity:1}55%{filter:blur(3px) brightness(1.7);opacity:.55}100%{filter:blur(10px) brightness(2.3);opacity:0}}
+
+.chalk-frame-b{
+  width:min(560px,96vw); max-height:92vh; padding:13px; border-radius:22px; position:relative;
+  background:repeating-linear-gradient(125deg,#6b4a30 0 9px,#7d5a3c 9px 17px,#5a3d24 17px 26px);
+  box-shadow:0 32px 70px rgba(0,0,0,.65), inset 0 0 0 3px rgba(0,0,0,.3), inset 0 2px 6px rgba(255,255,255,.08);
+  animation:bf-in .35s cubic-bezier(.34,1.56,.64,1);
+}
+#btut-card{
+  background:radial-gradient(ellipse at 28% 0%, rgba(255,255,255,.06), transparent 60%),
+             linear-gradient(160deg,#17251d 0%,#101a15 55%,#0c1310 100%);
+  border-radius:14px; max-height:calc(92vh - 26px); overflow:hidden; display:flex; flex-direction:column;
+  position:relative; box-shadow:inset 0 0 60px rgba(0,0,0,.5), inset 0 0 2px rgba(255,255,255,.06);
+  font-family:'Kalam',cursive;
+}
+#btut-card::before{
+  content:''; position:absolute; inset:0; pointer-events:none; opacity:.5; mix-blend-mode:overlay; z-index:1;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='bn'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23bn)'/%3E%3C/svg%3E");
+}
+#btut-card.wiping{ animation:bf-wipe .38s ease forwards; }
+.chalk-dust-b{ position:absolute; inset:0; overflow:hidden; pointer-events:none; z-index:1; }
+.dust-mote-b{ position:absolute; top:-6px; border-radius:50%; background:rgba(255,255,255,.6); opacity:0; animation-name:bf-dustfall; animation-timing-function:linear; animation-iteration-count:infinite; }
+
+.btut-head{ padding:22px 26px 16px; border-bottom:1px dashed rgba(255,255,255,.16); display:flex; align-items:center; justify-content:space-between; position:relative; z-index:2; }
+.btut-head-title{ display:flex; align-items:center; gap:10px; }
+.btut-head-title span.ico{ font-size:22px; filter:drop-shadow(0 0 6px rgba(255,255,255,.25)); }
+.btut-head-title span.txt{ font-size:20px; font-weight:700; color:#e9e2ff; text-shadow:0 0 1px rgba(255,255,255,.4),0 0 10px rgba(124,92,255,.45); }
+.btut-eraser{
+  width:34px; height:34px; border-radius:8px; border:2px solid rgba(255,255,255,.2);
+  background:linear-gradient(160deg,#dccca9,#b8996b); color:#4a3420; cursor:pointer;
+  display:flex; align-items:center; justify-content:center; transition:all .2s; z-index:2;
+  box-shadow:0 2px 4px rgba(0,0,0,.35); flex-shrink:0;
+}
+.btut-eraser:hover{ transform:scale(1.1) rotate(-5deg); box-shadow:0 4px 10px rgba(0,0,0,.4); }
+.btut-eraser svg{ width:16px; height:16px; }
+
+#btut-progress{ padding:14px 26px 0; display:flex; gap:7px; position:relative; z-index:2; }
+.btut-dot{ flex:1; height:5px; border-radius:3px; background:rgba(255,255,255,.12); transition:all .3s; }
+.btut-dot.active{ background:linear-gradient(90deg,#c8b6ff,#f0c8ff); box-shadow:0 0 8px rgba(200,182,255,.6); animation:bf-pulse 1.4s ease-in-out infinite; }
+.btut-dot.done{ background:rgba(255,255,255,.55); }
+
+#btut-body{ padding:22px 26px 26px; position:relative; z-index:2; overflow-y:auto; overflow-x:hidden; }
+.btut-anim{ animation:bf-slide .28s ease; }
+.btut-icon{
+  width:56px; height:56px; border-radius:50%;
+  background:radial-gradient(circle at 35% 30%, rgba(255,255,255,.12), rgba(255,255,255,.02));
+  border:2px dashed rgba(255,255,255,.28); display:flex; align-items:center; justify-content:center;
+  margin-bottom:16px; color:#e9e2ff;
+}
+.btut-icon svg{ width:28px; height:28px; overflow:visible; }
+.btut-icon svg path, .btut-icon svg circle, .btut-icon svg rect{ stroke-dasharray:160; stroke-dashoffset:160; animation:bf-draw .9s ease forwards; animation-delay:.05s; }
+.btut-h{ font-size:18px; font-weight:700; color:#f2edff; margin:0 0 9px; text-shadow:0 0 1px rgba(255,255,255,.3); display:inline-block; clip-path:inset(0 100% 0 0); animation:bf-reveal .7s steps(28) forwards; }
+.btut-p{ font-size:14.5px; color:#c9c9dc; line-height:1.7; margin:0; }
+.btut-p strong{ color:#e2caff; }
+.btut-p em{ color:#a8ffcf; font-style:normal; border-bottom:1px dashed rgba(168,255,207,.5); }
+.btut-keys{ display:flex; flex-wrap:wrap; gap:8px; margin-top:14px; }
+.btut-key{ background:rgba(255,255,255,.06); border:1.5px dashed rgba(255,255,255,.32); border-radius:8px; padding:5px 11px; font-size:12.5px; color:#c9c9dc; }
+.btut-key b{ color:#c8b6ff; font-weight:700; }
+.btut-footer{ padding:16px 26px 20px; border-top:1px dashed rgba(255,255,255,.16); display:flex; align-items:center; justify-content:space-between; position:relative; z-index:2; }
+.btut-counter{ font-size:13px; color:rgba(255,255,255,.45); }
+.btut-nav{ display:flex; gap:8px; }
+.btut-btn{ font-family:'Kalam',cursive; font-weight:700; padding:9px 20px; border-radius:8px; font-size:14.5px; cursor:pointer; transition:all .18s; border:2px solid transparent; }
+.btut-btn.sec{ background:transparent; color:rgba(255,255,255,.55); border-color:rgba(255,255,255,.25); }
+.btut-btn.sec:hover{ color:#fff; border-color:rgba(255,255,255,.5); }
+.btut-btn.pri{ background:transparent; color:#e9e2ff; border:2px dashed #c8b6ff; box-shadow:inset 0 0 10px rgba(200,182,255,.15); }
+.btut-btn.pri:hover{ background:rgba(200,182,255,.12); transform:translateY(-1px); }

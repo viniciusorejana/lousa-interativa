@@ -1,0 +1,210 @@
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { min-height:100vh; background:#0f0f13; display:flex; align-items:center; justify-content:center; font-family:'Segoe UI',system-ui,sans-serif; color:#e8e8f0; }
+    .card { background:#1a1a24; border:1px solid #2d2d40; border-radius:16px; padding:48px 40px; width:380px; box-shadow:0 24px 48px rgba(0,0,0,.5); position:relative; }
+
+    .logo { display:flex; align-items:center; gap:10px; margin-bottom:8px; justify-content:center; }
+    .logo span { font-size:24px; font-weight:700; background:linear-gradient(135deg,#7c5cff,#c95cff); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+    .subtitle { text-align:center; color:#6b6b80; font-size:13px; margin-bottom:32px; }
+
+    /* Indicador de passos */
+    .steps { display:flex; align-items:center; justify-content:center; gap:0; margin-bottom:28px; }
+    .step-item { display:flex; flex-direction:column; align-items:center; gap:5px; }
+    .step-circle {
+      width:28px; height:28px; border-radius:50%; border:2px solid #2d2d40;
+      display:flex; align-items:center; justify-content:center;
+      font-size:11px; font-weight:700; color:#555568; transition:all .25s;
+    }
+    .step-circle.active { border-color:#7c5cff; color:#7c5cff; background:rgba(124,92,255,.1); }
+    .step-circle.done   { border-color:#4ade80; color:#4ade80; background:rgba(74,222,128,.1); }
+    .step-label { font-size:10px; color:#555568; white-space:nowrap; }
+    .step-line { width:36px; height:2px; background:#2d2d40; margin:0 4px; margin-bottom:18px; transition:background .25s; }
+    .step-line.done { background:#4ade80; }
+
+    .field { margin-bottom:16px; }
+    label { display:block; font-size:11px; font-weight:600; color:#9090aa; text-transform:uppercase; letter-spacing:.8px; margin-bottom:7px; }
+
+    input[type="text"], input[type="password"] {
+      width:100%; background:#0f0f13; border:1px solid #2d2d40; border-radius:10px;
+      padding:12px 16px; font-size:15px; color:#e8e8f0; outline:none; transition:border-color .2s;
+    }
+    input[type="password"] { letter-spacing:3px; }
+    input:focus { border-color:#7c5cff; }
+    input.error { border-color:#ff6060; animation:shake .3s; }
+    input.valid { border-color:#4ade80; }
+    @keyframes shake { 0%,100%{transform:translateX(0)} 25%{transform:translateX(-6px)} 75%{transform:translateX(6px)} }
+
+    .hint { font-size:11px; color:#555568; margin-top:5px; min-height:15px; }
+    .hint.slug { font-family:monospace; color:#7c5cff; }
+
+    .btn {
+      width:100%; margin-top:8px;
+      background:linear-gradient(135deg,#7c5cff,#c95cff);
+      border:none; border-radius:10px; padding:13px;
+      font-size:15px; font-weight:600; color:white; cursor:pointer; transition:opacity .15s;
+    }
+    .btn:hover { opacity:.9; }
+    .btn:disabled { opacity:.45; cursor:not-allowed; }
+
+    .error-msg { margin-top:10px; color:#ff6060; font-size:13px; text-align:center; min-height:18px; }
+
+    .room-badge {
+      display:flex; align-items:center; gap:8px; padding:10px 14px;
+      background:#0f0f13; border:1px solid #2d2d40; border-radius:10px;
+      margin-bottom:16px; font-size:13px;
+    }
+    .room-badge .rb-label { color:#6b6b80; font-size:11px; }
+    .room-badge .rb-name  { color:#7c5cff; font-weight:600; font-family:monospace; }
+    .room-badge .rb-icon  { color:#7c5cff; }
+
+    hr { margin:22px 0 16px; border:none; border-top:1px solid #2d2d40; }
+    .obs-link { text-align:center; font-size:12px; color:#555568; }
+    .obs-link a { color:#7c5cff; text-decoration:none; }
+    .obs-link a:hover { text-decoration:underline; }
+    .obs-url { font-family:monospace; font-size:11px; }
+
+    .btn-back {
+      width:100%; margin-top:8px;
+      background:transparent; border:1px solid #2d2d40; border-radius:10px; padding:11px;
+      font-size:14px; font-weight:500; color:#6b6b80; cursor:pointer; transition:all .15s;
+    }
+    .btn-back:hover { border-color:#7c5cff; color:#7c5cff; }
+
+    /* Tutorial button — fixed bottom right of card, estilo giz */
+    .tutorial-btn {
+      position:absolute; bottom:-20px; right:0;
+      display:flex; align-items:center; gap:6px;
+      background:rgba(124,92,255,.12); border:1px dashed rgba(124,92,255,.4); border-radius:20px;
+      padding:7px 14px; font-size:12px; font-weight:600; color:#7c5cff;
+      cursor:pointer; transition:all .2s; white-space:nowrap;
+      font-family:'Kalam',cursive;
+    }
+    .tutorial-btn:hover { background:rgba(124,92,255,.22); border-color:#7c5cff; transform:translateY(-1px) rotate(-.5deg); }
+    .tutorial-btn svg { flex-shrink:0; }
+
+    /* ══════════════════════════ TUTORIAL — TEMA LOUSA DE GIZ ══════════════════════════ */
+    #tutorial-overlay {
+      display:none; position:fixed; inset:0; z-index:9999;
+      background:rgba(0,0,0,.86); backdrop-filter:blur(6px);
+      align-items:center; justify-content:center; padding:20px;
+    }
+    #tutorial-overlay.show { display:flex; }
+
+    /* Moldura de madeira ao redor da lousa */
+    .chalk-frame {
+      width:min(560px, 96vw); max-height:92vh;
+      padding:13px; border-radius:22px; position:relative;
+      background:
+        repeating-linear-gradient(125deg, #6b4a30 0 9px, #7d5a3c 9px 17px, #5a3d24 17px 26px);
+      box-shadow:0 32px 70px rgba(0,0,0,.65), inset 0 0 0 3px rgba(0,0,0,.3), inset 0 2px 6px rgba(255,255,255,.08);
+      animation:tut-in .35s cubic-bezier(.34,1.56,.64,1);
+    }
+    @keyframes tut-in { from { opacity:0; transform:scale(.92) translateY(14px); } to { opacity:1; transform:none; } }
+
+    .tut-card {
+      background:
+        radial-gradient(ellipse at 28% 0%, rgba(255,255,255,.06), transparent 60%),
+        linear-gradient(160deg, #17251d 0%, #101a15 55%, #0c1310 100%);
+      border-radius:14px; max-height:calc(92vh - 26px); overflow:hidden;
+      display:flex; flex-direction:column; position:relative;
+      box-shadow:inset 0 0 60px rgba(0,0,0,.5), inset 0 0 2px rgba(255,255,255,.06);
+      transition:opacity .3s, filter .3s;
+    }
+    /* Textura de giz/ruído sobre a lousa */
+    .tut-card::before {
+      content:''; position:absolute; inset:0; pointer-events:none; opacity:.5; mix-blend-mode:overlay; z-index:1;
+      background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    }
+    .tut-card.wiping { animation:chalk-wipe .38s ease forwards; }
+    @keyframes chalk-wipe {
+      0%   { filter:none; opacity:1; }
+      55%  { filter:blur(3px) brightness(1.7); opacity:.55; }
+      100% { filter:blur(10px) brightness(2.3); opacity:0; }
+    }
+
+    /* Poeira de giz caindo dentro da lousa */
+    .chalk-dust { position:absolute; inset:0; overflow:hidden; pointer-events:none; z-index:1; }
+    .dust-mote {
+      position:absolute; top:-6px; border-radius:50%; background:rgba(255,255,255,.6);
+      opacity:0; animation-name:dust-fall; animation-timing-function:linear; animation-iteration-count:infinite;
+    }
+    @keyframes dust-fall {
+      0%   { transform:translateY(-10px) translateX(0); opacity:0; }
+      8%   { opacity:.75; }
+      92%  { opacity:.3; }
+      100% { transform:translateY(440px) translateX(var(--dx)); opacity:0; }
+    }
+
+    .tut-header {
+      padding:22px 26px 16px; border-bottom:1px dashed rgba(255,255,255,.16);
+      display:flex; align-items:center; justify-content:space-between; position:relative; z-index:2;
+    }
+    .tut-title-wrap { display:flex; align-items:center; gap:10px; overflow:hidden; }
+    .chalk-icon-mini { font-size:22px; filter:drop-shadow(0 0 6px rgba(255,255,255,.25)); flex-shrink:0; }
+    .tut-title {
+      font-family:'Kalam',cursive; font-size:20px; font-weight:700; color:#e9e2ff;
+      text-shadow:0 0 1px rgba(255,255,255,.4), 0 0 10px rgba(124,92,255,.45);
+      letter-spacing:.2px; white-space:nowrap;
+    }
+    .tut-close {
+      width:34px; height:34px; border-radius:8px; border:2px solid rgba(255,255,255,.2);
+      background:linear-gradient(160deg,#dccca9,#b8996b); color:#4a3420; cursor:pointer;
+      display:flex; align-items:center; justify-content:center; transition:all .2s; position:relative; z-index:2;
+      box-shadow:0 2px 4px rgba(0,0,0,.35); flex-shrink:0;
+    }
+    .tut-close:hover { transform:scale(1.1) rotate(-5deg); box-shadow:0 4px 10px rgba(0,0,0,.4); }
+    .tut-close svg { width:16px; height:16px; }
+
+    .tut-progress { padding:14px 26px 0; display:flex; gap:7px; position:relative; z-index:2; }
+    .tut-dot { flex:1; height:5px; border-radius:3px; background:rgba(255,255,255,.12); transition:all .3s; }
+    .tut-dot.active { background:linear-gradient(90deg,#c8b6ff,#f0c8ff); box-shadow:0 0 8px rgba(200,182,255,.6); animation:chalk-pulse 1.4s ease-in-out infinite; }
+    .tut-dot.done { background:rgba(255,255,255,.55); }
+    @keyframes chalk-pulse { 0%,100%{opacity:1;} 50%{opacity:.55;} }
+
+    .tut-slides { overflow-y:auto; overflow-x:hidden; position:relative; z-index:2; flex:1; }
+    .tut-slide { padding:22px 26px 26px; display:none; }
+    .tut-slide.active { display:block; animation:slide-in .3s ease; }
+    @keyframes slide-in { from { opacity:0; transform:translateX(18px); } to { opacity:1; transform:none; } }
+
+    .tut-icon {
+      width:56px; height:56px; border-radius:50%;
+      background:radial-gradient(circle at 35% 30%, rgba(255,255,255,.12), rgba(255,255,255,.02));
+      border:2px dashed rgba(255,255,255,.28);
+      display:flex; align-items:center; justify-content:center; margin-bottom:16px; color:#e9e2ff;
+    }
+    .tut-icon svg { width:28px; height:28px; overflow:visible; }
+    .tut-icon svg path, .tut-icon svg circle, .tut-icon svg rect, .tut-icon svg line, .tut-icon svg polyline {
+      stroke-dasharray:160; stroke-dashoffset:160; animation:draw-in .9s ease forwards; animation-delay:.05s;
+    }
+    @keyframes draw-in { to { stroke-dashoffset:0; } }
+
+    .tut-slide h3 {
+      font-family:'Kalam',cursive; font-size:18px; font-weight:700; color:#f2edff; margin-bottom:9px;
+      text-shadow:0 0 1px rgba(255,255,255,.3); display:inline-block; clip-path:inset(0 100% 0 0);
+    }
+    .tut-slide.active h3 { animation:chalk-reveal .7s steps(28) forwards; }
+    @keyframes chalk-reveal { to { clip-path:inset(0 0 0 0); } }
+
+    .tut-slide p  { font-family:'Kalam',cursive; font-size:14.5px; color:#c9c9dc; line-height:1.7; margin-bottom:0; }
+    .tut-slide p strong { color:#e2caff; }
+    .tut-slide p em { color:#a8ffcf; font-style:normal; border-bottom:1px dashed rgba(168,255,207,.5); }
+    .tut-slide .tut-keys { display:flex; flex-wrap:wrap; gap:8px; margin-top:14px; }
+    .tut-key {
+      font-family:'Kalam',cursive; background:rgba(255,255,255,.06); border:1.5px dashed rgba(255,255,255,.32);
+      border-radius:8px; padding:5px 11px; font-size:12.5px; color:#c9c9dc;
+    }
+    .tut-key span { color:#c8b6ff; font-weight:700; margin-right:4px; }
+
+    .tut-footer {
+      padding:16px 26px 20px; border-top:1px dashed rgba(255,255,255,.16);
+      display:flex; align-items:center; justify-content:space-between; position:relative; z-index:2;
+    }
+    .tut-counter { font-family:'Kalam',cursive; font-size:13px; color:rgba(255,255,255,.45); }
+    .tut-nav { display:flex; gap:8px; }
+    .tut-btn {
+      font-family:'Kalam',cursive; font-weight:700; padding:9px 20px; border-radius:8px; font-size:14.5px;
+      cursor:pointer; transition:all .18s; border:2px solid transparent;
+    }
+    .tut-btn.secondary { background:transparent; color:rgba(255,255,255,.55); border-color:rgba(255,255,255,.25); }
+    .tut-btn.secondary:hover { color:#fff; border-color:rgba(255,255,255,.5); }
+    .tut-btn.primary { background:transparent; color:#e9e2ff; border:2px dashed #c8b6ff; box-shadow:inset 0 0 10px rgba(200,182,255,.15); }
+    .tut-btn.primary:hover { background:rgba(200,182,255,.12); transform:translateY(-1px); }

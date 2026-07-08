@@ -220,6 +220,56 @@ npm run dev
       >  Isso fecha a lista de extrações da Fase 3 (parte 2) / Fase 4 —
       >  todo o conteúdo de `tools/`/`features/`/`ui/` planejado para essa fase
       >  já saiu de dentro de `board-app.js`.
-- [ ] Fase 5 — roteiro completo (1-19) — entrypoints e UI final montados.
-- [ ] Fase 6 — roteiro completo (1-19), com atenção visual a cada tela (CSS).
-- [ ] Fase 7 — roteiro completo (1-19) como validação final.
+- [x] **Fase 5 — `view-app.js` e `index-app.js`** — os dois últimos entrypoints
+      que ainda eram scripts clássicos gigantes viraram módulos ES (mesma
+      mecânica da Fase 3 com `board.html`), sem nenhuma mudança de lógica.
+      Validado: sintaxe ESM dos 2 arquivos novos, `view.html`/`index.html`
+      sem nenhum `<script>` clássico sobrando com lógica (só as tags de
+      biblioteca + a nova `type="module"`), servidor real testado (HTTP 200 +
+      byte-idêntico para os 4 arquivos: `index.html`, `view.html`,
+      `index-app.js`, `view-app.js`), handshake Engine.IO OK (inclusive tipo
+      `view`), regressão do `test-harness/` de `board-app.js` ainda 25/25
+      (não foi tocado, mas board.html/view.html/index.html agora são 3
+      entrypoints irmãos — bom confirmar que nenhum vazou import cruzado),
+      log do servidor limpo. **Peço o roteiro completo (itens 1-19)** aqui —
+      não por ser uma feature isolada, e sim por serem os 2 pontos de entrada
+      da aplicação que os usuários REALMENTE abrem primeiro:
+      - Item 1 (login): tela de senha, indicador de passos, escolha de sala
+        (preview do slug em tempo real), nome de usuário, botão "Trocar de
+        lousa" pulando direto pro passo 2, e o botão "Como usar (lousa)"
+        (tutorial da tela de login — diferente do tutorial do board já
+        testado antes) com navegação por setas/Escape e o botão final
+        "Apagar e fechar".
+      - Item 16 (view/OBS): abrir `/view/<slug>` isoladamente (sem o board
+        aberto) e conferir fundo transparente, viewport sincronizado, e
+        todo o roteiro de sincronização ao vivo (traços, formas, GIFs,
+        grupos, camadas, undo/redo) refletindo lá — é o mesmo código de
+        sempre, só que agora carregado como módulo.
+- [x] **Fase 6 — CSS extraído para `public/css/`** — os 4 `<style>` inline
+      (2 em `board.html`, 1 em `index.html`, 1 em `view.html`) viraram
+      arquivos externos via `<link rel="stylesheet">`, sem nenhuma regra
+      alterada. Validado o que dava pra validar sem abrir no navegador:
+      contagem de chaves `{`/`}` balanceada em cada CSS novo, servidor real
+      testado (HTTP 200 + `content-type: text/css` correto + byte-idêntico
+      para os 4 CSS e os 3 HTML, incluindo `board.html` autenticado via
+      `/auth`), log do servidor limpo, regressão do `test-harness/` ainda
+      25/25. **Isto é puramente visual — preciso muito da sua confirmação
+      visual aqui**, já que não tenho como abrir um navegador: por favor
+      confira que **nada mudou visualmente** em nenhuma das 3 telas (login,
+      board, view) — cores, espaçamento, toolbar, painéis, cursor de
+      pan, e especialmente os dois tutoriais (o da tela de login e o do
+      board) letra por letra iguais a antes. Se algo parecer diferente, é
+      quase certamente um erro de transcrição meu ao mover o CSS — me avise
+      qual elemento para eu comparar contra o histórico do Git.
+- [x] **Fase 7 — limpeza final**: sem mudança de lógica, só organização
+      (removidas 3 pastas vazias sem uso desde a Fase 0, diagrama de pastas
+      do `ARCHITECTURE.md` atualizado, auditoria de exports órfãos e de
+      resíduos de debug — nada encontrado). Validado: sintaxe ESM de todos os
+      arquivos, `test-harness/` 25/25, servidor real no ar (login, rota
+      protegida, CSS com content-type correto), log limpo, artefatos de teste
+      removidos.
+      > **Esta é a última fase da refatoração — por favor rode o roteiro
+      > completo (itens 1-19) como validação final de tudo**, não só desta
+      > fase: é a garantia de que, do início ao fim deste processo (Fase 0 à
+      > 7), nenhum comportamento do app mudou, só a organização interna do
+      > código.
