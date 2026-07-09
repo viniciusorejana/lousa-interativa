@@ -15,7 +15,7 @@ import { isLayerLocked } from '../layers/layers-panel.js';
 import {
   socket, vpRect, findById, genId, mkShape, addToCanvas, emitFull,
   throttle60, addText, isPanMode, spaceHeld, enterPanMode, exitPanMode,
-  layoutSidePanels, scheduleLayersUpdate, activeLayerId,
+  layoutSidePanels, scheduleLayersUpdate, activeLayerId, showToast,
 } from '../../board-app.js';
 
 export let tool = 'select', color = '#ffffff', sz = 4, op = 1, fillShape = false;
@@ -224,6 +224,17 @@ export function getCanvasPoint(e) {
 
 export function handlePointerDown(p, target) {
   if (isPanMode || spaceHeld) return;
+  // Camada travada: recusa já no pointerdown, antes de qualquer traço/forma/
+  // texto começar a existir localmente. Antes disso, o objeto chegava a ser
+  // criado e arrastado (e até sincronizado ao vivo via draw:start/shape:start
+  // pros outros clientes/view) e só era rejeitado no fim (path:created/
+  // handlePointerUp → emitFull), deixando um objeto "fantasma" aparecer e
+  // sumir no board, e sobreviver na view (que não sabe do lock e já tinha
+  // aplicado o preview ao vivo antes do commit ser recusado).
+  if (['pen', 'text', 'rect', 'circle', 'line', 'arrow'].includes(tool) && isLayerLocked(activeLayerId)) {
+    showToast('Camada travada — destrave para criar objetos aqui.', 2500);
+    return;
+  }
   if (tool === 'eraser') {
     startEraserDrag(p);
     return;
@@ -286,6 +297,14 @@ export function handlePointerUp(p) {
   drawStart = null; tmpShapeId = null;
 }
 
+// Reaplica o lock da camada ativa no isDrawingMode sem trocar de ferramenta —
+// chamado por layers-panel.js sempre que activeLayerId muda ou uma camada é
+// travada/destravada, pro caso de o usuário já estar com a caneta selecionada
+// (setTool só roda quando a ferramenta muda, não cobre esses outros gatilhos).
+export function syncDrawingMode() {
+  if (tool === 'pen') canvas.isDrawingMode = !isLayerLocked(activeLayerId);
+}
+
 export function setTool(t) {
   // Sai do pan mode se estava nele
   if (isPanMode && t !== 'pan') exitPanMode();
@@ -324,7 +343,16 @@ export function setTool(t) {
     canvas.skipTargetFind = false;
     canvas.defaultCursor = 'default'; opts.classList.add('hidden');
   } else if (t === 'pen') {
-    canvas.isDrawingMode = true; canvas.selection = false;
+    // isDrawingMode fica FALSE se a camada ativa estiver travada: o Fabric
+    // inicia o traço da PencilBrush direto no mousedown nativo, antes de
+    // disparar o evento 'mouse:down' que handlePointerDown escuta — ou seja,
+    // travar só ali (como se faz pra forma/texto/borracha) chega tarde
+    // demais, o traço já teria começado a ser desenhado visualmente. Por
+    // isso o modo de desenho em si só liga se a camada permitir (ver
+    // syncDrawingMode, chamado de novo sempre que activeLayerId ou o lock da
+    // camada mudam enquanto a ferramenta pen segue selecionada).
+    canvas.isDrawingMode = !isLayerLocked(activeLayerId);
+    canvas.selection = false;
     canvas.skipTargetFind = true;
     canvas.freeDrawingBrush = new fabric.PencilBrush(canvas);
     canvas.freeDrawingBrush.color = color; canvas.freeDrawingBrush.width = sz;

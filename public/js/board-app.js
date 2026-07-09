@@ -182,9 +182,16 @@ canvasEl.addEventListener('touchstart', e => {
 
   // Fallback para lógica normal (ferramenta de desenho)
   if (tool === 'pen' && !spaceHeld) {
+    // Mesma checagem de camada travada de handlePointerDown — este é um
+    // segundo caminho de início de traço (touch, um só dedo), que emitia
+    // draw:start direto sem passar por handlePointerDown.
+    if (isLayerLocked(activeLayerId)) {
+      showToast('Camada travada — destrave para criar objetos aqui.', 2500);
+      return;
+    }
     setPenActive(true);
     const p = getCanvasPoint(e);
-    socket.emit('draw:start', { x: p.x, y: p.y, color, width: sz, opacity: op });
+    socket.emit('draw:start', { x: p.x, y: p.y, color, width: sz, opacity: op, layerId: activeLayerId });
     return;
   }
   e.preventDefault();

@@ -9,6 +9,7 @@ import { ser } from '../../core/serialization.js';
 import { activeGifs } from '../media/gif-service.js';
 import { updateLayerToolbar } from '../groups/group-service.js';
 import { socket, genId, showToast, findById, vpRect } from '../../board-app.js';
+import { syncDrawingMode } from '../drawing-tools/drawing-tools.js';
 
 // ── Sistema de camadas ────────────────────────────────────────────────────────
 export const boardLayers = [{ id: 'layer-default', name: 'Camada 1', visible: true, viewVisible: true }];
@@ -216,6 +217,7 @@ function toggleLayerLock(layerId, e) {
   }
   socket.emit('layers:update', boardLayers);
   scheduleLayersUpdate();
+  syncDrawingMode();
 }
 
 function toggleGroupLock(groupId, e) {
@@ -299,6 +301,7 @@ function ensureActiveLayer() {
     // nesse caso, em vez de silenciosamente desenhar na camada travada.
     activeLayerId = (unlocked || boardLayers[0]).id;
   }
+  syncDrawingMode();
 }
 
 // Usado por qualquer fluxo de criação de objeto (traço, forma, imagem, gif,
@@ -317,6 +320,7 @@ function addLayer() {
   activeLayerId = newL.id;
   socket.emit('layers:update', boardLayers);
   scheduleLayersUpdate();
+  syncDrawingMode();
 }
 
 function deleteLayer(layerId) {
@@ -464,6 +468,7 @@ function updateLayersPanel() {
       clearTimeout(header._clickTimer);
       header._clickTimer = setTimeout(() => {
         if (!layer.locked) activeLayerId = layer.id;
+        syncDrawingMode();
         applyPanelSelection(layerObjs.filter(o => !isLocked(o)));
       }, 200);
     });
