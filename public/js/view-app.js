@@ -128,6 +128,13 @@ socket.on('object:add',       d           => applyFull(d));
 socket.on('object:modify',    d           => applyFull(d));
 socket.on('object:transform', d           => { applyTransformOnly(d); canvas.renderAll(); });
 socket.on('objects:transform', updates    => { updates.forEach(d => applyTransformOnly(d)); canvas.renderAll(); });
+socket.on('erase:live', updates => {
+  updates.forEach(u => {
+    const o = findById(u.id);
+    if (o) { o.eraseStrokes = u.eraseStrokes; o.dirty = true; }
+  });
+  canvas.requestRenderAll();
+});
 socket.on('object:remove',    ids         => { ids.forEach(id => { const o = findById(id); if (o) canvas.remove(o); }); canvas.renderAll(); });
 socket.on('objects:batch',    objs        => { objs.forEach(d => applyFull(d, false)); canvas.renderAll(); });
 

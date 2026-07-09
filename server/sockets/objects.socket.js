@@ -122,6 +122,17 @@ function register(ctx) {
     socket.broadcast.to(roomId).volatile.emit('objects:transform', updates);
   });
 
+  // Preview ao vivo da borracha durante o arraste — só espelha nos outros
+  // clientes, o commit real (com undo) vem depois em objects:modify:commit
+  // quando o mouse é solto (ver finishEraserDrag). Emissão NÃO-volátil
+  // (diferente de object:transform acima): em teste real de navegador, o
+  // volatile.emit era descartado quase sempre no transporte do cliente —
+  // como já é throttled a ~60/s do lado de quem desenha, o volume é baixo o
+  // bastante pra não precisar ser descartável.
+  socket.on('erase:live', updates => {
+    socket.broadcast.to(roomId).emit('erase:live', updates);
+  });
+
   socket.on('zorder:sync', order => {
     room.state.zorder = order;
     bcast('zorder:sync', order);

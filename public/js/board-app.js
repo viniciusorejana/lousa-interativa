@@ -43,8 +43,8 @@ import {
 import { initRemoteUsersSocketListeners } from './features/remote-users/remote-users.js';
 import { copySel } from './features/clipboard/clipboard.js';
 import {
-  tool, color, sz, op, fillShape, isDrawing, drawStart, penActive,
-  getCanvasPoint, handlePointerDown, updateTmpShape, handlePointerUp,
+  tool, color, sz, op, fillShape, isDrawing, drawStart, penActive, eraserActive,
+  getCanvasPoint, handlePointerDown, updateTmpShape, updateEraserDrag, handlePointerUp,
   setTool, setColor, setSz, setOp, setFillShape, setPenActive,
 } from './features/drawing-tools/drawing-tools.js';
 import { layoutSidePanels, toggleVpPanel, toggleLayersPanel, updCtx } from './ui/panel-layout.js';
@@ -245,6 +245,13 @@ canvasEl.addEventListener('touchmove', e => {
     socket.volatile.emit('draw:move', { x: p.x, y: p.y });
     return;
   }
+  if (tool === 'eraser' && eraserActive) {
+    e.preventDefault();
+    const p = getCanvasPoint(e);
+    socket.volatile.emit('cursor:move', { x: p.x, y: p.y });
+    updateEraserDrag(p);
+    return;
+  }
   e.preventDefault();
   if (!isDrawing || !drawStart) return;
   const p = getCanvasPoint(e);
@@ -342,6 +349,7 @@ canvas.on('mouse:move', opt => {
   if (penActive && tool === 'pen') {
     socket.emit('draw:move', { x: p.x, y: p.y });
   }
+  if (tool === 'eraser' && eraserActive) { updateEraserDrag(p); return; }
   if (!isDrawing || !drawStart) return;
   updateTmpShape(p);
 });
@@ -489,6 +497,17 @@ socket.on('object:add',       d       => applyFull(d));
 socket.on('object:modify',    d       => applyFull(d));
 socket.on('object:transform', d       => { applyTransformOnly(d); canvas.renderAll(); });
 socket.on('objects:transform', updates => { updates.forEach(d => applyTransformOnly(d)); canvas.renderAll(); });
+// Preview ao vivo da borracha (durante o arraste, antes do commit final) —
+// mesmo padrão do object:transform: só espelha localmente, não mexe no
+// histórico/estado do servidor (isso já é feito pelo objects:modify:commit
+// disparado no fim do arraste, ver finishEraserDrag).
+socket.on('erase:live', updates => {
+  updates.forEach(u => {
+    const o = findById(u.id);
+    if (o) { o.eraseStrokes = u.eraseStrokes; o.dirty = true; }
+  });
+  canvas.requestRenderAll();
+});
 socket.on('object:remove', ids => {
   ids.forEach(id => { const o = findById(id); if (o) canvas.remove(o); });
   canvas.renderAll();

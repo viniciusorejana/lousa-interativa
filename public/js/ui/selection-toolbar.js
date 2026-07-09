@@ -109,5 +109,5 @@ export function dupSel() {
       socket.emit('objects:batch', serialized);
       scheduleLayersUpdate();
     }
-  }, ['id', 'layerId', '_isArrow', '_isGif', '_gifUrl']));
+  }, ['id', 'layerId', '_isArrow', '_isGif', '_gifUrl', 'eraseStrokes']));
 }
