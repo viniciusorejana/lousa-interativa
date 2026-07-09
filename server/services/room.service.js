@@ -28,6 +28,7 @@ function defaultRoomState() {
   return {
     objects:  {},
     layers:   [{ id: 'layer-default', name: 'Camada 1', visible: true }],
+    groups:   [],
     viewport: { x: 0, y: 0, w: 1920, h: 1080 },
     // clientId (persistente por navegador, não por conexão) → posição da área
     // reservada de spawn desse cliente. Só existe uma entrada aqui depois que
@@ -44,6 +45,7 @@ function getRoom(roomId) {
   const saved = loadRoomFromDisk(roomId);
   const state = saved ? saved.state : defaultRoomState();
   if (!state.stagingAreas) state.stagingAreas = {}; // salas salvas antes dessa feature
+  if (!state.groups) state.groups = []; // salas salvas antes do sistema de grupos por etiqueta
   rooms[roomId] = {
     state,
     userHistory: {}, // userId → { undoStack: [...], redoStack: [...] } — não persiste no disco (é por sessão)

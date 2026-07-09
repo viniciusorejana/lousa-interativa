@@ -21,7 +21,7 @@ import { eventBus } from './core/event-bus.js';
 import { absoluteImgUrl, ser, serTransform, serTransformAbsolute } from './core/serialization.js';
 import { isGifUrl, placeGif, placeImageFromUrl, insertImg, activeGifs } from './features/media/gif-service.js';
 import { renderObjectsAsDataURL, exportSelectionOrBoardAsPNG } from './features/export/png-exporter.js';
-import { updateLayerToolbar, groupSelected, ungroupSelected } from './features/groups/group-service.js';
+import { updateLayerToolbar, groupSelected, ungroupSelected, ungroupByIds } from './features/groups/group-service.js';
 import { closeBoardTutorial, btutNav } from './features/onboarding/tutorial.js';
 import './features/onboarding/tooltip.js';
 import {
@@ -32,11 +32,13 @@ import {
   previewStagingPlacement,
 } from './features/spawn-area/staging-area.js';
 import {
-  boardLayers, activeLayerId, hiddenObjects, objectNames, collapsedLayers,
+  boardLayers, boardGroups, activeLayerId, hiddenObjects, objectNames, collapsedLayers,
   typeCounters, collapsedGroups, scheduleLayersUpdate, scheduleLayersPanel,
   assignDefaultName, ensureActiveLayer, addLayer, deleteLayer,
   toggleLayerVisibility, moveLayer, applyLayerZOrder, updateLayersPanel,
   toggleObjVisibility, togglePathGroup, deletePathGroup, deleteObjById,
+  toggleObjLock, toggleLayerLock, toggleGroupLock, isLayerLocked,
+  toggleObjViewVisibility, toggleViewPathGroup, toggleLayerViewVisibility, toggleGroupViewVisibility,
 } from './features/layers/layers-panel.js';
 import { initRemoteUsersSocketListeners } from './features/remote-users/remote-users.js';
 import { copySel } from './features/clipboard/clipboard.js';
@@ -449,6 +451,10 @@ socket.on('board:init', ({ state, roomId, userId, userName, userColor, canUndo, 
     boardLayers.length = 0;
     boardLayers.push(...state.layers);
   }
+  if (state && state.groups) {
+    boardGroups.length = 0;
+    boardGroups.push(...state.groups);
+  }
   ensureActiveLayer();
   loadState(state);
   if (state && state.viewport) {
@@ -489,94 +495,15 @@ socket.on('object:remove', ids => {
 });
 socket.on('objects:batch', objs => { objs.forEach(d => applyFull(d, false)); canvas.renderAll(); });
 
-// Operações atômicas de grupo — aplicadas por outros clientes
-socket.on('group:commit', ({ group: groupData, childIds, zorder }) => {
-  // Pega os objetos Fabric existentes no canvas pelos ids dos filhos.
-  // Eles já têm seus elementos DOM carregados — não precisamos recriar nada.
-  const children = childIds.map(id => findById(id)).filter(Boolean);
-
-  if (children.length === 0) {
-    // Nenhum filho encontrado no canvas (ex: cliente entrou depois do grupo)
-    // Cai no caminho lento de recriação via applyFull
-    applyFull(groupData, false);
-    if (zorder) zorder.forEach((id, idx) => { const o = findById(id); if (o) canvas.moveTo(o, idx); });
-    canvas.renderAll();
-    scheduleLayersUpdate();
-    return;
-  }
-
-  // Remove os filhos do canvas sem destruí-los
-  children.forEach(o => canvas.remove(o));
-
-  // Cria o grupo com os objetos existentes — equivalente ao sel.toGroup() do emitter.
-  // canvas.discardActiveObject() garante que nenhuma ActiveSelection interfira.
-  canvas.discardActiveObject();
-  const sel = new fabric.ActiveSelection(children, { canvas });
-  canvas.setActiveObject(sel);
-  const grp = sel.toGroup();
-
-  // Aplica os metadados do grupo vindos do emitter (posição, escala, id, layerId)
-  grp.id      = groupData.id;
-  grp.layerId = groupData.layerId || activeLayerId;
-  grp.set({
-    left:    groupData.left    ?? grp.left,
-    top:     groupData.top     ?? grp.top,
-    scaleX:  groupData.scaleX  ?? grp.scaleX,
-    scaleY:  groupData.scaleY  ?? grp.scaleY,
-    angle:   groupData.angle   ?? grp.angle,
-    opacity: groupData.opacity ?? grp.opacity,
-  });
-  grp.setCoords();
-
-  canvas.discardActiveObject();
-  if (vpRect) canvas.bringToFront(vpRect);
-  if (zorder) zorder.forEach((id, idx) => { const o = findById(id); if (o) canvas.moveTo(o, idx); });
-  canvas.renderAll();
-  scheduleLayersUpdate();
+// Registro de grupos (etiqueta groupId) — sincronizado como um todo, mesmo
+// padrão de 'layers:update' (sem tracking de undo). Os objetos em si (com seu
+// groupId) já chegam por object:add/object:modify/objects:modify:commit.
+socket.on('groups:update', groups => {
+  boardGroups.length = 0;
+  boardGroups.push(...groups);
+  scheduleLayersPanel();
 });
 
-socket.on('ungroup:commit', ({ groupId, children: childrenData, zorder }) => {
-  const grp = findById(groupId);
-
-  if (!grp || grp.type !== 'group') {
-    childrenData.forEach(d => applyFull(d, false));
-    if (zorder) zorder.forEach((id, idx) => { const o = findById(id); if (o) canvas.moveTo(o, idx); });
-    canvas.renderAll();
-    scheduleLayersUpdate();
-    return;
-  }
-
-  canvas.discardActiveObject();
-  canvas.setActiveObject(grp);
-  // toActiveSelection() já faz o mesmo cálculo de matriz que ungroupSelected() faz
-  // para converter coordenadas relativas ao grupo → absolutas do canvas.
-  // NÃO re-aplicamos left/top do emitter em cima disso — causaria double-offset.
-  const activeSel = grp.toActiveSelection();
-
-  if (activeSel && activeSel.getObjects) {
-    activeSel.getObjects().forEach(o => {
-      const data = childrenData.find(d => d.id === o.id);
-      if (data) {
-        // Só metadados que toActiveSelection() não define
-        o.set({ layerId: data.layerId || o.layerId });
-        // Normaliza origin para 'left'/'top' (consistência com o estado do emitter)
-        if (o.originX !== 'left' || o.originY !== 'top') {
-          const pt = o.translateToOriginPoint(
-            new fabric.Point(o.left, o.top), o.originX, o.originY
-          );
-          o.set({ originX: 'left', originY: 'top', left: pt.x, top: pt.y });
-        }
-        o.setCoords();
-      }
-    });
-  }
-
-  canvas.discardActiveObject();
-  if (vpRect) canvas.bringToFront(vpRect);
-  if (zorder) zorder.forEach((id, idx) => { const o = findById(id); if (o) canvas.moveTo(o, idx); });
-  canvas.renderAll();
-  scheduleLayersUpdate();
-});
 socket.on('board:clear', () => {
   canvas.clear(); canvas.backgroundColor = isLiveBgEnabled() ? 'transparent' : '#1e1e2a'; canvas.renderAll();
   createViewportRect();
@@ -587,6 +514,7 @@ socket.on('board:sync', st => {
   canvas.clear(); canvas.backgroundColor = isLiveBgEnabled() ? 'transparent' : '#1e1e2a';
   hiddenObjects.clear();
   if (st && st.layers && st.layers.length) { boardLayers.length = 0; boardLayers.push(...st.layers); }
+  if (st && st.groups) { boardGroups.length = 0; boardGroups.push(...st.groups); }
   ensureActiveLayer();
   loadState(st);
   setTimeout(createViewportRect, 100);
@@ -759,8 +687,18 @@ function emitLiveTransform(target) {
 
 export function emitFull(obj) {
   if (obj._isViewportRect) return;
-  if (!obj.id) obj.id = genId();
   ensureActiveLayer(); // garante que activeLayerId é válido antes de atribuir
+  const targetLayerId = obj.layerId || activeLayerId;
+  if (isLayerLocked(targetLayerId)) {
+    // Camada travada (inclusive quando é a única existente, caso em que
+    // ensureActiveLayer não tem outra camada pra desviar) — recusa a criação
+    // em vez de desenhar silenciosamente dentro dela.
+    canvas.remove(obj);
+    canvas.renderAll();
+    showToast('Camada travada — destrave para criar objetos aqui.', 2500);
+    return;
+  }
+  if (!obj.id) obj.id = genId();
   if (!obj.layerId) obj.layerId = activeLayerId;
   const s = ser(obj);
   if (s) socket.emit('object:add', s);
@@ -1011,18 +949,20 @@ export function deser(data, cb) {
         });
       return;
     }
-    fabric.Image.fromURL(absoluteImgUrl(data.src), img => { img.set(data); img.id = data.id; if (data.layerId) img.layerId = data.layerId; cb(img); }, { crossOrigin: 'anonymous' });
+    fabric.Image.fromURL(absoluteImgUrl(data.src), img => { img.set(data); img.id = data.id; if (data.layerId) img.layerId = data.layerId; if (data.groupId) img.groupId = data.groupId; img.locked = !!data.locked; cb(img); }, { crossOrigin: 'anonymous' });
     return;
   }
-  if (data.type === 'path') { const o = new fabric.Path(data.path, data); o.id = data.id; if (data.layerId) o.layerId = data.layerId; if (data._isArrow) o._isArrow = true; cb(o); return; }
+  if (data.type === 'path') { const o = new fabric.Path(data.path, data); o.id = data.id; if (data.layerId) o.layerId = data.layerId; if (data.groupId) o.groupId = data.groupId; o.locked = !!data.locked; if (data._isArrow) o._isArrow = true; cb(o); return; }
   if (data.type === 'line') {
     const o = new fabric.Line([data.x1, data.y1, data.x2, data.y2], data);
-    o.id = data.id; cb(o); return;
+    o.id = data.id; if (data.groupId) o.groupId = data.groupId; o.locked = !!data.locked; cb(o); return;
   }
   if (data.type === 'group') {
     // Usa o fabric.Group.fromObject nativo — ele chama fabric.Image.fromURL
     // internamente para cada filho, que agora é interceptado pelo nosso patch:
     // src é normalizado para o host atual e crossOrigin='anonymous' é garantido.
+    // Só ocorre para grupos antigos (fabric.Group real) salvos antes deste
+    // sistema de groupId por etiqueta — novos grupos não usam mais type='group'.
     fabric.Group.fromObject(data, o => {
       o.id = data.id;
       if (data.layerId) o.layerId = data.layerId;
@@ -1032,7 +972,7 @@ export function deser(data, cb) {
   }
   const FT = getFabricType(data.type);
   if (!FT) { console.warn('Tipo desconhecido:', data.type); return; }
-  FT.fromObject(data, o => { o.id = data.id; if (data.layerId) o.layerId = data.layerId; cb(o); });
+  FT.fromObject(data, o => { o.id = data.id; if (data.layerId) o.layerId = data.layerId; if (data.groupId) o.groupId = data.groupId; o.locked = !!data.locked; cb(o); });
 }
 
 export function findById(id) { return canvas.getObjects().find(o => o.id === id); }
@@ -1198,9 +1138,11 @@ Object.assign(window, {
   setSelColor, setSelFill, toggleSelFill, setSelStroke, resizeSel, setSelOp,
   sendBackFront, delSel,
   toggleVpPanel, updateViewport,
-  toggleLayersPanel, addLayer, groupSelected, ungroupSelected,
+  toggleLayersPanel, addLayer, groupSelected, ungroupSelected, ungroupByIds,
   scheduleLayersUpdate, toggleLayerVisibility, moveLayer, deleteLayer,
   toggleObjVisibility, deleteObjById, togglePathGroup, deletePathGroup,
+  toggleObjLock, toggleLayerLock, toggleGroupLock,
+  toggleObjViewVisibility, toggleViewPathGroup, toggleLayerViewVisibility, toggleGroupViewVisibility,
   closeBoardTutorial, btutNav,
   toggleLiveBg, toggleLiveBgInteract, applyLiveBg, setLiveBgOpacity,
 });

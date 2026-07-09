@@ -11,8 +11,14 @@ import { updateLayerToolbar } from '../groups/group-service.js';
 import { socket, genId, showToast, findById, vpRect } from '../../board-app.js';
 
 // ── Sistema de camadas ────────────────────────────────────────────────────────
-export const boardLayers = [{ id: 'layer-default', name: 'Camada 1', visible: true }];
+export const boardLayers = [{ id: 'layer-default', name: 'Camada 1', visible: true, viewVisible: true }];
 export let activeLayerId  = 'layer-default';
+// ── Sistema de grupos (etiqueta, não fabric.Group) ────────────────────────────
+// boardGroups = [ { id, name, locked } ] — cada objeto agrupado carrega
+// obj.groupId apontando pra um destes, exatamente como obj.layerId aponta pra
+// boardLayers. Sem container real: objetos de um grupo continuam individual-
+// mente selecionáveis/editáveis no canvas (ver group-service.js).
+export const boardGroups = [];
 // ── PAINEL DE CAMADAS (estilo Photoshop) ──────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════════
 // boardLayers = [ { id, name, visible } ]  — cada camada é um "grupo lógico"
@@ -125,6 +131,9 @@ function startRename(id, nameEl) {
     if (id.startsWith('layer-')) {
       const l = boardLayers.find(x => x.id === id);
       if (l) { l.name = val; socket.emit('layers:update', boardLayers); }
+    } else if (id.startsWith('group-')) {
+      const g = boardGroups.find(x => x.id === id);
+      if (g) { g.name = val; socket.emit('groups:update', boardGroups); }
     } else {
       objectNames[id] = val;
     }
@@ -138,25 +147,172 @@ function startRename(id, nameEl) {
   });
 }
 
+// ── Trava (lock) ──────────────────────────────────────────────────────────────
+// Um objeto é considerado travado se ele mesmo, sua camada OU seu grupo
+// estiverem marcados como locked. Travado = não selecionável/editável/movível/
+// redimensionável/rotacionável e sem mudança de visibilidade — por isso a
+// trava se resume a zerar `selectable`/`evented` (quase toda ação de edição do
+// app opera em cima de canvas.getActiveObject(s)()), mais guards explícitos
+// nos botões do painel (excluir/ocultar/arrastar), que são DOM e não passam
+// pelo Fabric.
+export function isLocked(obj) {
+  if (!obj) return false;
+  if (obj.locked) return true;
+  const layer = boardLayers.find(l => l.id === obj.layerId);
+  if (layer && layer.locked) return true;
+  const group = obj.groupId ? boardGroups.find(g => g.id === obj.groupId) : null;
+  if (group && group.locked) return true;
+  return false;
+}
+
+// ── Visibilidade na view (ao vivo) ────────────────────────────────────────────
+// Independente da visibilidade no board (hiddenObjects/layer.visible, que
+// esconde dos dois lados): controla só o que aparece na tela da live (OBS).
+// Mesmo padrão hierárquico do lock — objeto, camada OU grupo podem esconder.
+// Habilitado por padrão: `undefined` conta como visível em todos os níveis.
+export function isViewHidden(obj) {
+  if (!obj) return false;
+  if (obj.viewHidden) return true;
+  const layer = boardLayers.find(l => l.id === obj.layerId);
+  if (layer && layer.viewVisible === false) return true;
+  const group = obj.groupId ? boardGroups.find(g => g.id === obj.groupId) : null;
+  if (group && group.viewHidden) return true;
+  return false;
+}
+
+// Recalcula selectable/evented de todo objeto a partir do estado atual de
+// boardLayers/boardGroups — chamado a cada updateLayersPanel(), então qualquer
+// mudança de lock (objeto, camada ou grupo) se propaga automaticamente no
+// próximo render, sem precisar carimbar flags derivadas em cada objeto.
+function refreshLockStates() {
+  canvas.getObjects().forEach(o => {
+    if (o._isViewportRect) return;
+    const locked = isLocked(o);
+    o.selectable = !locked;
+    o.evented = !locked;
+  });
+  if (canvas.getActiveObjects().some(o => isLocked(o))) {
+    canvas.discardActiveObject();
+  }
+}
+
+function toggleObjLock(id) {
+  const obj = findById(id); if (!obj) return;
+  obj.locked = !obj.locked;
+  const s = ser(obj);
+  if (s) socket.emit('object:modify:commit', s);
+  canvas.renderAll();
+  scheduleLayersUpdate();
+}
+
+function toggleLayerLock(layerId, e) {
+  if (e) e.stopPropagation();
+  const layer = boardLayers.find(l => l.id === layerId);
+  if (!layer) return;
+  layer.locked = !layer.locked;
+  if (layer.locked && activeLayerId === layerId) {
+    const alt = boardLayers.find(l => l.id !== layerId && !l.locked);
+    if (alt) activeLayerId = alt.id;
+  }
+  socket.emit('layers:update', boardLayers);
+  scheduleLayersUpdate();
+}
+
+function toggleGroupLock(groupId, e) {
+  if (e) e.stopPropagation();
+  const group = boardGroups.find(g => g.id === groupId);
+  if (!group) return;
+  group.locked = !group.locked;
+  socket.emit('groups:update', boardGroups);
+  scheduleLayersUpdate();
+}
+
+function lockIcon(locked) {
+  return locked
+    ? `<svg width="11" height="11" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/></svg>`
+    : `<svg width="11" height="11" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 017.75-1.5"/></svg>`;
+}
+
+// Ícone de "monitor" (visibilidade na view/live) — distinto do olho (visibilidade
+// no board), pra não confundir as duas travas de visibilidade independentes.
+function viewIcon(hidden, size = 11) {
+  return hidden
+    ? `<svg width="${size}" height="${size}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`
+    : `<svg width="${size}" height="${size}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>`;
+}
+
+// ── Visibilidade na view (toggle) ─────────────────────────────────────────────
+// Objeto: própria flag, sincronizada via object:modify:commit (mesmo canal do
+// lock) — entra no histórico de undo, consistente com toggleObjLock.
+function toggleObjViewVisibility(id) {
+  const obj = findById(id); if (!obj || isLocked(obj)) return;
+  obj.viewHidden = !obj.viewHidden;
+  const s = ser(obj);
+  if (s) socket.emit('object:modify:commit', s);
+  scheduleLayersUpdate();
+}
+
+// Traços agrupados no painel ("N traços") — aplica a mesma flag a todos de uma vez.
+function toggleViewPathGroup(ids) {
+  const allHidden = ids.every(id => { const o = findById(id); return o && o.viewHidden; });
+  const objs = ids.map(id => findById(id)).filter(Boolean);
+  objs.forEach(o => { o.viewHidden = !allHidden; });
+  const updates = objs.map(ser).filter(Boolean);
+  if (updates.length) socket.emit('objects:modify:commit', updates);
+  scheduleLayersUpdate();
+}
+
+function toggleLayerViewVisibility(layerId, e) {
+  if (e) e.stopPropagation();
+  const layer = boardLayers.find(l => l.id === layerId);
+  if (!layer) return;
+  layer.viewVisible = layer.viewVisible === false ? true : false;
+  socket.emit('layers:update', boardLayers);
+  scheduleLayersUpdate();
+}
+
+function toggleGroupViewVisibility(groupId, e) {
+  if (e) e.stopPropagation();
+  const group = boardGroups.find(g => g.id === groupId);
+  if (!group) return;
+  group.viewHidden = !group.viewHidden;
+  socket.emit('groups:update', boardGroups);
+  scheduleLayersUpdate();
+}
+
 // ── Gerenciar camadas ─────────────────────────────────────────────────────────
-// Garante que activeLayerId aponta para uma camada que existe.
+// Garante que activeLayerId aponta para uma camada que existe (e não travada).
 // Chamado após F5 (board:init), após deleteLayer, e antes de qualquer new object.
 function ensureActiveLayer() {
   if (!boardLayers.length) {
     // Caso extremo: não há nenhuma camada — cria uma
     boardLayers.length = 0;
-    boardLayers.push({ id: 'layer-default-' + genId(), name: 'Camada 1', visible: true });
+    boardLayers.push({ id: 'layer-default-' + genId(), name: 'Camada 1', visible: true, viewVisible: true });
     socket.emit('layers:update', boardLayers);
   }
   const valid = boardLayers.find(l => l.id === activeLayerId);
-  if (!valid) {
-    activeLayerId = boardLayers[0].id;
+  if (!valid || valid.locked) {
+    const unlocked = boardLayers.find(l => !l.locked);
+    // Se não existe NENHUMA camada destravada, activeLayerId acaba apontando
+    // pra uma camada travada mesmo assim (não há pra onde ir) — quem for criar
+    // conteúdo precisa checar isLayerLocked(activeLayerId) e bloquear a criação
+    // nesse caso, em vez de silenciosamente desenhar na camada travada.
+    activeLayerId = (unlocked || boardLayers[0]).id;
   }
+}
+
+// Usado por qualquer fluxo de criação de objeto (traço, forma, imagem, gif,
+// texto, colar) pra recusar criar conteúdo numa camada travada — inclusive
+// quando ela é a única camada existente (ensureActiveLayer não tem pra onde
+// desviar nesse caso).
+function isLayerLocked(layerId) {
+  const l = boardLayers.find(x => x.id === layerId);
+  return !!(l && l.locked);
 }
 
 function addLayer() {
   const n    = boardLayers.length + 1;
-  const newL = { id: 'layer-' + genId(), name: `Camada ${n}`, visible: true };
+  const newL = { id: 'layer-' + genId(), name: `Camada ${n}`, visible: true, viewVisible: true };
   boardLayers.unshift(newL);   // nova camada no topo
   activeLayerId = newL.id;
   socket.emit('layers:update', boardLayers);
@@ -239,6 +395,7 @@ function updateLayersPanel() {
   if (!list) return;
   const allObjs = canvas.getObjects().filter(o => o.id && !o._isViewportRect);
   ensureActiveLayer();
+  refreshLockStates();
   // Objetos sem camada (criados antes de ter camada, ou após F5 com camada deletada)
   // são reatribuídos à camada ativa
   allObjs.forEach(o => {
@@ -290,7 +447,9 @@ function updateLayersPanel() {
       <span class="layer-section-name" data-rename="${layer.id}">${layer.name}</span>
       <span style="font-size:9px;color:var(--muted);flex-shrink:0">${layerObjs.length}</span>
       <div class="layer-section-actions">
-        <button class="lsa-btn ${layer.visible ? '' : 'hidden-layer'}" onclick="toggleLayerVisibility('${layer.id}',event)">${eyeIcon}</button>
+        <button class="lsa-btn ${layer.locked ? 'locked-layer' : ''}" onclick="toggleLayerLock('${layer.id}',event)" title="${layer.locked ? 'Destravar camada' : 'Travar camada'}">${lockIcon(layer.locked)}</button>
+        <button class="lsa-btn ${layer.visible ? '' : 'hidden-layer'}" onclick="toggleLayerVisibility('${layer.id}',event)" title="${layer.visible ? 'Ocultar do board' : 'Mostrar no board'}">${eyeIcon}</button>
+        <button class="lsa-btn ${layer.viewVisible === false ? 'view-hidden-layer' : ''}" onclick="toggleLayerViewVisibility('${layer.id}',event)" title="${layer.viewVisible === false ? 'Mostrar na live' : 'Ocultar da live'}">${viewIcon(layer.viewVisible === false, 12)}</button>
         <button class="lsa-btn" onclick="moveLayer('${layer.id}',-1)" title="Subir">↑</button>
         <button class="lsa-btn" onclick="moveLayer('${layer.id}',1)" title="Descer">↓</button>
         <button class="lsa-btn" onclick="deleteLayer('${layer.id}')" title="Excluir camada" style="color:#ff6060">
@@ -298,14 +457,14 @@ function updateLayersPanel() {
         </button>
       </div>`;
 
-    // Clicar no header = ativar essa camada
-    // Click simples = ativar camada (delay para não conflitar com dblclick de rename)
+    // Clicar no header = ativar essa camada e selecionar todos os objetos dela
+    // Click simples (delay para não conflitar com dblclick de rename)
     header.addEventListener('click', e => {
       if (e.target.closest('.lsa-btn')) return;
       clearTimeout(header._clickTimer);
       header._clickTimer = setTimeout(() => {
-        activeLayerId = layer.id;
-        scheduleLayersUpdate();
+        if (!layer.locked) activeLayerId = layer.id;
+        applyPanelSelection(layerObjs.filter(o => !isLocked(o)));
       }, 200);
     });
     // Duplo clique no nome = renomear camada
@@ -326,6 +485,7 @@ function updateLayersPanel() {
     header.addEventListener('drop', e => {
       e.preventDefault(); e.stopPropagation();
       header.classList.remove('drag-over');
+      if (layer.locked) { layerDragSrcId = null; return; } // camada travada não recebe conteúdo novo
       const dragData = e.dataTransfer.getData('text/plain');
       let idsToMove = [];
       if (dragData.startsWith('__pathgroup__')) {
@@ -336,7 +496,7 @@ function updateLayersPanel() {
       }
       idsToMove.forEach(id => {
         const obj = findById(id);
-        if (obj && obj.layerId !== layer.id) {
+        if (obj && !isLocked(obj) && obj.layerId !== layer.id) {
           obj.layerId = layer.id;
           const s = ser(obj);
           if (s) socket.emit('object:modify:commit', s);
@@ -356,37 +516,36 @@ function updateLayersPanel() {
       const objsDiv = document.createElement('div');
       objsDiv.className = 'layer-section-objects';
 
-      // ── Helper: cria item de objeto (traço ou objeto) ──────────────────────
+      // ── Helper: cria item de objeto (traço ou objeto individual) ───────────
+      // Objetos de um grupo passam por aqui também (chamados por
+      // renderGroupBlock) — continuam totalmente interativos (seleção, drag,
+      // visibilidade, exclusão), diferente do antigo fabric.Group que só
+      // mostrava os filhos como preview estático.
       function makeObjItem(obj, indent, parentDiv) {
         const isCanSel = canvasSel.has(obj.id);
-        const isGroup  = obj.type === 'group';
-        const isCollG  = collapsedGroups.has(obj.id);
         const isHid    = hiddenObjects.has(obj.id);
+        const locked   = isLocked(obj);
         const accent   = obj.stroke || (obj.fill && obj.fill !== 'transparent' ? obj.fill : null) || '#7c5cff';
         const eyeSvg   = isHid
           ? `<svg width="11" height="11" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`
           : `<svg width="11" height="11" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
 
         const item = document.createElement('div');
-        item.className = 'layer-item' + (isCanSel ? ' selected' : '') + (isGroup ? ' is-group' : '');
+        item.className = 'layer-item' + (isCanSel ? ' selected' : '');
         item.style.paddingLeft = indent + 'px';
-        item.draggable = true;
+        item.draggable = !locked;
         item.dataset.id = obj.id;
-
-        const expandHtml = isGroup
-          ? `<button class="layer-expand-btn ${isCollG?'':'open'}" onclick="collapsedGroups.has('${obj.id}')?collapsedGroups.delete('${obj.id}'):collapsedGroups.add('${obj.id}');scheduleLayersUpdate();event.stopPropagation()">
-              <svg width="9" height="9" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
-            </button>`
-          : `<span style="width:14px;flex-shrink:0;display:inline-block"></span>`;
 
         item.innerHTML = `
           <div class="layer-drag-handle" title="Arrastar para reordenar ou mover de camada">⋮⋮</div>
-          ${expandHtml}
+          <span style="width:14px;flex-shrink:0;display:inline-block"></span>
           <div class="layer-icon" style="color:${accent}">${getLayerIcon(obj.type, obj)}</div>
           <span class="layer-name" data-rename="${obj.id}" title="Duplo clique = renomear">${getDisplayName(obj)}</span>
           <div class="layer-actions">
-            <button class="layer-action-btn ${isHid ? 'hidden-obj' : ''}" onclick="toggleObjVisibility('${obj.id}')" title="${isHid ? 'Mostrar' : 'Ocultar'}">${eyeSvg}</button>
-            <button class="layer-action-btn" onclick="deleteObjById('${obj.id}')" style="color:#ff6060" title="Excluir">
+            <button class="layer-action-btn ${obj.locked ? 'locked-obj' : ''}" onclick="toggleObjLock('${obj.id}')" title="${obj.locked ? 'Destravar' : 'Travar'}">${lockIcon(obj.locked)}</button>
+            <button class="layer-action-btn ${isHid ? 'hidden-obj' : ''}" ${locked ? 'disabled' : ''} onclick="toggleObjVisibility('${obj.id}')" title="${isHid ? 'Mostrar no board' : 'Ocultar do board'}">${eyeSvg}</button>
+            <button class="layer-action-btn ${obj.viewHidden ? 'view-hidden-obj' : ''}" ${locked ? 'disabled' : ''} onclick="toggleObjViewVisibility('${obj.id}')" title="${obj.viewHidden ? 'Mostrar na live' : 'Ocultar da live'}">${viewIcon(!!obj.viewHidden)}</button>
+            <button class="layer-action-btn" ${locked ? 'disabled' : ''} onclick="deleteObjById('${obj.id}')" style="color:#ff6060" title="Excluir">
               <svg width="11" height="11" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/></svg>
             </button>
           </div>`;
@@ -401,9 +560,10 @@ function updateLayersPanel() {
         clickableEntries.push([obj.id]);
 
         // Click simples → selecionar; shift+click = intervalo; ctrl/cmd+click = alternar
-        // (delay de 200ms para não conflitar com dblclick)
+        // (delay de 200ms para não conflitar com dblclick). Objeto travado não seleciona.
         item.addEventListener('click', e => {
           if (e.target.closest('.layer-action-btn,.layer-drag-handle,.layer-expand-btn')) return;
+          if (locked) return;
           clearTimeout(item._clickTimer);
           const shiftKey = e.shiftKey, ctrlKey = e.ctrlKey, metaKey = e.metaKey;
           item._clickTimer = setTimeout(() => {
@@ -413,6 +573,7 @@ function updateLayersPanel() {
 
         // Drag: reorder dentro da camada OU mover para outra camada (drop no header)
         item.addEventListener('dragstart', e => {
+          if (locked) { e.preventDefault(); return; }
           layerDragSrcId = obj.id;
           item.style.opacity = '.5';
           e.dataTransfer.effectAllowed = 'move';
@@ -423,6 +584,7 @@ function updateLayersPanel() {
           document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
         });
         item.addEventListener('dragover', e => {
+          if (locked) return;
           e.preventDefault();
           document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
           item.classList.add('drag-over');
@@ -430,7 +592,7 @@ function updateLayersPanel() {
         item.addEventListener('drop', e => {
           e.preventDefault(); e.stopPropagation();
           item.classList.remove('drag-over');
-          if (!layerDragSrcId || layerDragSrcId === obj.id) return;
+          if (locked || !layerDragSrcId || layerDragSrcId === obj.id) return;
           const src = findById(layerDragSrcId); if (!src) return;
           // Reorder dentro da camada
           canvas.moveTo(src, allObjs.indexOf(obj));
@@ -440,20 +602,56 @@ function updateLayersPanel() {
         });
 
         parentDiv.appendChild(item);
+      }
 
-        // Filhos do grupo — apenas exibição (sem drag nem visibilidade individual)
-        if (isGroup && !isCollG) {
-          const children = obj.getObjects ? obj.getObjects() : [];
-          [...children].reverse().forEach(ch => {
-            if (!ch.id) ch.id = genId(); assignDefaultName(ch);
-            const ci = document.createElement('div');
-            ci.className = 'layer-item is-group-child';
-            ci.style.paddingLeft = (indent + 14) + 'px';
-            ci.innerHTML = `
-              <div class="layer-icon" style="color:var(--muted);opacity:.6">${getLayerIcon(ch.type, ch)}</div>
-              <span class="layer-name" style="font-size:10px;color:var(--muted)">${getDisplayName(ch)}</span>`;
-            parentDiv.appendChild(ci);
-          });
+      // ── Helper: cabeçalho de grupo (etiqueta groupId) ──────────────────────
+      // Grupo não é mais um container fabric.Group — é só um cabeçalho no
+      // painel que lista seus membros, todos renderizados por makeObjItem
+      // (logo continuam individualmente selecionáveis/editáveis). Clicar no
+      // cabeçalho seleciona todos os membros de uma vez (ActiveSelection).
+      function renderGroupBlock(groupId, members, parentDiv) {
+        const group    = boardGroups.find(g => g.id === groupId);
+        const name     = (group && group.name) || 'Grupo';
+        const locked   = !!(group && group.locked);
+        const isCollG  = collapsedGroups.has(groupId);
+        const memberIds = members.map(m => m.id);
+        const anySel   = members.some(m => canvasSel.has(m.id));
+
+        const header = document.createElement('div');
+        header.className = 'layer-item is-group' + (anySel ? ' selected' : '');
+        header.style.paddingLeft = '18px';
+        header.dataset.groupId = groupId;
+        header.innerHTML = `
+          <span style="width:14px;flex-shrink:0;display:inline-block"></span>
+          <button class="layer-expand-btn ${isCollG?'':'open'}" onclick="collapsedGroups.has('${groupId}')?collapsedGroups.delete('${groupId}'):collapsedGroups.add('${groupId}');scheduleLayersUpdate();event.stopPropagation()">
+            <svg width="9" height="9" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+          </button>
+          <div class="layer-icon">${getLayerIcon('group')}</div>
+          <span class="layer-name" data-rename="${groupId}" title="Duplo clique = renomear">${name}</span>
+          <span style="font-size:9px;color:var(--muted);flex-shrink:0">${members.length}</span>
+          <div class="layer-actions">
+            <button class="layer-action-btn ${locked ? 'locked-obj' : ''}" onclick="toggleGroupLock('${groupId}',event)" title="${locked ? 'Destravar grupo' : 'Travar grupo'}">${lockIcon(locked)}</button>
+            <button class="layer-action-btn ${group && group.viewHidden ? 'view-hidden-obj' : ''}" onclick="toggleGroupViewVisibility('${groupId}',event)" title="${group && group.viewHidden ? 'Mostrar na live' : 'Ocultar da live'}">${viewIcon(!!(group && group.viewHidden))}</button>
+            <button class="layer-action-btn" onclick="ungroupByIds(['${memberIds.join("','")}'])" title="Desagrupar">
+              <svg width="11" height="11" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><rect x="2" y="8" width="8" height="8" rx="1"/><rect x="14" y="8" width="8" height="8" rx="1"/></svg>
+            </button>
+          </div>`;
+
+        header.querySelector('[data-rename]').addEventListener('dblclick', e => {
+          e.stopPropagation();
+          startRename(groupId, e.currentTarget);
+        });
+
+        clickableEntries.push(memberIds);
+        header.addEventListener('click', e => {
+          if (e.target.closest('.layer-action-btn,.layer-expand-btn')) return;
+          handlePanelItemClick(e, memberIds);
+        });
+
+        parentDiv.appendChild(header);
+
+        if (!isCollG) {
+          members.forEach(m => makeObjItem(m, 32, parentDiv));
         }
       }
 
@@ -461,17 +659,30 @@ function updateLayersPanel() {
       // Agrupa traços CONSECUTIVOS DA MESMA COR em um único item "N traços [cor]".
       // Traços de cores diferentes ou intercalados com objetos aparecem separados.
       const orderedDesc = [...layerObjs].reverse(); // topo do canvas primeiro
+      const renderedGroupIds = new Set();
       let i = 0;
       while (i < orderedDesc.length) {
         const obj = orderedDesc[i];
+        // Objeto agrupado (groupId) — renderiza (ou pula, se o grupo já foi
+        // desenhado) o cabeçalho do grupo com todos os seus membros, em vez de
+        // cair no agrupamento anônimo de traços ou no item individual abaixo.
+        if (obj.groupId) {
+          if (renderedGroupIds.has(obj.groupId)) { i++; continue; }
+          renderedGroupIds.add(obj.groupId);
+          const members = orderedDesc.filter(o => o.groupId === obj.groupId);
+          renderGroupBlock(obj.groupId, members, objsDiv);
+          i++;
+          continue;
+        }
         // Setas são paths mas tratadas como objetos individuais
         if (obj.type === 'path' && !obj._isArrow) {
-          // Coleta traços consecutivos da mesma cor (excluindo setas)
+          // Coleta traços consecutivos da mesma cor (excluindo setas e objetos agrupados)
           const groupColor = obj.stroke || '#ffffff';
           const pathGroup  = [];
           while (i < orderedDesc.length &&
                  orderedDesc[i].type === 'path' &&
                  !orderedDesc[i]._isArrow &&
+                 !orderedDesc[i].groupId &&
                  (orderedDesc[i].stroke || '#ffffff') === groupColor) {
             pathGroup.push(orderedDesc[i]); i++;
           }
@@ -481,6 +692,9 @@ function updateLayersPanel() {
           const eyeSvg = pathsHidden
             ? `<svg width="11" height="11" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`
             : `<svg width="11" height="11" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
+          const pathsViewHidden  = pathGroup.every(p => p.viewHidden);
+          const pathsViewPartial = !pathsViewHidden && pathGroup.some(p => p.viewHidden);
+          const viewEyeOpacity   = pathsViewHidden ? '1' : (pathsViewPartial ? '0.6' : '.6');
 
           const pathItemSelected = pathGroup.some(p => canvasSel.has(p.id));
           const pathItem = document.createElement('div');
@@ -499,9 +713,13 @@ function updateLayersPanel() {
               ${pathGroup.length} traço${pathGroup.length > 1 ? 's' : ''}
             </span>
             <div class="layer-actions">
-              <button class="layer-action-btn" style="opacity:${eyeOpacity}" title="${pathsHidden ? 'Mostrar' : 'Ocultar'}"
+              <button class="layer-action-btn" style="opacity:${eyeOpacity}" title="${pathsHidden ? 'Mostrar no board' : 'Ocultar do board'}"
                 onclick="togglePathGroup([${pathGroup.map(p => `'${p.id}'`).join(',')}])">
                 ${eyeSvg}
+              </button>
+              <button class="layer-action-btn ${pathsViewHidden ? 'view-hidden-obj' : ''}" style="opacity:${viewEyeOpacity}" title="${pathsViewHidden ? 'Mostrar na live' : 'Ocultar da live'}"
+                onclick="toggleViewPathGroup([${pathGroup.map(p => `'${p.id}'`).join(',')}])">
+                ${viewIcon(pathsViewHidden)}
               </button>
               <button class="layer-action-btn" style="color:#ff6060" title="Excluir traços"
                 onclick="deletePathGroup([${pathGroup.map(p => `'${p.id}'`).join(',')}])">
@@ -580,7 +798,7 @@ function updateLayersPanel() {
 }
 
 function toggleObjVisibility(id) {
-  const obj = findById(id); if (!obj) return;
+  const obj = findById(id); if (!obj || isLocked(obj)) return;
   let data;
   if (hiddenObjects.has(id)) {
     hiddenObjects.delete(id);
@@ -633,7 +851,7 @@ function deletePathGroup(ids) {
 }
 
 function deleteObjById(id) {
-  const obj = findById(id); if (!obj) return;
+  const obj = findById(id); if (!obj || isLocked(obj)) return;
   canvas.remove(obj); canvas.discardActiveObject(); canvas.renderAll();
   socket.emit('object:remove', [id]);
   panelSelected.delete(id); scheduleLayersUpdate();
@@ -656,6 +874,8 @@ export {
   hiddenObjects, collapsedLayers, collapsedGroups,
   scheduleLayersPanel,
   ensureActiveLayer, addLayer, deleteLayer, toggleLayerVisibility, moveLayer,
-  applyLayerZOrder, updateLayersPanel,
+  applyLayerZOrder, updateLayersPanel, isLayerLocked,
   toggleObjVisibility, togglePathGroup, deletePathGroup, deleteObjById,
+  toggleObjLock, toggleLayerLock, toggleGroupLock, lockIcon,
+  toggleObjViewVisibility, toggleViewPathGroup, toggleLayerViewVisibility, toggleGroupViewVisibility,
 };

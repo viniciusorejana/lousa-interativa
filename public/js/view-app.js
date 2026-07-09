@@ -42,6 +42,46 @@ mkTransp();
 // A view mapeia esse retângulo para preencher RENDER_W x RENDER_H exatamente.
 let vpX = 0, vpY = 0, vpW = 1920, vpH = 1080;
 
+// ── Visibilidade na view (ao vivo) ────────────────────────────────────────────
+// Espelha boardLayers/boardGroups do editor (layers-panel.js/group-service.js) —
+// só o suficiente (id, layerId/groupId, viewVisible/viewHidden) pra calcular,
+// junto com obj.viewHidden de cada objeto, se ele deve aparecer na live. A view
+// nunca ESCREVE nesse estado, só recebe via board:init/layers:update/groups:update
+// (mesmos eventos que já chegam pro editor, já que view e editor compartilham a
+// mesma Socket.IO room — só faltava a view escutar).
+let viewLayers = [];
+let viewGroups = [];
+
+function isLayerViewHidden(layerId) {
+  const layer = viewLayers.find(l => l.id === layerId);
+  return !!(layer && layer.viewVisible === false);
+}
+
+function isObjViewHidden(o) {
+  if (!o) return false;
+  if (o.viewHidden) return true;
+  const layer = viewLayers.find(l => l.id === o.layerId);
+  if (layer && layer.viewVisible === false) return true;
+  const group = o.groupId ? viewGroups.find(g => g.id === o.groupId) : null;
+  if (group && group.viewHidden) return true;
+  return false;
+}
+
+// Reaplica a visibilidade-na-view de TODOS os objetos já carregados a partir de
+// _baseOpacity/_baseVisible (a aparência "real", sem o filtro de view) — chamado
+// sempre que layers:update/groups:update chegam, já que uma mudança de camada ou
+// grupo pode afetar vários objetos de uma vez sem que cada um receba seu próprio
+// object:modify.
+function refreshViewVisibility() {
+  canvas.getObjects().forEach(o => {
+    if (o._baseOpacity === undefined) o._baseOpacity = o.opacity;
+    if (o._baseVisible === undefined) o._baseVisible = o.visible !== false;
+    const hidden = isObjViewHidden(o);
+    o.set({ opacity: hidden ? 0 : o._baseOpacity, visible: hidden ? false : o._baseVisible });
+  });
+  canvas.renderAll();
+}
+
 function applyViewportTransform() {
   // Escala independente em X e Y para preencher o canvas inteiro sem barras pretas.
   // Como o editor força a mesma proporção (1920x1080 por padrão), na prática
@@ -68,6 +108,8 @@ socket.on('board:init', ({ state }) => {
     vpX = state.viewport.x || 0; vpY = state.viewport.y || 0;
     vpW = state.viewport.w || 1920; vpH = state.viewport.h || 1080;
   }
+  viewLayers = (state && state.layers) || [];
+  viewGroups = (state && state.groups) || [];
   loadState(state);
   applyViewportTransform();
 });
@@ -77,6 +119,11 @@ socket.on('viewport:sync', vp => {
   applyViewportTransform();
 });
 
+// Mesmos eventos que o editor usa pra manter boardLayers/boardGroups em dia —
+// a view só precisa deles pra calcular visibilidade-na-view (isObjViewHidden).
+socket.on('layers:update', layers => { viewLayers = layers || []; refreshViewVisibility(); });
+socket.on('groups:update', groups => { viewGroups = groups || []; refreshViewVisibility(); });
+
 socket.on('object:add',       d           => applyFull(d));
 socket.on('object:modify',    d           => applyFull(d));
 socket.on('object:transform', d           => { applyTransformOnly(d); canvas.renderAll(); });
@@ -84,85 +131,29 @@ socket.on('objects:transform', updates    => { updates.forEach(d => applyTransfo
 socket.on('object:remove',    ids         => { ids.forEach(id => { const o = findById(id); if (o) canvas.remove(o); }); canvas.renderAll(); });
 socket.on('objects:batch',    objs        => { objs.forEach(d => applyFull(d, false)); canvas.renderAll(); });
 
-socket.on('group:commit', ({ group: groupData, childIds, zorder }) => {
-  const children = childIds.map(id => findById(id)).filter(Boolean);
-
-  if (children.length === 0) {
-    applyFull(groupData, false);
-    if (zorder) zorder.forEach((id, idx) => { const o = findById(id); if (o) canvas.moveTo(o, idx); });
-    canvas.renderAll();
-    return;
-  }
-
-  children.forEach(o => canvas.remove(o));
-  canvas.discardActiveObject();
-  const sel = new fabric.ActiveSelection(children, { canvas });
-  canvas.setActiveObject(sel);
-  const grp = sel.toGroup();
-  grp.id      = groupData.id;
-  grp.layerId = groupData.layerId;
-  grp.selectable = false; grp.evented = false;
-  grp.set({
-    left:    groupData.left    ?? grp.left,
-    top:     groupData.top     ?? grp.top,
-    scaleX:  groupData.scaleX  ?? grp.scaleX,
-    scaleY:  groupData.scaleY  ?? grp.scaleY,
-    angle:   groupData.angle   ?? grp.angle,
-    opacity: groupData.opacity ?? grp.opacity,
-  });
-  grp.setCoords();
-  canvas.discardActiveObject();
-  if (zorder) zorder.forEach((id, idx) => { const o = findById(id); if (o) canvas.moveTo(o, idx); });
-  canvas.renderAll();
-});
-
-socket.on('ungroup:commit', ({ groupId, children: childrenData, zorder }) => {
-  const grp = findById(groupId);
-
-  if (!grp || grp.type !== 'group') {
-    childrenData.forEach(d => applyFull(d, false));
-    if (zorder) zorder.forEach((id, idx) => { const o = findById(id); if (o) canvas.moveTo(o, idx); });
-    canvas.renderAll();
-    return;
-  }
-
-  canvas.discardActiveObject();
-  canvas.setActiveObject(grp);
-  const activeSel = grp.toActiveSelection();
-
-  if (activeSel && activeSel.getObjects) {
-    activeSel.getObjects().forEach(o => {
-      const data = childrenData.find(d => d.id === o.id);
-      if (data) {
-        o.set({ layerId: data.layerId || o.layerId });
-        if (o.originX !== 'left' || o.originY !== 'top') {
-          const pt = o.translateToOriginPoint(
-            new fabric.Point(o.left, o.top), o.originX, o.originY
-          );
-          o.set({ originX: 'left', originY: 'top', left: pt.x, top: pt.y });
-        }
-        o.selectable = false; o.evented = false;
-        o.setCoords();
-      }
-    });
-  }
-
-  canvas.discardActiveObject();
-  if (zorder) zorder.forEach((id, idx) => { const o = findById(id); if (o) canvas.moveTo(o, idx); });
-  canvas.renderAll();
-});
 socket.on('board:clear',      ()    => { canvas.clear(); mkTransp(); canvas.renderAll(); });
-socket.on('board:sync',       state => { canvas.clear(); mkTransp(); loadState(state); applyViewportTransform(); });
+socket.on('board:sync',       state => {
+  canvas.clear(); mkTransp();
+  viewLayers = (state && state.layers) || [];
+  viewGroups = (state && state.groups) || [];
+  loadState(state);
+  applyViewportTransform();
+});
 
-// Visibilidade de camada — esconde/mostra todos os objetos da camada na view
+// Visibilidade de camada NO BOARD (hiddenObjects/layer.visible) — esconde dos
+// dois lados (board e live). Diferente de layer.viewVisible (só live) — ver
+// isObjViewHidden. Guarda a intenção em _baseOpacity/_baseVisible e deixa
+// refreshViewVisibility aplicar o filtro de view por cima, pra um objeto que
+// também esteja marcado como oculto-na-view não reaparecer quando a camada
+// voltar a ficar visível no board.
 socket.on('layer:visibility', ({ layerId, visible }) => {
   canvas.getObjects()
     .filter(o => o.layerId === layerId)
     .forEach(o => {
-      if (!visible) { o.set({ opacity: 0, visible: false }); }
-      else          { o.set({ opacity: o._origOpacity ?? 1, visible: true }); }
+      o._baseOpacity = visible ? (o._origOpacity ?? 1) : 0;
+      o._baseVisible = visible;
     });
-  canvas.renderAll();
+  refreshViewVisibility();
 });
 socket.on('zorder:sync',      order       => {
   order.forEach((id, idx) => { const o = findById(id); if (o) canvas.moveTo(o, idx); });
@@ -170,8 +161,14 @@ socket.on('zorder:sync',      order       => {
 });
 
 // Stroke streaming
+// Se a camada ativa de quem está desenhando está oculta-na-view, o preview
+// nunca é adicionado ao canvas (liveStrokes guarda só `hidden:true` + os
+// pontos, sem objeto fabric) — ele nunca deve aparecer, nem por um instante,
+// até o traço terminar (draw:end sempre aplica applyFull no objeto final, que
+// já recalcula a visibilidade real a partir do dado definitivo).
 const liveStrokes = {};
-socket.on('draw:start', ({ userId, x, y, color, width, opacity }) => {
+socket.on('draw:start', ({ userId, x, y, color, width, opacity, layerId }) => {
+  if (isLayerViewHidden(layerId)) { liveStrokes[userId] = { hidden: true, pts: [{ x, y }] }; return; }
   const p = new fabric.Path('M ' + x + ' ' + y, {
     stroke: color, strokeWidth: width, fill: null, opacity: opacity || 1,
     strokeLineCap: 'round', strokeLineJoin: 'round', selectable: false, evented: false
@@ -182,6 +179,7 @@ socket.on('draw:start', ({ userId, x, y, color, width, opacity }) => {
 socket.on('draw:move', ({ userId, x, y }) => {
   const s = liveStrokes[userId]; if (!s) return;
   s.pts.push({ x, y });
+  if (s.hidden) return;
   // Mesma correção do board.html: recriar o Path do zero, já que mutar
   // path.set({path:...}) num objeto existente não recalcula a posição/bbox.
   const styleOpts = {
@@ -196,7 +194,7 @@ socket.on('draw:move', ({ userId, x, y }) => {
 });
 socket.on('draw:end', ({ userId, object }) => {
   const s = liveStrokes[userId];
-  if (s) { canvas.remove(s.path); delete liveStrokes[userId]; }
+  if (s) { if (!s.hidden) canvas.remove(s.path); delete liveStrokes[userId]; }
   if (object) applyFull(object); else canvas.renderAll();
 });
 
@@ -225,9 +223,15 @@ function mkShapeLive(t, s, e, style) {
   }
 }
 
+// Mesma lógica do stroke streaming acima: forma nunca aparece na view enquanto
+// a camada ativa de quem desenha estiver oculta-na-view.
 const liveShapes = {};
 
-socket.on('shape:start', ({ userId, tool: t, x, y, color: c, width: w, opacity: opa, fillShape: fs }) => {
+socket.on('shape:start', ({ userId, tool: t, x, y, color: c, width: w, opacity: opa, fillShape: fs, layerId }) => {
+  if (isLayerViewHidden(layerId)) {
+    liveShapes[userId] = { hidden: true, tool: t, start: { x, y }, style: { color: c, sz: w, op: opa, fillShape: fs } };
+    return;
+  }
   const style = { color: c, sz: w, op: opa, fillShape: fs };
   const sh = mkShapeLive(t, { x, y }, { x, y }, style);
   if (!sh) return;
@@ -237,6 +241,7 @@ socket.on('shape:start', ({ userId, tool: t, x, y, color: c, width: w, opacity: 
 
 socket.on('shape:move', ({ userId, x, y }) => {
   const rs = liveShapes[userId]; if (!rs) return;
+  if (rs.hidden) return;
   canvas.remove(rs.obj);
   const sh = mkShapeLive(rs.tool, rs.start, { x, y }, rs.style);
   if (!sh) return;
@@ -246,13 +251,13 @@ socket.on('shape:move', ({ userId, x, y }) => {
 
 socket.on('shape:end', ({ userId, object }) => {
   const rs = liveShapes[userId];
-  if (rs) { canvas.remove(rs.obj); delete liveShapes[userId]; }
+  if (rs) { if (!rs.hidden) canvas.remove(rs.obj); delete liveShapes[userId]; }
   if (object) applyFull(object); else canvas.renderAll();
 });
 
 socket.on('shape:cancel', ({ userId }) => {
   const rs = liveShapes[userId];
-  if (rs) { canvas.remove(rs.obj); delete liveShapes[userId]; canvas.renderAll(); }
+  if (rs) { if (!rs.hidden) canvas.remove(rs.obj); delete liveShapes[userId]; canvas.renderAll(); }
 });
 
 // ── applyFull ─────────────────────────────────────────────────────────────────
@@ -263,10 +268,13 @@ const _gifApplyGen = new Map(); // objectId → generation number
 function applyFull(data, render = true) {
   const ex = findById(data.id);
 
-  // Se é só mudança de visibilidade, não precisa recarregar a imagem
+  // Se é só mudança de visibilidade (no board), não precisa recarregar a imagem
   if (data._visibilityChange && ex) {
     const hidden = data.opacity === 0 || data.visible === false;
-    ex.set({ opacity: hidden ? 0 : (ex._origOpacity ?? 1), visible: !hidden });
+    ex._baseOpacity = hidden ? 0 : (data._prevOpacity !== undefined ? data._prevOpacity : (ex._origOpacity ?? 1));
+    ex._baseVisible = !hidden;
+    const viewHidden = isObjViewHidden(ex);
+    ex.set({ opacity: viewHidden ? 0 : ex._baseOpacity, visible: viewHidden ? false : ex._baseVisible });
     if (render) canvas.renderAll();
     return;
   }
@@ -283,7 +291,10 @@ function applyFull(data, render = true) {
       if (_gifApplyGen.get(data.id) !== gen) return;
 
       o.selectable = false; o.evented = false;
-      if (data._layerHidden) { o.set({ opacity: 0, visible: false }); }
+      o._baseOpacity = data._layerHidden ? 0 : o.opacity;
+      o._baseVisible = !data._layerHidden && data.visible !== false;
+      const viewHidden = isObjViewHidden(o);
+      o.set({ opacity: viewHidden ? 0 : o._baseOpacity, visible: viewHidden ? false : o._baseVisible });
       canvas.add(o);
       if (data.zIndex !== undefined) {
         const tgt = Math.min(data.zIndex, canvas.getObjects().length - 1);
@@ -296,7 +307,10 @@ function applyFull(data, render = true) {
 
   deser(data, o => {
     o.selectable = false; o.evented = false;
-    if (data._layerHidden) { o.set({ opacity: 0, visible: false }); }
+    o._baseOpacity = data._layerHidden ? 0 : o.opacity;
+    o._baseVisible = !data._layerHidden && data.visible !== false;
+    const viewHidden = isObjViewHidden(o);
+    o.set({ opacity: viewHidden ? 0 : o._baseOpacity, visible: viewHidden ? false : o._baseVisible });
     canvas.add(o);
     if (data.zIndex !== undefined) {
       const tgt = Math.min(data.zIndex, canvas.getObjects().length - 1);
@@ -309,12 +323,14 @@ function applyFull(data, render = true) {
 // ── applyTransformOnly ────────────────────────────────────────────────────────
 function applyTransformOnly(data) {
   const obj = findById(data.id); if (!obj) return;
+  obj._baseOpacity = data.opacity !== undefined ? data.opacity : obj._baseOpacity;
+  const viewHidden = isObjViewHidden(obj);
   obj.set({
     left:    data.left,  top:     data.top,
     scaleX:  Math.abs(data.scaleX || 1), scaleY: Math.abs(data.scaleY || 1),
     angle:   data.angle  || 0,
     flipX:   data.flipX  || false, flipY: data.flipY || false,
-    opacity: data.opacity !== undefined ? data.opacity : obj.opacity,
+    opacity: viewHidden ? 0 : obj._baseOpacity,
   });
   if ((data.type === 'i-text' || data.type === 'text') && data.text !== undefined) {
     obj.set({ text: data.text, fill: data.fill || obj.fill });
@@ -406,6 +422,10 @@ function loadState(state) {
   objs.forEach(d => deser(d, o => {
     if (gen !== _loadGen) return;
     o.selectable = false; o.evented = false;
+    o._baseOpacity = d._layerHidden ? 0 : o.opacity;
+    o._baseVisible = !d._layerHidden && d.visible !== false;
+    const viewHidden = isObjViewHidden(o);
+    o.set({ opacity: viewHidden ? 0 : o._baseOpacity, visible: viewHidden ? false : o._baseVisible });
     canvas.add(o);
     if (++done < total) return;
     if (gen !== _loadGen) return;

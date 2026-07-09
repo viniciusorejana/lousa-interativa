@@ -263,6 +263,9 @@ input[type="color"] { width:28px; height:28px; border:1px solid var(--border); b
 }
 .layer-action-btn:hover { background:var(--surface); color:var(--text); opacity:1; }
 .layer-action-btn.hidden-obj { color:#555; }
+.layer-action-btn.locked-obj { color:#e0a030; opacity:1; }
+.layer-action-btn.view-hidden-obj { color:#3399ff; opacity:1; }
+.layer-action-btn:disabled { opacity:.25; cursor:default; pointer-events:none; }
 #layers-empty { padding:20px; text-align:center; font-size:11px; color:var(--muted); }
 
 /* Faixa de camada (estilo Photoshop) */
@@ -292,6 +295,8 @@ input[type="color"] { width:28px; height:28px; border:1px solid var(--border); b
 }
 .lsa-btn:hover { background:var(--surface); color:var(--text); }
 .lsa-btn.hidden-layer { opacity:.4; }
+.lsa-btn.locked-layer { color:#e0a030; }
+.lsa-btn.view-hidden-layer { color:#3399ff; }
 .layer-section-objects { }
 .layer-section.collapsed .layer-section-objects { display:none; }
 

@@ -11,7 +11,7 @@ import { canvas } from '../../core/canvas-manager.js';
 import { ser } from '../../core/serialization.js';
 import { renderObjectsAsDataURL } from '../export/png-exporter.js';
 import { isGifUrl, placeGif, placeImageFromUrl } from '../media/gif-service.js';
-import { activeLayerId, assignDefaultName, scheduleLayersUpdate } from '../layers/layers-panel.js';
+import { activeLayerId, assignDefaultName, scheduleLayersUpdate, isLayerLocked } from '../layers/layers-panel.js';
 import { imageSpawnMode, placeStagingGroup, stagingRect } from '../spawn-area/staging-area.js';
 // Import circular com board-app.js — bindings usados só dentro de corpo de
 // função (nunca no nível superior do módulo), ver regra em CLAUDE.md.
@@ -25,6 +25,10 @@ async function insertFromExternalUrl(rawUrl, dropPos) {
   const url = rawUrl.trim();
   const imgUrlRe = /^https?:\/\/.+\.(png|jpe?g|gif|webp|svg|bmp)(\?.*)?$/i;
   if (!imgUrlRe.test(url) && !dropPos) return false; // só exige extensão no paste; drop tenta qualquer src
+  if (isLayerLocked(activeLayerId)) {
+    showToast('Camada travada — destrave para criar objetos aqui.', 2500);
+    return false;
+  }
 
   showToast('Carregando imagem...');
   try {
@@ -92,6 +96,10 @@ window.addEventListener('paste', async e => {
   const imgFile = items.find(i => i.type.startsWith('image/'));
   if (imgFile) {
     e.preventDefault();
+    if (isLayerLocked(activeLayerId)) {
+      showToast('Camada travada — destrave para criar objetos aqui.', 2500);
+      return;
+    }
     try {
       const url = await uploadFile(imgFile.getAsFile());
       const img = await placeImageFromUrl(url);
@@ -142,6 +150,10 @@ _boardEl.addEventListener('drop', async e => {
   // 1. Arquivo(s) do sistema operacional
   const files = Array.from(e.dataTransfer.files || []).filter(f => f.type.startsWith('image/'));
   if (files.length) {
+    if (isLayerLocked(activeLayerId)) {
+      showToast('Camada travada — destrave para criar objetos aqui.', 2500);
+      return;
+    }
     for (const file of files) {
       try {
         showToast('Enviando...');
@@ -228,6 +240,10 @@ export async function copySel() {
 // com novos ids/elementos — nunca reaproveita referências de objetos vivos.
 async function pasteBoardObjects(dataArray) {
   if (!dataArray || !dataArray.length) return;
+  if (isLayerLocked(activeLayerId)) {
+    showToast('Camada travada — destrave para colar objetos aqui.', 2500);
+    return;
+  }
 
   canvas.discardActiveObject();
   const pasted = [];

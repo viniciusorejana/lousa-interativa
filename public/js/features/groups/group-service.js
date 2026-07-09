@@ -1,12 +1,17 @@
 // ─── Agrupar / Desagrupar objetos ─────────────────────────────────────────────
-// Extraído de board-app.js. Import circular controlado com board-app.js (só
-// usado dentro de corpo de função — ver ARCHITECTURE.md).
+// Grupo é só uma etiqueta (`groupId`) em cada objeto, igual à camada
+// (`layerId`) — não existe mais um `fabric.Group` real envolvendo os filhos.
+// Isso significa que membros de um grupo continuam individualmente
+// selecionáveis/editáveis no canvas (Fabric 5.3.1 não suporta edição
+// "interactive" de grupo real — essa é a alternativa). Selecionar o grupo
+// inteiro de uma vez acontece pelo painel (clique no cabeçalho do grupo monta
+// uma ActiveSelection com todos os membros — ver layers-panel.js).
 import { canvas } from '../../core/canvas-manager.js';
-import { ser } from '../../core/serialization.js';
+import { ser, serTransformAbsolute } from '../../core/serialization.js';
 import {
-  showToast, activeLayerId, genId, typeCounters, objectNames, vpRect,
-  socket, assignDefaultName, scheduleLayersUpdate,
+  activeLayerId, genId, typeCounters, socket, scheduleLayersUpdate,
 } from '../../board-app.js';
+import { boardGroups } from '../layers/layers-panel.js';
 
 // ── Toolbar: habilita botões ──────────────────────────────────────────────────
 function updateLayerToolbar() {
@@ -14,94 +19,88 @@ function updateLayerToolbar() {
   const btnU = document.getElementById('lt-ungroup');
   if (!btnG) return;
   const selObjs = canvas.getActiveObjects().filter(o => !o._isViewportRect);
-  const hasGif  = selObjs.some(o => o._isGif);
-  btnG.disabled = selObjs.length < 2 || hasGif;
-  const single = canvas.getActiveObject();
-  btnU.disabled = !(single?.type === 'group');
+  // Já é exatamente um grupo existente (mesmo groupId em todos os selecionados
+  // E nenhum outro membro daquele grupo ficou de fora) — "Agrupar" de novo
+  // não faria nada, então mantém o botão desabilitado.
+  const gid = selObjs.length >= 2 ? selObjs[0].groupId : null;
+  const isExactExistingGroup = !!gid
+    && selObjs.every(o => o.groupId === gid)
+    && canvas.getObjects().filter(o => o.groupId === gid).length === selObjs.length;
+  btnG.disabled = selObjs.length < 2 || isExactExistingGroup;
+  btnU.disabled = !selObjs.some(o => o.groupId);
+}
+
+// Serializa uma lista de objetos respeitando o caso de estarem dentro de uma
+// activeSelection: nesse período o Fabric converte left/top dos filhos para
+// coordenadas relativas ao grupo de seleção, não ao canvas (mesmo problema já
+// tratado em ui/selection-toolbar.js -> emitModifyWithAbsPos). Serializar
+// direto com `ser()` aqui gravaria essas coordenadas relativas no histórico
+// de undo/redo — um Ctrl+Z/Y que restaurasse esse snapshot reposicionaria os
+// objetos pertinho da origem (canto superior esquerdo da viewport).
+function serAbsList(targets) {
+  const active = canvas.getActiveObject();
+  if (active && active.type === 'activeSelection') {
+    const gm = active.calcTransformMatrix();
+    return targets.map(o => {
+      const data = ser(o); if (!data) return null;
+      Object.assign(data, serTransformAbsolute(o, gm));
+      return data;
+    }).filter(Boolean);
+  }
+  return targets.map(ser).filter(Boolean);
+}
+
+// Remove groupId de uma lista de objetos e limpa da boardGroups qualquer
+// grupo que tenha ficado sem membros. Reaproveitada tanto por ungroupSelected()
+// (toolbar, opera na seleção atual) quanto por ungroupByIds() (painel, opera
+// numa lista explícita de ids vinda do cabeçalho do grupo).
+function ungroupObjects(targets) {
+  if (!targets.length) return;
+  const groupIds = new Set(targets.map(o => o.groupId).filter(Boolean));
+  targets.forEach(o => { o.groupId = null; });
+  canvas.renderAll();
+
+  groupIds.forEach(gid => {
+    const stillUsed = canvas.getObjects().some(o => o.groupId === gid);
+    if (!stillUsed) {
+      const idx = boardGroups.findIndex(g => g.id === gid);
+      if (idx !== -1) boardGroups.splice(idx, 1);
+    }
+  });
+  socket.emit('groups:update', boardGroups);
+  const updates = serAbsList(targets);
+  if (updates.length) socket.emit('objects:modify:commit', updates);
+  scheduleLayersUpdate();
 }
 
 // ── Agrupar / Desagrupar ──────────────────────────────────────────────────────
 function groupSelected() {
-  let targets = canvas.getActiveObjects().filter(o => !o._isViewportRect);
+  const targets = canvas.getActiveObjects().filter(o => !o._isViewportRect);
   if (targets.length < 2) return;
 
-  // GIFs não podem ser agrupados
-  if (targets.some(o => o._isGif)) {
-    showToast('GIFs animados não podem ser agrupados.', 2500);
-    return;
-  }
-
-  const layId  = targets[0].layerId || activeLayerId;
-  const oldIds = targets.map(o => o.id).filter(Boolean);
-
-  canvas.discardActiveObject();
-  const sel = new fabric.ActiveSelection(targets, { canvas });
-  canvas.setActiveObject(sel);
-  const group = sel.toGroup();
-  group.id      = genId();
-  group.layerId = layId;
+  const layId = targets[0].layerId || activeLayerId;
+  const id    = 'group-' + genId();
   typeCounters['Grupo'] = (typeCounters['Grupo'] || 0) + 1;
-  objectNames[group.id] = `Grupo ${typeCounters['Grupo']}`;
-  if (vpRect) canvas.bringToFront(vpRect);
-  canvas.discardActiveObject();
-  canvas.setActiveObject(group);
+  boardGroups.push({ id, name: `Grupo ${typeCounters['Grupo']}`, locked: false, viewHidden: false });
+
+  targets.forEach(o => { o.groupId = id; o.layerId = layId; });
   canvas.renderAll();
 
-  const zorder = canvas.getObjects().filter(o => o.id && !o._isViewportRect).map(o => o.id);
-  // Operação atômica — 1 único pushUndo no servidor
-  socket.emit('group:commit', { group: ser(group), childIds: oldIds, zorder });
+  socket.emit('groups:update', boardGroups);
+  const updates = serAbsList(targets);
+  if (updates.length) socket.emit('objects:modify:commit', updates);
   scheduleLayersUpdate();
 }
 
 function ungroupSelected() {
-  const groupObj = canvas.getActiveObject();
-  if (!groupObj || groupObj.type !== 'group') return;
-  const groupId = groupObj.id;
-  const layId   = groupObj.layerId || activeLayerId;
-
-  const groupMatrix    = groupObj.calcTransformMatrix();
-  const childSnapshots = (groupObj.getObjects ? groupObj.getObjects() : []).map(ch => {
-    const localMatrix = ch.calcOwnMatrix();
-    const absMatrix   = fabric.util.multiplyTransformMatrices(groupMatrix, localMatrix);
-    const decomp      = fabric.util.qrDecompose(absMatrix);
-    return { obj: ch, left: decomp.translateX, top: decomp.translateY,
-      scaleX: Math.abs(decomp.scaleX), scaleY: Math.abs(decomp.scaleY),
-      angle: decomp.angle, flipX: decomp.scaleX < 0, flipY: decomp.scaleY < 0 };
-  });
-
-  canvas.discardActiveObject();
-  canvas.setActiveObject(groupObj);
-  groupObj.toActiveSelection();
-  canvas.discardActiveObject();
-
-  const serializedChildren = [];
-  childSnapshots.forEach(snap => {
-    const ch = snap.obj;
-    if (!ch.id) ch.id = genId();
-    ch.layerId = layId;
-
-    const rad    = (snap.angle || 0) * Math.PI / 180;
-    const sw     = (ch.width  || 0) * snap.scaleX;
-    const sh     = (ch.height || 0) * snap.scaleY;
-    const leftTL = snap.left - (Math.cos(rad) * sw / 2 - Math.sin(rad) * sh / 2);
-    const topTL  = snap.top  - (Math.sin(rad) * sw / 2 + Math.cos(rad) * sh / 2);
-
-    ch.set({ originX: 'left', originY: 'top', left: leftTL, top: topTL,
-      scaleX: snap.scaleX, scaleY: snap.scaleY, angle: snap.angle,
-      flipX: snap.flipX, flipY: snap.flipY });
-    ch.setCoords();
-    assignDefaultName(ch);
-    const s = ser(ch);
-    if (s) serializedChildren.push(s);
-  });
-
-  if (vpRect) canvas.bringToFront(vpRect);
-  canvas.renderAll();
-
-  const zorder = canvas.getObjects().filter(o => o.id && !o._isViewportRect).map(o => o.id);
-  // Operação atômica — 1 único pushUndo no servidor
-  socket.emit('ungroup:commit', { groupId, children: serializedChildren, zorder });
-  scheduleLayersUpdate();
+  const targets = canvas.getActiveObjects().filter(o => !o._isViewportRect && o.groupId);
+  ungroupObjects(targets);
 }
 
-export { updateLayerToolbar, groupSelected, ungroupSelected };
+// Chamada pelo botão "Desagrupar" do cabeçalho do grupo no painel — opera
+// direto nos ids do grupo, sem depender da seleção atual do canvas.
+function ungroupByIds(ids) {
+  ungroupObjects(ids.map(id => canvas.getObjects().find(o => o.id === id)).filter(Boolean));
+}
+
+export { updateLayerToolbar, groupSelected, ungroupSelected, ungroupByIds };

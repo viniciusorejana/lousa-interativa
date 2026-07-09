@@ -9,9 +9,10 @@ import { canvas } from '../../core/canvas-manager.js';
 import { absoluteImgUrl } from '../../core/serialization.js';
 import { placeNewImage } from '../spawn-area/staging-area.js';
 import {
-  genId, activeLayerId, addToCanvas, emitFull, hideToast,
+  genId, activeLayerId, addToCanvas, emitFull, hideToast, showToast,
   uploadFile,
 } from '../../board-app.js';
+import { isLayerLocked } from '../layers/layers-panel.js';
 
 // ── Imagens e GIFs animados ───────────────────────────────────────────────────
 // GIFs são decodificados num WebWorker (gif.worker.js) fora da thread principal.
@@ -218,6 +219,10 @@ async function placeImageFromUrl(url) {
 
 async function insertImg(inp) {
   const file = inp.files[0]; if (!file) return; inp.value = '';
+  if (isLayerLocked(activeLayerId)) {
+    showToast('Camada travada — destrave para criar objetos aqui.', 2500);
+    return;
+  }
   try {
     const url = await uploadFile(file);
     const img = await placeImageFromUrl(url);  // placeImageFromUrl já trata GIFs

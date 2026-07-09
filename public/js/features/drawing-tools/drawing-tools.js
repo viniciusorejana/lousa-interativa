@@ -14,7 +14,7 @@ import { ser } from '../../core/serialization.js';
 import {
   socket, vpRect, findById, genId, mkShape, addToCanvas, emitFull,
   throttle60, addText, isPanMode, spaceHeld, enterPanMode, exitPanMode,
-  layoutSidePanels, scheduleLayersUpdate,
+  layoutSidePanels, scheduleLayersUpdate, activeLayerId,
 } from '../../board-app.js';
 
 export let tool = 'select', color = '#ffffff', sz = 4, op = 1, fillShape = false;
@@ -53,7 +53,7 @@ export function handlePointerDown(p, target) {
   if (tool === 'text') { addText(p); return; }
   if (tool === 'pen') {
     penActive = true;
-    socket.emit('draw:start', { x: p.x, y: p.y, color, width: sz, opacity: op });
+    socket.emit('draw:start', { x: p.x, y: p.y, color, width: sz, opacity: op, layerId: activeLayerId });
     return;
   }
   if (['rect','circle','line','arrow'].includes(tool)) {
@@ -65,7 +65,7 @@ export function handlePointerDown(p, target) {
     // mecanismo do draw:start/move/end usado pela caneta livre).
     socket.emit('shape:start', {
       shapeId: tmpShapeId, tool, x: p.x, y: p.y,
-      color, width: sz, opacity: op, fillShape,
+      color, width: sz, opacity: op, fillShape, layerId: activeLayerId,
     });
   }
 }

@@ -78,7 +78,7 @@ function normalizeSerializedObj(j, fabricObj) {
 
 export function ser(obj) {
   if (obj._isViewportRect) return null;
-  const j = obj.toJSON(['id', 'layerId', '_isArrow', '_isGif', '_gifUrl']);
+  const j = obj.toJSON(['id', 'layerId', 'groupId', 'locked', 'viewHidden', '_isArrow', '_isGif', '_gifUrl']);
   normalizeSerializedObj(j, obj);
   j.zIndex = canvas.getObjects().filter(o => !o._isViewportRect).indexOf(obj);
   return j;
