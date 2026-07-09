@@ -2,7 +2,7 @@
 // preenchimento, espessura, opacidade, redimensionar, excluir, mandar pra
 // trás/frente e duplicar — tudo que atua sobre `canvas.getActiveObjects()`.
 import { canvas } from '../core/canvas-manager.js';
-import { ser, serTransformAbsolute } from '../core/serialization.js';
+import { ser, serTransform, serTransformAbsolute } from '../core/serialization.js';
 import { applyLayerZOrder } from '../features/layers/layers-panel.js';
 import { socket, vpRect, scheduleLayersUpdate, emitModify, genId } from '../board-app.js';
 
@@ -29,6 +29,37 @@ function emitModifyWithAbsPos(o) {
   }
 }
 
+// Preview ao vivo enquanto o usuário arrasta um slider (espessura/opacidade)
+// ou o color-picker (cor/preenchimento) — usa o mesmo canal leve do arraste de
+// posição (object:transform / objects:transform): só espelha nos outros
+// clientes via obj.set() barato, sem tocar em room.state.objects nem no
+// histórico. O commit real (com undo) só acontece uma vez, no 'change' do
+// input (mouse solto / picker fechado) — ver setSelStroke/setSelOp/etc.
+// Sem isso, cada tick do slider vira uma ação de undo separada e o Ctrl+Z
+// volta valor por valor em vez de pular direto pro estado anterior ao
+// início do arraste.
+function emitLivePreview() {
+  const active = canvas.getActiveObject();
+  if (!active) return;
+  if (active.type === 'activeSelection') {
+    const gm = active.calcTransformMatrix();
+    const updates = active.getObjects().filter(o => o.id).map(o => serTransformAbsolute(o, gm));
+    if (updates.length) socket.volatile.emit('objects:transform', updates);
+  } else if (active.id && !active._isViewportRect) {
+    socket.volatile.emit('object:transform', serTransform(active));
+  }
+}
+
+export function setSelColorLive(val) {
+  getSelObjs().forEach(o => {
+    const isText = o.type === 'i-text' || o.type === 'text';
+    if (isText) o.set({ fill: val });
+    else        o.set({ stroke: val });
+  });
+  canvas.renderAll();
+  emitLivePreview();
+}
+
 export function setSelColor(val) {
   getSelObjs().forEach(o => {
     const isText = o.type === 'i-text' || o.type === 'text';
@@ -37,6 +68,13 @@ export function setSelColor(val) {
     emitModifyWithAbsPos(o);
   });
   canvas.renderAll();
+}
+
+export function setSelFillLive(val) {
+  if (!document.getElementById('ctx-fill-on').checked) return;
+  getSelObjs().forEach(o => o.set({ fill: val }));
+  canvas.renderAll();
+  emitLivePreview();
 }
 
 export function setSelFill(val) {
@@ -53,6 +91,14 @@ export function toggleSelFill(checked) {
   canvas.renderAll();
 }
 
+export function setSelStrokeLive(val) {
+  const n = parseInt(val);
+  document.getElementById('ctx-sz-v').textContent = n;
+  getSelObjs().forEach(o => o.set({ strokeWidth: n }));
+  canvas.renderAll();
+  emitLivePreview();
+}
+
 export function setSelStroke(val) {
   const n = parseInt(val);
   document.getElementById('ctx-sz-v').textContent = n;
@@ -60,10 +106,24 @@ export function setSelStroke(val) {
   canvas.renderAll();
 }
 
+export function resizeSelLive(d, v) {
+  const o = canvas.getActiveObject(); if (!o || !v || o._isViewportRect) return;
+  d === 'w' ? o.scaleToWidth(parseFloat(v)) : o.scaleToHeight(parseFloat(v));
+  o.setCoords(); canvas.renderAll();
+  emitLivePreview();
+}
+
 export function resizeSel(d, v) {
   const o = canvas.getActiveObject(); if (!o || !v || o._isViewportRect) return;
   d === 'w' ? o.scaleToWidth(parseFloat(v)) : o.scaleToHeight(parseFloat(v));
   o.setCoords(); canvas.renderAll(); emitModifyWithAbsPos(o);
+}
+
+export function setSelOpLive(v) {
+  document.getElementById('cop-v').textContent = v + '%';
+  getSelObjs().forEach(o => o.set({ opacity: parseInt(v) / 100 }));
+  canvas.renderAll();
+  emitLivePreview();
 }
 
 export function setSelOp(v) {

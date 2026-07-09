@@ -49,7 +49,8 @@ import {
 } from './features/drawing-tools/drawing-tools.js';
 import { layoutSidePanels, toggleVpPanel, toggleLayersPanel, updCtx } from './ui/panel-layout.js';
 import {
-  setSelColor, setSelFill, toggleSelFill, setSelStroke, resizeSel, setSelOp,
+  setSelColor, setSelColorLive, setSelFill, setSelFillLive, toggleSelFill,
+  setSelStroke, setSelStrokeLive, resizeSel, resizeSelLive, setSelOp, setSelOpLive,
   delSel, sendBackFront, dupSel,
 } from './ui/selection-toolbar.js';
 import { changeRoom, clearAll, initHeaderButtons } from './ui/room-controls.js';
@@ -679,6 +680,9 @@ function applyTransformOnly(data) {
     angle:   data.angle   || 0,
     flipX:   data.flipX   || false, flipY:   data.flipY   || false,
     opacity: data.opacity !== undefined ? data.opacity : obj.opacity,
+    strokeWidth: data.strokeWidth !== undefined ? data.strokeWidth : obj.strokeWidth,
+    stroke:  data.stroke !== undefined ? data.stroke : obj.stroke,
+    fill:    data.fill   !== undefined ? data.fill   : obj.fill,
   });
   obj.setCoords();
   if ((data.type === 'i-text' || data.type === 'text') && data.text !== undefined) {
@@ -1161,7 +1165,8 @@ Object.assign(window, {
   setTool, setColor, setSz, setOp, setFillShape,
   insertImg, exportSelectionOrBoardAsPNG,
   undo, redo, fitViewport, resetZoom, clearAll, changeRoom,
-  setSelColor, setSelFill, toggleSelFill, setSelStroke, resizeSel, setSelOp,
+  setSelColor, setSelColorLive, setSelFill, setSelFillLive, toggleSelFill,
+  setSelStroke, setSelStrokeLive, resizeSel, resizeSelLive, setSelOp, setSelOpLive,
   sendBackFront, delSel,
   toggleVpPanel, updateViewport,
   toggleLayersPanel, addLayer, groupSelected, ungroupSelected, ungroupByIds,

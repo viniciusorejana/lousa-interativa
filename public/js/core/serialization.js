@@ -96,6 +96,9 @@ export function serTransform(obj) {
     flipX:  obj.flipX || false,
     flipY:  obj.flipY || false,
     opacity: obj.opacity,
+    strokeWidth: obj.strokeWidth,
+    stroke: obj.stroke,
+    fill: obj.fill,
     zIndex: canvas.getObjects().filter(o => !o._isViewportRect).indexOf(obj),
   };
 }
@@ -114,6 +117,9 @@ export function serTransformAbsolute(obj, groupMatrix) {
     scaleX: Math.abs(d.scaleX), scaleY: Math.abs(d.scaleY),
     angle:  d.angle, flipX: d.scaleX < 0, flipY: d.scaleY < 0,
     opacity: obj.opacity,
+    strokeWidth: obj.strokeWidth,
+    stroke: obj.stroke,
+    fill: obj.fill,
     zIndex: canvas.getObjects().filter(o => !o._isViewportRect).indexOf(obj),
   };
 }

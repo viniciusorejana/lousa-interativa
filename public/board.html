@@ -68,7 +68,7 @@
   <div class="cr" id="ctx-color-row">
     <span class="cl">Cor</span>
     <div style="display:flex;gap:4px;align-items:center">
-      <input type="color" class="ci" id="ctx-color" style="width:32px;height:24px;padding:1px;border-radius:5px;cursor:pointer" oninput="setSelColor(this.value)">
+      <input type="color" class="ci" id="ctx-color" style="width:32px;height:24px;padding:1px;border-radius:5px;cursor:pointer" oninput="setSelColorLive(this.value)" onchange="setSelColor(this.value)">
       <span style="font-size:10px;color:var(--muted)" id="ctx-color-lbl">stroke</span>
     </div>
   </div>
@@ -76,7 +76,7 @@
   <div class="cr" id="ctx-fill-row">
     <span class="cl">Preen.</span>
     <div style="display:flex;gap:6px;align-items:center">
-      <input type="color" class="ci" id="ctx-fill" style="width:32px;height:24px;padding:1px;border-radius:5px;cursor:pointer" oninput="setSelFill(this.value)">
+      <input type="color" class="ci" id="ctx-fill" style="width:32px;height:24px;padding:1px;border-radius:5px;cursor:pointer" oninput="setSelFillLive(this.value)" onchange="setSelFill(this.value)">
       <label style="display:flex;align-items:center;gap:3px;font-size:10px;color:var(--muted);cursor:pointer">
         <input type="checkbox" id="ctx-fill-on" onchange="toggleSelFill(this.checked)"> Ativo
       </label>
@@ -86,16 +86,16 @@
   <div class="cr" id="ctx-sz-row">
     <span class="cl">Espess.</span>
     <div style="display:flex;gap:4px;align-items:center">
-      <input type="range" id="ctx-sz" min="1" max="60" value="4" style="width:60px;accent-color:var(--accent)" oninput="setSelStroke(this.value)">
+      <input type="range" id="ctx-sz" min="1" max="60" value="4" style="width:60px;accent-color:var(--accent)" oninput="setSelStrokeLive(this.value)" onchange="setSelStroke(this.value)">
       <span class="cl" id="ctx-sz-v">4</span>
     </div>
   </div>
-  <div class="cr"><span class="cl">Largura</span><input type="number" class="ci" id="cw" min="1" oninput="resizeSel('w',this.value)"></div>
-  <div class="cr"><span class="cl">Altura</span><input type="number" class="ci" id="ch" min="1" oninput="resizeSel('h',this.value)"></div>
+  <div class="cr"><span class="cl">Largura</span><input type="number" class="ci" id="cw" min="1" oninput="resizeSelLive('w',this.value)" onchange="resizeSel('w',this.value)"></div>
+  <div class="cr"><span class="cl">Altura</span><input type="number" class="ci" id="ch" min="1" oninput="resizeSelLive('h',this.value)" onchange="resizeSel('h',this.value)"></div>
   <div class="cr" id="ctx-op-row">
     <span class="cl">Opacidade</span>
     <div style="display:flex;gap:4px;align-items:center">
-      <input type="range" id="cop" min="0" max="100" value="100" style="width:60px;accent-color:var(--accent)" oninput="setSelOp(this.value)">
+      <input type="range" id="cop" min="0" max="100" value="100" style="width:60px;accent-color:var(--accent)" oninput="setSelOpLive(this.value)" onchange="setSelOp(this.value)">
       <span class="cl" id="cop-v">100%</span>
     </div>
   </div>
