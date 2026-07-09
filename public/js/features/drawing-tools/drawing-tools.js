@@ -34,12 +34,13 @@ let eraserTouchedIds = new Set();
 let eraserActiveStrokeObjs = new Set(); // objetos com traço "aberto" no ponto anterior
 
 // Igual às demais formas, apagar aqui é só "pintar por cima" com
-// destination-out (fabric-erase-patch.js) — não depende do tipo do objeto,
-// então imagens/gifs e textos também entram na lista de candidatos.
+// destination-out (fabric-erase-patch.js). Imagens/gifs ficam de fora de
+// propósito: o cache interno de fabric.Image não fica confiavelmente
+// transparente sob destination-out (crossOrigin/dirty/filters), o que
+// produzia um artefato opaco em vez de um recorte limpo.
 function eraserCandidates() {
   const shapeTypes = [
-    'path', 'rect', 'circle', 'ellipse', 'triangle', 'line', 'polyline', 'polygon',
-    'image', 'text', 'i-text', 'textbox',
+    'path', 'rect', 'circle', 'ellipse', 'triangle', 'line', 'polyline', 'polygon', 'text', 'i-text', 'textbox',
   ];
   return canvas.getObjects().filter(o =>
     !o._isViewportRect && o.id && !o.locked && o.visible !== false &&
@@ -265,6 +266,11 @@ export function updateTmpShape(p) {
   if (prev) canvas.remove(prev);
   const sh = mkShape(tool, drawStart, p, tmpShapeId);
   if (!sh) return;
+  // Preview local do arraste — só vira objeto real no servidor no mouseup
+  // (handlePointerUp → emitFull). Marca como pendente pra sobreviver a um
+  // board:sync (undo/redo de outro cliente) que chegue no meio do arraste
+  // (ver loadState em board-app.js).
+  sh._localPending = true;
   canvas.add(sh);
   if (vpRect) canvas.bringToFront(vpRect);
   canvas.requestRenderAll();

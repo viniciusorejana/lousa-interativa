@@ -538,7 +538,18 @@ socket.on('board:clear', () => {
   scheduleLayersUpdate();
 });
 socket.on('board:sync', st => {
-  canvas.clear(); canvas.backgroundColor = isLiveBgEnabled() ? 'transparent' : '#1e1e2a';
+  // NÃO usar canvas.clear() aqui: além de remover os objetos, ele também limpa
+  // o contextTop (a camada onde o PencilBrush desenha o traço da caneta ao
+  // vivo, antes do path virar objeto no mouseup) e o vpRect. Se outro cliente
+  // disparar um undo/redo enquanto este está no meio de um traço, o
+  // clearContext(contextTop) apagava visualmente o que já tinha sido riscado
+  // (o _points interno do brush continuava intacto, por isso dava pra
+  // continuar desenhando, mas o já desenhado sumia). loadState() logo abaixo
+  // já remove os objetos "reais" um a um (canvas.remove), o que não toca o
+  // contextTop — e preserva objetos marcados _localPending (ver addText/
+  // updateTmpShape), evitando que um texto em edição ou uma forma sendo
+  // arrastada (ainda não commitados ao servidor) sumam sem nunca voltar.
+  canvas.backgroundColor = isLiveBgEnabled() ? 'transparent' : '#1e1e2a';
   hiddenObjects.clear();
   if (st && st.layers && st.layers.length) { boardLayers.length = 0; boardLayers.push(...st.layers); }
   if (st && st.groups) { boardGroups.length = 0; boardGroups.push(...st.groups); }
@@ -869,6 +880,23 @@ export function mkShape(t, s, e, id, style) {
 // ═══════════════════════════════════════════════════════════════════════════════
 // TEXTO
 // ═══════════════════════════════════════════════════════════════════════════════
+// Liga o streaming ao vivo (letra por letra) de um texto editável. Precisa ser
+// re-chamado toda vez que um fabric.IText/Textbox é (re)criado — não só na
+// criação original em addText(): qualquer reload que reconstrua o objeto a
+// partir de dados serializados (deser, chamado por loadState/board:sync ou ao
+// receber um object:add/modify de outro cliente) gera uma instância NOVA do
+// Fabric, que não herda listeners da instância antiga. Sem isso, editar um
+// texto que já passou por um undo/redo (ou editar o texto de outra pessoa)
+// só atualiza os outros clientes no editing:exited, nunca tecla a tecla.
+export function attachTextLiveHandlers(t) {
+  t.on('editing:exited', () => { t._localPending = false; emitFull(t); });
+  t.on('changed', () => socket.volatile.emit('object:transform', {
+    id: t.id, type: t.type, text: t.text, fill: t.fill,
+    left: t.left, top: t.top, scaleX: t.scaleX, scaleY: t.scaleY,
+    angle: t.angle, flipX: t.flipX, flipY: t.flipY, opacity: t.opacity
+  }));
+}
+
 export function addText(pos) {
   const t = new fabric.IText('Texto', {
     left: pos.x, top: pos.y, id: genId(),
@@ -876,13 +904,12 @@ export function addText(pos) {
     fontFamily: 'Segoe UI, system-ui, sans-serif',
     selectable: true, editable: true
   }); addToCanvas(t);
+  // Ainda não foi emitido pro servidor (só ao sair da edição, abaixo) — marca
+  // como pendente pra loadState/board:sync não removê-lo achando que é um
+  // objeto "órfão" que já deveria estar no state do servidor (ver loadState).
+  t._localPending = true;
   canvas.setActiveObject(t); t.enterEditing(); canvas.renderAll();
-  t.on('editing:exited', () => emitFull(t));
-  t.on('changed', () => socket.volatile.emit('object:transform', {
-    id: t.id, type: t.type, text: t.text, fill: t.fill,
-    left: t.left, top: t.top, scaleX: t.scaleX, scaleY: t.scaleY,
-    angle: t.angle, flipX: t.flipX, flipY: t.flipY, opacity: t.opacity
-  }));
+  attachTextLiveHandlers(t);
   setTool('select');
 }
 
@@ -1002,7 +1029,11 @@ export function deser(data, cb) {
   }
   const FT = getFabricType(data.type);
   if (!FT) { console.warn('Tipo desconhecido:', data.type); return; }
-  FT.fromObject(data, o => { o.id = data.id; if (data.layerId) o.layerId = data.layerId; if (data.groupId) o.groupId = data.groupId; o.locked = !!data.locked; cb(o); });
+  FT.fromObject(data, o => {
+    o.id = data.id; if (data.layerId) o.layerId = data.layerId; if (data.groupId) o.groupId = data.groupId; o.locked = !!data.locked;
+    if (data.type === 'i-text' || data.type === 'text' || data.type === 'textbox') attachTextLiveHandlers(o);
+    cb(o);
+  });
 }
 
 export function findById(id) { return canvas.getObjects().find(o => o.id === id); }
@@ -1012,10 +1043,21 @@ let _loadGen = 0;
 
 function loadState(state) {
   const gen = ++_loadGen;
-  canvas.getObjects().filter(o => !o._isViewportRect).forEach(o => canvas.remove(o));
-  if (!state || !state.objects) { canvas.renderAll(); return; }
+  // Objetos marcados _localPending (texto em edição ainda não commitado, ou
+  // forma sendo arrastada antes do mouseup — ver addText/updateTmpShape) nunca
+  // chegaram a ser emitidos pro servidor, então não existem em `state`: se
+  // fossem removidos aqui como os demais, sumiriam pra sempre pro usuário que
+  // os estava criando (mesmo continuando existir pros outros clientes, que
+  // nunca os receberam mesmo). Preserva-os fora do estado do servidor.
+  const pending = canvas.getObjects().filter(o => o._localPending);
+  canvas.getObjects().filter(o => !o._isViewportRect && !o._localPending).forEach(o => canvas.remove(o));
+  const finishPending = () => {
+    pending.forEach(o => canvas.bringToFront(o));
+    if (vpRect) canvas.bringToFront(vpRect);
+  };
+  if (!state || !state.objects) { finishPending(); canvas.renderAll(); return; }
   const objs = Object.values(state.objects);
-  if (!objs.length) { canvas.renderAll(); return; }
+  if (!objs.length) { finishPending(); canvas.renderAll(); return; }
   let done = 0;
   const total = objs.length;
   objs.forEach(d => deser(d, o => {
@@ -1035,7 +1077,7 @@ function loadState(state) {
       applyLayerZOrder();
     }
 
-    if (vpRect) canvas.bringToFront(vpRect);
+    finishPending();
     canvas.renderAll();
     scheduleLayersUpdate();
   }));
