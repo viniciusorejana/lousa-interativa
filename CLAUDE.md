@@ -13,21 +13,28 @@ LiveBoard: a real-time collaborative whiteboard for OBS live streams (Node/Expre
 ```bash
 npm start        # production: node --env-file=.env server/index.js
 npm run dev       # development: node --env-file=.env-dev server/index.js (port 3000, password live123)
-node test-harness/import-test.mjs   # regression test — see below
+npm test          # automated tests — see TESTING.md
+npm run test:e2e  # Playwright E2E (slower, not part of `npm test`) — see TESTING.md
 ```
 
 There is no lint/typecheck/build script. Node v18+ is required (uses native `--env-file`).
 
-### `test-harness/import-test.mjs` — the only automated test
+### Automated tests — see `TESTING.md`
 
-This project has no browser test runner. `test-harness/` (`import-test.mjs` + `mocks.mjs`) mocks `fabric`/`socket.io`/DOM/`localStorage` and, in real Node, actually imports the entire `public/js/board-app.js` module graph, then fires ~25 real socket events (`board:init`, `object:add`, `draw:start`, `staging:sync`, etc.) at the mocked handlers. This exists specifically to catch two classes of bugs that plain syntax checks miss:
+Full details (what each layer covers, how to run a subset, known gaps, and a
+data-isolation gotcha you must respect when adding server integration tests)
+are in `TESTING.md`. Summary of the 4 layers:
 
-1. **TDZ / circular-import errors** ("Cannot access 'X' before initialization") — happens when a top-level `const`/`socket.on(...)` registration reads a binding imported from a module that imports back from it.
-2. **Missing export/import** ("X is not defined") — a helper used across two files but never actually `export`ed/`import`ed; only surfaces when the handler that uses it actually runs.
+1. **`test/server/unit/`** — pure-logic unit tests for `server/services/`+`server/utils/` (`node --test`).
+2. **`test/server/integration/`** — boots a real `server/index.js` + real `socket.io-client`, exercises the actual wire protocol end-to-end (object CRUD, undo/redo, persistence).
+3. **`test-harness/`** — `import-test.mjs` imports the entire `public/js/board-app.js` module graph under mocks (`mocks.mjs`) and fires ~25 real socket events at it, with state assertions (not just "didn't throw"); `test-harness/unit/*.test.mjs` covers `serialization.js`/`group-service.js`/`event-bus.js` in isolation. This layer specifically catches two classes of bugs plain syntax checks miss:
+   - **TDZ / circular-import errors** ("Cannot access 'X' before initialization") — a top-level `const`/`socket.on(...)` registration reading a binding imported from a module that imports back from it.
+   - **Missing export/import** ("X is not defined") — a helper used across two files but never actually `export`ed/`import`ed; only surfaces when the handler that uses it actually runs.
+4. **`test/e2e/`** (Playwright) — real Chromium against a real server: login, drawing, layers, groups, upload, undo/redo, multi-tab collaboration, `/view` route.
 
-**Run this after any change that touches `public/js/**` module boundaries** (new exports, new circular imports, new socket listeners). It exits non-zero on `ReferenceError`.
+**Run `npm test` after any change that touches `public/js/**` module boundaries** (new exports, new circular imports, new socket listeners) — layer 3 exits non-zero on `ReferenceError`.
 
-There are no other automated tests. `CHECKLIST.md` has a 19-step manual QA script (login → draw → transform → layers → group/ungroup → upload → GIF → copy/paste → undo/redo → spawn area → export PNG → multi-user → OBS view → room switch → persistence → clean console) — run relevant parts of it manually after non-trivial client changes since there's no way to automate real browser interaction here.
+`CHECKLIST.md` still has a 19-step manual QA script for what the automated layers can't reach (real OS clipboard paste, drag-and-drop) — run relevant parts of it after non-trivial client changes.
 
 ## Architecture
 
@@ -69,7 +76,7 @@ public/js/
 - A value derived from a circular binding (e.g. a localStorage key using `myRoomId`) must be computed lazily inside a function, never as a top-level `const`.
 - A binding imported from another module can't be reassigned, only mutated (e.g. `export const boardLayers` mutated via `.length = 0; .push(...)`, never `boardLayers = newArray`) — or exported via an explicit setter function if reassignment is genuinely needed (see `setPenActive`, `setStagingAreaEntries`).
 
-Violating any of this reintroduces exactly the bugs documented in `ARCHITECTURE.md` (TDZ crashes, `ReferenceError` on unexported helpers) — always run `node test-harness/import-test.mjs` after touching module exports/imports or adding new circular references.
+Violating any of this reintroduces exactly the bugs documented in `ARCHITECTURE.md` (TDZ crashes, `ReferenceError` on unexported helpers) — always run `npm run test:client` (or `npm test`) after touching module exports/imports or adding new circular references.
 
 `board.html`/`view.html`/`index.html` are markup only; all logic lives in the corresponding `*-app.js`. Inline `onclick`/`onchange`/`oninput` attributes call functions exposed via an explicit `window.*` bridge at the bottom of `board-app.js`/`index-app.js` (ES modules don't leak top-level declarations globally like classic scripts do) — when adding a new inline-invoked function, remember to add it to that bridge.
 

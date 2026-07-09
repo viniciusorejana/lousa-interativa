@@ -13,10 +13,20 @@ globalThis.location = { origin: 'http://localhost:3000', pathname: '/board.html'
 // --- fabric mock ---
 class FakeFabricObject extends EventEmitter {
   constructor(opts) { super(); Object.assign(this, opts); }
-  set() { return this; }
+  set(opts) { if (opts) Object.assign(this, opts); return this; }
   setCoords() { return this; }
-  get() { return undefined; }
+  get(key) { return this[key]; }
   remove() {}
+  // Mimetiza fabric.Object#toJSON: sempre inclui um conjunto básico de
+  // propriedades + as extras passadas (mesma assinatura usada por ser() em
+  // core/serialization.js). Necessário pra qualquer teste que serialize um
+  // objeto mockado (ser/serTransform/group-service etc).
+  toJSON(extraProps = []) {
+    const base = ['type', 'left', 'top', 'width', 'height', 'scaleX', 'scaleY', 'angle', 'opacity', 'fill', 'stroke', 'strokeWidth', 'flipX', 'flipY', 'src'];
+    const out = {};
+    [...base, ...extraProps].forEach(k => { if (this[k] !== undefined) out[k] = this[k]; });
+    return out;
+  }
 }
 // fabric.Path tem assinatura (pathString, opts) — diferente dos outros
 // construtores fabric.* usados aqui, que recebem só (opts).
@@ -33,11 +43,19 @@ class FakeCanvas extends EventEmitter {
   }
   setWidth() {} setHeight() {} renderAll() {} requestRenderAll() {}
   getObjects() { return this._objects; }
-  add(...objs) { this._objects.push(...objs); } remove() {} bringToFront() {} sendToBack() {}
+  add(...objs) { this._objects.push(...objs); }
+  remove(...objs) { objs.forEach(o => { const i = this._objects.indexOf(o); if (i !== -1) this._objects.splice(i, 1); }); }
+  bringToFront() {} sendToBack() {}
   getPointer() { return { x: 0, y: 0 }; }
-  getActiveObject() { return null; }
-  getActiveObjects() { return []; }
-  discardActiveObject() {} setActiveObject() {}
+  // Rastreia seleção de verdade (não só stub) — necessário pra testar código
+  // que lê getActiveObject()/getActiveObjects() (ex: group-service.js).
+  getActiveObject() { return this._active || null; }
+  getActiveObjects() { return this._activeObjects || []; }
+  setActiveObject(obj) {
+    this._active = obj;
+    this._activeObjects = (obj && obj.type === 'activeSelection' && obj._objects) ? obj._objects : (obj ? [obj] : []);
+  }
+  discardActiveObject() { this._active = null; this._activeObjects = []; }
   getZoom() { return 1; }
   clear() { this._objects = []; }
   setViewportTransform() {}

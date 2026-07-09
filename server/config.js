@@ -8,8 +8,12 @@ const PORT     = process.env.PORT;
 const PASSWORD = process.env.BOARD_PASSWORD;
 
 const ROOT_DIR = path.join(__dirname, '..');
-const UPLOADS  = path.join(ROOT_DIR, 'uploads');
-const DATA_DIR = path.join(ROOT_DIR, 'data/rooms');
+// Override só usado pelos testes de integração (test/server/integration) —
+// evita que subir o server em teste apague uploads/salas reais de dev, já
+// que o startup normal LIMPA esses diretórios de propósito (ver cleanOnStartup
+// em index.js). Nunca setado fora do ambiente de teste.
+const UPLOADS  = process.env.LB_TEST_UPLOADS_DIR || path.join(ROOT_DIR, 'uploads');
+const DATA_DIR = process.env.LB_TEST_DATA_DIR || path.join(ROOT_DIR, 'data/rooms');
 const PUBLIC_DIR = path.join(ROOT_DIR, 'public');
 
 [UPLOADS, DATA_DIR].forEach(d => fs.mkdirSync(d, { recursive: true }));

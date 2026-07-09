@@ -1,3 +1,8 @@
 node_modules
 uploads
 data/rooms
+
+# Artefatos de teste (Playwright)
+/test-results
+/playwright-report
+/playwright/.cache

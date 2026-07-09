@@ -5,7 +5,14 @@
   "main": "server/index.js",
   "scripts": {
     "start": "node --env-file=.env server/index.js",
-    "dev": "node --env-file=.env-dev server/index.js"
+    "dev": "node --env-file=.env-dev server/index.js",
+    "test": "npm run test:server && npm run test:client",
+    "test:server": "node --test \"test/server/unit/*.test.js\" \"test/server/integration/*.test.js\"",
+    "test:server:unit": "node --test \"test/server/unit/*.test.js\"",
+    "test:server:integration": "node --test \"test/server/integration/*.test.js\"",
+    "test:client": "node --test \"test-harness/unit/*.test.mjs\" && npm run test:client-smoke",
+    "test:client-smoke": "node test-harness/import-test.mjs",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "express": "^4.18.2",
@@ -13,5 +20,9 @@
     "sharp": "^0.35.3",
     "socket.io": "^4.6.1",
     "uuid": "^9.0.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.1",
+    "socket.io-client": "^4.8.3"
   }
 }
