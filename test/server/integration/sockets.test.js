@@ -2,7 +2,19 @@ const { test, after } = require('node:test');
 const assert = require('node:assert/strict');
 const { io: ioClient } = require('socket.io-client');
 
-const { startTestServer, uniqueRoomName } = require('./_setup');
+const { startTestServer, uniqueRoomName, TEST_PASSWORD } = require('./_setup');
+
+// O handshake do Socket.IO agora exige sessão autenticada para clientes
+// 'editor' (ver server/sockets/index.js — io.use). Autentica uma vez e
+// reutiliza o cookie em todas as conexões de editor do arquivo.
+async function getAuthCookie(baseUrl) {
+  const res = await fetch(`${baseUrl}/auth`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ password: TEST_PASSWORD }),
+  });
+  return (res.headers.get('set-cookie') || '').split(';')[0];
+}
 
 // Ver auth.test.js: server/index.js não expõe a instância http/io e deixa
 // timers de manutenção ativos, então o processo nunca sairia sozinho.
@@ -21,9 +33,17 @@ function once(socket, event) {
 // lado do cliente. Esperar 'connect' primeiro e só DEPOIS registrar o
 // listener de 'board:init' é uma corrida real: o evento pode chegar
 // exatamente nesse intervalo e nunca ser capturado.
-function connectClient(baseUrl, { roomId, userName = 'Tester', clientId } = {}) {
+// Cookie de sessão compartilhado por todas as conexões de editor (preenchido
+// no início do teste, depois do POST /auth). Editores sem cookie são
+// rejeitados pelo io.use no server.
+let authCookie = null;
+
+function connectClient(baseUrl, { roomId, userName = 'Tester', clientId, type } = {}) {
+  const isView = type === 'view';
   const socket = ioClient(baseUrl, {
-    query: { roomId, userName, ...(clientId ? { clientId } : {}) },
+    query: { roomId, userName, ...(clientId ? { clientId } : {}), ...(type ? { type } : {}) },
+    // View é pública (não precisa de cookie); editor herda o cookie de sessão.
+    ...(!isView && authCookie ? { extraHeaders: { cookie: authCookie } } : {}),
     forceNew: true,
     reconnection: false,
   });
@@ -33,6 +53,7 @@ function connectClient(baseUrl, { roomId, userName = 'Tester', clientId } = {}) 
 
 test('integração de servidor: sockets em tempo real', async (t) => {
   const { baseUrl } = await startTestServer();
+  authCookie = await getAuthCookie(baseUrl);
 
   await t.test('board:init: cliente novo recebe estado vazio da sala', async () => {
     const roomId = uniqueRoomName();
@@ -45,6 +66,29 @@ test('integração de servidor: sockets em tempo real', async (t) => {
     assert.equal(payload.canUndo, false);
     assert.equal(payload.canRedo, false);
     assert.ok(payload.userId);
+  });
+
+  await t.test('editor sem cookie de sessão é recusado no handshake', async () => {
+    const roomId = uniqueRoomName();
+    const socket = ioClient(baseUrl, {
+      query: { roomId, userName: 'Intruso' }, // sem extraHeaders/cookie
+      forceNew: true, reconnection: false,
+    });
+    t.after(() => socket.close());
+    const err = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('esperava connect_error')), 5000);
+      socket.on('connect_error', e => { clearTimeout(timer); resolve(e); });
+      socket.on('board:init', () => { clearTimeout(timer); reject(new Error('não deveria conectar sem auth')); });
+    });
+    assert.match(err.message, /unauthorized/);
+  });
+
+  await t.test('view (type:view) conecta sem cookie e recebe board:init', async () => {
+    const roomId = uniqueRoomName();
+    const { socket: v, init } = connectClient(baseUrl, { roomId, type: 'view' });
+    t.after(() => v.close());
+    const payload = await init;
+    assert.equal(payload.roomId, roomId);
   });
 
   await t.test('object:add é propagado para outros clientes da mesma sala (não para o remetente)', async () => {

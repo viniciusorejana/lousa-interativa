@@ -1,6 +1,7 @@
 const { v4: uuidv4 } = require('uuid');
 
 const { getRoom, historyFlagsFor } = require('../services/room.service');
+const { isAuth } = require('../services/auth.service');
 const { slugify } = require('../utils/slugify');
 
 const objectsSocket   = require('./objects.socket');
@@ -14,12 +15,40 @@ const lifecycleSocket = require('./lifecycle.socket');
 // Um módulo por grupo de eventos (ver arquivos irmãos). Cada um recebe o
 // mesmo "contexto" (ctx) com socket/io/room/identidade do usuário/helpers de
 // broadcast, e registra seus próprios `socket.on(...)`.
-const handlerModules = [
+//
+// TODOS estes registram handlers de ESCRITA (mutam room.state / disparam
+// broadcast). Só são registrados para clientes 'editor'. A view do OBS é
+// somente-leitura: recebe board:init + broadcasts, mas não tem nenhum
+// socket.on de escrita — então mesmo emitindo um 'board:clear' na mão, o
+// servidor simplesmente não escuta.
+const writeHandlerModules = [
   objectsSocket, groupsSocket, layersSocket,
-  historySocket, drawingSocket, viewportSocket, lifecycleSocket,
+  historySocket, drawingSocket, viewportSocket,
 ];
+// lifecycleSocket cuida do 'disconnect' (limpeza de usuário/histórico/cursor)
+// e roda para qualquer tipo de cliente, inclusive view.
+const lifecycleModule = lifecycleSocket;
 
 function registerSocketHandlers(io) {
+  // ─── Autenticação do handshake ────────────────────────────────────────────
+  // A senha protegia só a página board.html (rota HTTP) — o socket aceitava
+  // qualquer conexão. Sem isto, qualquer um que alcance o servidor podia
+  // conectar como 'editor', entrar em qualquer sala e emitir board:clear/
+  // object:add etc. sem nunca digitar a senha. O cookie lb_session é enviado
+  // automaticamente no handshake pelo navegador (mesma origem).
+  //
+  // A view do OBS (type:'view') é pública por design — é uma browser source
+  // sem sessão logada. Ela é somente-leitura: os handlers de escrita só são
+  // registrados para editores (ver abaixo), então um socket 'view' não
+  // consegue modificar o board mesmo emitindo eventos na mão.
+  io.use((socket, next) => {
+    const type = (socket.handshake.query.type || 'editor');
+    if (type === 'view') return next();
+    const cookie = socket.handshake.headers.cookie || '';
+    if (isAuth({ headers: { cookie } })) return next();
+    next(new Error('unauthorized'));
+  });
+
   io.on('connection', socket => {
     const clientType = socket.handshake.query.type || 'editor';
     const userId     = uuidv4().slice(0, 8);
@@ -65,7 +94,10 @@ function registerSocketHandlers(io) {
       toRoom: (ev, data) => io.to(roomId).emit(ev, data),
     };
 
-    handlerModules.forEach(mod => mod.register(ctx));
+    if (clientType === 'editor') {
+      writeHandlerModules.forEach(mod => mod.register(ctx));
+    }
+    lifecycleModule.register(ctx); // disconnect: sempre (editor e view)
   });
 }
 
