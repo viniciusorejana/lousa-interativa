@@ -85,6 +85,9 @@ async function checkPassword() {
     if (res.ok) {
       goStep(2);
       updateSlug(); // atualiza o preview de slug se já havia algo salvo
+    } else if (res.status === 429) {
+      const retry = res.headers.get('Retry-After');
+      shake('pw', 'err1', `Muitas tentativas. Aguarde ${retry || 'alguns'} segundo(s).`);
     } else {
       shake('pw', 'err1', 'Senha incorreta.');
       document.getElementById('pw').value = '';
