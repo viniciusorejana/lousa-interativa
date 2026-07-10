@@ -4,6 +4,7 @@
 // movendo o mouse) e desenha os overlays correspondentes no canvas / DOM.
 // Nenhum estado daqui é persistido — é tudo efêmero, por usuário conectado.
 import { canvas } from '../../core/canvas-manager.js';
+import { escapeHtml } from '../../shared/escape-html.js';
 // Import circular com board-app.js — aceitável desde que os bindings só sejam
 // usados dentro de corpo de função (nunca no nível superior do módulo, nem
 // dentro de `initRemoteUsersSocketListeners` chamada antes da hora). Ver regra
@@ -101,7 +102,9 @@ export function initRemoteUsersSocketListeners() {
       const el = document.createElement('div');
       el.className = 'rcursor';
       const label = uName || userId; // usa nome se disponível, cai para ID
-      el.innerHTML = `<svg width="20" height="20" viewBox="0 0 20 20" fill="${c}"><path d="M5 2l12 7.5-6.5.5-3 6.5z"/></svg><span class="rcname" style="background:${c}">${label}</span>`;
+      // label e c vêm do handshake de outro cliente (controláveis) → escapar
+      // antes de ir pra innerHTML. Ver shared/escape-html.js.
+      el.innerHTML = `<svg width="20" height="20" viewBox="0 0 20 20" fill="${escapeHtml(c)}"><path d="M5 2l12 7.5-6.5.5-3 6.5z"/></svg><span class="rcname" style="background:${escapeHtml(c)}">${escapeHtml(label)}</span>`;
       document.body.appendChild(el);
       remoteCursors[userId] = el;
     }

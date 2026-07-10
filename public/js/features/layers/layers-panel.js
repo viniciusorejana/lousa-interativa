@@ -5,6 +5,7 @@
 // camadas. Import circular controlado com board-app.js — só usado dentro de
 // corpo de função (ver ARCHITECTURE.md).
 import { canvas } from '../../core/canvas-manager.js';
+import { escapeHtml } from '../../shared/escape-html.js';
 import { ser } from '../../core/serialization.js';
 import { activeGifs } from '../media/gif-service.js';
 import { updateLayerToolbar } from '../groups/group-service.js';
@@ -94,12 +95,15 @@ export function assignDefaultName(obj) {
   typeCounters[typeKey] = (typeCounters[typeKey] || 0) + 1;
   objectNames[obj.id] = `${typeKey} ${typeCounters[typeKey]}`;
 }
+// Retorna o nome já escapado para HTML: o resultado é sempre interpolado em
+// innerHTML, e tanto objectNames[id] (rename do usuário) quanto obj.text
+// (conteúdo de um texto, possivelmente de outro cliente) são controláveis.
 function getDisplayName(obj) {
   if (obj.type === 'i-text' || obj.type === 'text') {
     const t = (obj.text || '').trim().slice(0, 18);
-    return objectNames[obj.id] || (t ? `"${t}"` : 'Texto');
+    return escapeHtml(objectNames[obj.id] || (t ? `"${t}"` : 'Texto'));
   }
-  return objectNames[obj.id] || (obj._isArrow ? 'Seta' : obj.type);
+  return escapeHtml(objectNames[obj.id] || (obj._isArrow ? 'Seta' : obj.type));
 }
 
 // ── Ícones ────────────────────────────────────────────────────────────────────
@@ -448,7 +452,7 @@ function updateLayersPanel() {
           <polyline points="9 18 15 12 9 6"/>
         </svg>
       </button>
-      <span class="layer-section-name" data-rename="${layer.id}">${layer.name}</span>
+      <span class="layer-section-name" data-rename="${layer.id}">${escapeHtml(layer.name)}</span>
       <span style="font-size:9px;color:var(--muted);flex-shrink:0">${layerObjs.length}</span>
       <div class="layer-section-actions">
         <button class="lsa-btn ${layer.locked ? 'locked-layer' : ''}" onclick="toggleLayerLock('${layer.id}',event)" title="${layer.locked ? 'Destravar camada' : 'Travar camada'}">${lockIcon(layer.locked)}</button>
@@ -632,7 +636,7 @@ function updateLayersPanel() {
             <svg width="9" height="9" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
           </button>
           <div class="layer-icon">${getLayerIcon('group')}</div>
-          <span class="layer-name" data-rename="${groupId}" title="Duplo clique = renomear">${name}</span>
+          <span class="layer-name" data-rename="${groupId}" title="Duplo clique = renomear">${escapeHtml(name)}</span>
           <span style="font-size:9px;color:var(--muted);flex-shrink:0">${members.length}</span>
           <div class="layer-actions">
             <button class="layer-action-btn ${locked ? 'locked-obj' : ''}" onclick="toggleGroupLock('${groupId}',event)" title="${locked ? 'Destravar grupo' : 'Travar grupo'}">${lockIcon(locked)}</button>
