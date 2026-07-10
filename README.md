@@ -295,8 +295,9 @@ liveboard/
 | `ungroup:commit` | Desagrupar | Atômico — 1 pushUndo, extrai via `toActiveSelection()` |
 | `zorder:sync` | Mudança de z-order explícita | Reordena canvas de todos |
 | `draw:end` + `zorder:sync` | Traço finalizado | Garante posição na camada correta |
-| `history:undo` / `redo` | Undo/Redo | Restaura estado completo (objetos + camadas + zorder) |
-| `board:sync` | Estado completo | Após undo/redo ou reconexão |
+| `history:undo` / `redo` | Undo/Redo (por usuário) | Servidor aplica o patch e responde com `history:apply` |
+| `history:apply` | Diff de undo/redo | Só os objetos afetados + zorder/layers resultantes — cliente aplica via `applyFull` (sem re-deserializar o board todo) |
+| `board:sync` | Estado completo | Reservado para reconexão/fallback (não é mais emitido no undo/redo) |
 | `staging:sync` | Área de spawn reservada movida/ativada | Não-realtime — só ao confirmar; persiste por `clientId` no estado da sala |
 | `staging:remove` | Área de spawn reservada desativada/resetada | Remove a área do board de todos os outros clientes |
 

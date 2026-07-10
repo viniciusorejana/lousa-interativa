@@ -147,6 +147,31 @@ socket.on('board:sync',       state => {
   applyViewportTransform();
 });
 
+// Undo/redo como DIFF (ver server/sockets/history.socket.js e board-app.js):
+// só os objetos afetados, roteados por applyFull (fast-path de GIF evita
+// re-decodificar). Antes cada Ctrl+Z de qualquer editor reenviava o estado
+// inteiro e a view (dentro do OBS) piscava o board todo, inclusive re-baixando
+// imagens e re-decodificando GIFs.
+socket.on('history:apply', ({ objects, layers, zorder }) => {
+  if (layers) { viewLayers = layers; }
+  if (objects) {
+    Object.entries(objects).forEach(([id, val]) => {
+      if (val === null) {
+        const o = findById(id);
+        if (o) canvas.remove(o);
+        _releaseViewGif(id);
+      } else {
+        applyFull(val, false);
+      }
+    });
+  }
+  if (Array.isArray(zorder) && zorder.length) {
+    zorder.forEach((id, idx) => { const o = findById(id); if (o) canvas.moveTo(o, idx); });
+  }
+  refreshViewVisibility();
+  canvas.renderAll();
+});
+
 // Visibilidade de camada NO BOARD (hiddenObjects/layer.visible) — esconde dos
 // dois lados (board e live). Diferente de layer.viewVisible (só live) — ver
 // isObjViewHidden. Guarda a intenção em _baseOpacity/_baseVisible e deixa

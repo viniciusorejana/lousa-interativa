@@ -206,15 +206,22 @@ test('integração de servidor: sockets em tempo real', async (t) => {
     assert.equal(historyAfterAdd.canUndo, true);
     assert.equal(historyAfterAdd.canRedo, false);
 
-    const gotSyncAfterUndo = once(a, 'board:sync');
+    // Undo/redo agora emite um DIFF ('history:apply'), não mais o estado
+    // inteiro ('board:sync'). O objeto afetado vem em `objects[id]`: null
+    // quando o undo o removeu, o objeto restaurado quando o redo o trouxe de
+    // volta. O zorder resultante acompanha o diff.
+    const gotUndo = once(a, 'history:apply');
     a.emit('history:undo');
-    const stateAfterUndo = await gotSyncAfterUndo;
-    assert.equal(stateAfterUndo.objects['undo-1'], undefined);
+    const diffUndo = await gotUndo;
+    assert.equal(diffUndo.objects['undo-1'], null);
+    assert.ok(!diffUndo.zorder.includes('undo-1'));
 
-    const gotSyncAfterRedo = once(a, 'board:sync');
+    const gotRedo = once(a, 'history:apply');
     a.emit('history:redo');
-    const stateAfterRedo = await gotSyncAfterRedo;
-    assert.ok(stateAfterRedo.objects['undo-1']);
+    const diffRedo = await gotRedo;
+    assert.ok(diffRedo.objects['undo-1']);
+    assert.equal(diffRedo.objects['undo-1'].id, 'undo-1');
+    assert.ok(diffRedo.zorder.includes('undo-1'));
   });
 
   await t.test('persistência: sala evictada da RAM (mas com JSON salvo em disco) é restaurada ao reconectar', async () => {

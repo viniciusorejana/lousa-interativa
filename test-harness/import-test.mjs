@@ -61,6 +61,9 @@ const events = {
   'shape:end': { userId: 'u2', object: null },
   'shape:cancel': { userId: 'u2' },
   'board:sync': { objects: {}, layers: [{ id: 'layer-default', name: 'Camada 1', visible: true }], viewport: { x: 0, y: 0, w: 1920, h: 1080 }, stagingAreas: {} },
+  // Undo/redo agora chega como diff ('history:apply'): mapa de objeto→valor
+  // (null = remover) + zorder resultante. Aqui restauramos 'o3' que não existia.
+  'history:apply': { objects: { o3: { id: 'o3', type: 'rect', left: 0, top: 0 } }, zorder: ['o3'] },
   'board:clear': undefined,
 };
 
@@ -80,6 +83,7 @@ const assertions = {
   },
   'object:remove': () => assert.equal(findObj('o1'), undefined, "object:remove deveria ter removido 'o1' do canvas"),
   'objects:batch': () => assert.ok(findObj('o2'), "objects:batch deveria ter adicionado o objeto 'o2' ao canvas"),
+  'history:apply': () => assert.ok(findObj('o3'), "history:apply deveria ter restaurado o objeto 'o3' no canvas"),
   'layers:update': () => assert.ok(
     boardLayers.some(l => l.id === 'layer-default'),
     "layers:update deveria refletir no array boardLayers compartilhado"

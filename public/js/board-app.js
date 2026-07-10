@@ -559,6 +559,42 @@ socket.on('board:sync', st => {
   setTimeout(createViewportRect, 100);
   scheduleLayersUpdate();
 });
+// Undo/redo aplicado como DIFF (só os objetos afetados), não mais como um
+// board:sync de estado inteiro. Roteia cada objeto por applyFull — que reusa
+// imagens em cache e tem fast-path pra GIF (sem re-decodificar) — em vez de
+// re-deserializar o board todo. Objetos _localPending (texto em edição, forma
+// sendo arrastada) não são tocados, já que não estão no diff. Ver
+// server/sockets/history.socket.js.
+socket.on('history:apply', ({ objects, layers, zorder }) => {
+  if (layers && layers.length) {
+    boardLayers.length = 0; boardLayers.push(...layers); ensureActiveLayer();
+  }
+  if (objects) {
+    Object.entries(objects).forEach(([id, val]) => {
+      if (val === null) {
+        const o = findById(id);
+        if (o) canvas.remove(o);
+        hiddenObjects.delete(id);
+      } else {
+        applyFull(val, false); // async p/ imagens/GIF; fast-path evita re-decode
+      }
+    });
+  }
+  // z-order resultante é a fonte de verdade precisa; objetos assíncronos
+  // (imagens) que ainda não entraram no canvas são reordenados pelo
+  // applyLayerZOrder dentro do próprio applyFull quando terminam de carregar.
+  if (Array.isArray(zorder) && zorder.length) {
+    const contentObjs = canvas.getObjects().filter(o => !o._isViewportRect);
+    zorder.forEach((id, idx) => {
+      const o = contentObjs.find(x => x.id === id);
+      if (o) canvas.moveTo(o, idx);
+    });
+  }
+  if (vpRect) canvas.bringToFront(vpRect);
+  canvas.renderAll();
+  scheduleLayersUpdate();
+});
+
 socket.on('zorder:sync', order => {
   const contentObjs = canvas.getObjects().filter(o => !o._isViewportRect);
   order.forEach((id, idx) => {
