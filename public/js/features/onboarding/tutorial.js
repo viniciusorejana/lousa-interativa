@@ -113,4 +113,25 @@ document.addEventListener('keydown', e => {
   if (e.key === 'ArrowLeft')   btutNav(-1);
 });
 
+// ── Arrastar pro lado (swipe) troca de slide — importante no mobile, onde não
+// tem seta de teclado nem hover pra mostrar os botões prev/next com clareza.
+// Só o eixo horizontal decide a troca (SWIPE_MIN_DX), e só se o gesto for
+// majoritariamente horizontal (não um scroll vertical do dedo por engano).
+const SWIPE_MIN_DX = 40;
+let _btutTouchX = null, _btutTouchY = null;
+const btutBody = document.getElementById('btut-body');
+btutBody.addEventListener('touchstart', e => {
+  if (e.touches.length !== 1) return;
+  _btutTouchX = e.touches[0].clientX;
+  _btutTouchY = e.touches[0].clientY;
+}, { passive: true });
+btutBody.addEventListener('touchend', e => {
+  if (_btutTouchX === null) return;
+  const t = e.changedTouches[0];
+  const dx = t.clientX - _btutTouchX, dy = t.clientY - _btutTouchY;
+  _btutTouchX = _btutTouchY = null;
+  if (Math.abs(dx) < SWIPE_MIN_DX || Math.abs(dx) < Math.abs(dy)) return;
+  btutNav(dx < 0 ? 1 : -1);
+}, { passive: true });
+
 export { openBoardTutorial, closeBoardTutorial, btutNav };

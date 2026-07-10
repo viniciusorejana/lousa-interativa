@@ -285,16 +285,20 @@ function cancelStagingPlacement() {
 
 // Segue o ponteiro em tempo real (só localmente) enquanto o modo "mira" está
 // ativo — chamado pelo dispatcher central de mouse:move em board-app.js.
+// O ponteiro (mouse ou dedo) fica no CENTRO da área, não no canto superior
+// esquerdo — mais previsível pra mirar, principalmente no touch, onde o dedo
+// cobre a área e o canto some debaixo dele.
 // Fica vermelho quando a posição atual sobrepõe o viewport oficial (que o
 // OBS captura), sinalizando que aquele clique seria recusado.
 function previewStagingPlacement(p) {
   if (!stagingRect) return;
+  const left = p.x - STAGING_RECT_W / 2, top = p.y - STAGING_RECT_H / 2;
   _stagingPlacementInvalid = rectsOverlap(
-    p.x, p.y, STAGING_RECT_W, STAGING_RECT_H,
+    left, top, STAGING_RECT_W, STAGING_RECT_H,
     0, 0, vpW, vpH
   );
   stagingRect.set({
-    left: p.x, top: p.y, visible: true,
+    left, top, visible: true,
     stroke: _stagingPlacementInvalid ? '#ff4d4d' : '#fbbf24',
   });
   stagingRect.setCoords();
@@ -303,15 +307,16 @@ function previewStagingPlacement(p) {
 }
 
 function confirmStagingPlacement(pointer) {
+  const left = pointer.x - STAGING_RECT_W / 2, top = pointer.y - STAGING_RECT_H / 2;
   const invalid = rectsOverlap(
-    pointer.x, pointer.y, STAGING_RECT_W, STAGING_RECT_H,
+    left, top, STAGING_RECT_W, STAGING_RECT_H,
     0, 0, vpW, vpH
   );
   if (invalid) {
     showToast('A área reservada não pode ficar dentro do viewport — escolha outro lugar', 2600);
     return; // permanece no modo mira pra tentar de novo
   }
-  const pos = { left: pointer.x, top: pointer.y };
+  const pos = { left, top };
   saveStagingPos(pos);
   _stagingPlacementMode = false;
   _stagingPlacementInvalid = false;

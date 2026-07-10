@@ -340,6 +340,27 @@ document.addEventListener('keydown', e => {
   if (e.key === 'ArrowLeft')  tutNav(-1);
 });
 
+// ── Arrastar pro lado (swipe) troca de slide — importante no mobile, onde não
+// tem seta de teclado nem hover pra mostrar os botões prev/next com clareza.
+// Só o eixo horizontal decide a troca (SWIPE_MIN_DX), e só se o gesto for
+// majoritariamente horizontal (não um scroll vertical do dedo por engano).
+const SWIPE_MIN_DX = 40;
+let _tutTouchX = null, _tutTouchY = null;
+const tutSlides = document.getElementById('tut-slides');
+tutSlides.addEventListener('touchstart', e => {
+  if (e.touches.length !== 1) return;
+  _tutTouchX = e.touches[0].clientX;
+  _tutTouchY = e.touches[0].clientY;
+}, { passive: true });
+tutSlides.addEventListener('touchend', e => {
+  if (_tutTouchX === null) return;
+  const t = e.changedTouches[0];
+  const dx = t.clientX - _tutTouchX, dy = t.clientY - _tutTouchY;
+  _tutTouchX = _tutTouchY = null;
+  if (Math.abs(dx) < SWIPE_MIN_DX || Math.abs(dx) < Math.abs(dy)) return;
+  tutNav(dx < 0 ? 1 : -1);
+}, { passive: true });
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // PONTE DE COMPATIBILIDADE COM ATRIBUTOS INLINE DO HTML (onclick/onchange/...)
 // ═══════════════════════════════════════════════════════════════════════════════
