@@ -124,9 +124,27 @@ da Camada 2 (`LB_TEST_UPLOADS_DIR`/`LB_TEST_DATA_DIR` apontando pra um
   seleção via marquee, camadas (criar/renomear/ocultar), grupo/desagrupar,
   upload de imagem (via `setInputFiles` no input real do app, não
   drag-and-drop simulado), undo/redo, exportar PNG (`page.waitForEvent('download')`).
+  Inclui a regressão **"undo com multi-seleção ativa não deixa objeto órfão"**:
+  lê o `fabric.Canvas` de verdade com `import('/js/core/canvas-manager.js')`
+  dentro do `page.evaluate` (o module registry do navegador devolve a mesma
+  instância que `board-app.js` já carregou — não precisa expor nada em
+  `window` só pro teste) e confere que nenhum membro da `ActiveSelection`
+  ficou fora do canvas. Ver `withSelectionSafe()` em `CLAUDE.md`.
 - `collaboration.spec.js` — multi-aba (duas `BrowserContext` na mesma sala,
   objeto criado numa aparece na outra), rota `/view/:sala` (sem auth, fundo
   transparente, sem toolbar), troca de sala sem reautenticar.
+- `responsive.spec.js` — layout em dois viewports. No mobile (375×812) o layout
+  **muda de natureza**, não só encolhe: toolbar no rodapé, `#ctx` como
+  bottom-sheet (recolhido = só a linha de ações), painéis de camadas/viewport
+  como drawers deslizantes com backdrop. Verifica também que
+  **copiar / colar / duplicar funcionam só por botão** — o caminho do toque,
+  onde não existem Ctrl+C / Ctrl+V / Ctrl+D (ver o clipboard interno em
+  `features/clipboard/clipboard.js`) — e que os alvos de toque das ações têm
+  ≥44px. No desktop (1440×900), trava o painel lateral contra regressões da
+  mesma refatoração. Um terceiro teste roda com `hasTouch: true` — é o que
+  liga de fato a media query `(pointer: coarse)`, sem a qual os alvos de toque
+  medidos são os do desktop e a asserção passaria por sorte — e garante que o
+  toast não cobre o `#spawn-panel` (ambos centralizados no topo no mobile).
 
 **Lacunas conhecidas**: paste real de imagem via clipboard do SO (Ctrl+V) e
 drag-and-drop de arquivo não são simulados — usei o input de arquivo real

@@ -51,8 +51,9 @@ Key behaviors to know before touching server code:
 - **State is volatile by design.** On every startup, `server/index.js` deletes everything in `uploads/` and `data/rooms/`. Room state elsewhere is saved to `data/rooms/<slug>.json` 2s after any change and restored on next start of that room (as long as the server wasn't restarted since).
 - Empty rooms are evicted from RAM+disk after 30 minutes idle (`room.service.js` eviction sweep).
 - Z-order is a persisted `zorder` array per room, not implicit in objects — restore it exactly on undo/redo/reconnect.
-- Undo/redo keeps up to 50 full snapshots per room (objects + layers + zorder together), not diffs.
+- **Undo/redo is per-user, patch-based** (not global snapshots). Each user has their own `undoStack`/`redoStack` in `room.userHistory[userId]`, capped at `MAX_HISTORY` (30) entries; each entry is a *patch* holding only the before/after of the objects/layers/zorder the action touched (`pushUserAction` in `room.service.js`). `applyActionPatch` skips objects another user changed since (conflict detection). Applying an undo/redo broadcasts a **diff** (`history:apply` — only the affected objects + resulting zorder/layers), not the whole room state; the client routes each object through `applyFull` (cached images, GIF fast-path). History is per-session and never persisted to disk.
 - Group/ungroup are atomic server operations: one `pushUndo` per operation; clients reuse existing Fabric objects instead of destroy+recreate.
+- **The Socket.IO handshake is authenticated** (`sockets/index.js` `io.use`): `editor` clients must carry a valid `lb_session` cookie (same one the `/board.html` route checks); `view` clients (the OBS source) connect without auth but are read-only — the write handlers (`objects`/`groups`/`layers`/`history`/`drawing`/`viewport`) are only registered for editors, so a `view` socket can't mutate the board even by emitting events by hand.
 
 ### Client (`public/js/`) — ES Modules, feature-folder structure
 
@@ -77,6 +78,35 @@ public/js/
 - A binding imported from another module can't be reassigned, only mutated (e.g. `export const boardLayers` mutated via `.length = 0; .push(...)`, never `boardLayers = newArray`) — or exported via an explicit setter function if reassignment is genuinely needed (see `setPenActive`, `setStagingAreaEntries`).
 
 Violating any of this reintroduces exactly the bugs documented in `ARCHITECTURE.md` (TDZ crashes, `ReferenceError` on unexported helpers) — always run `npm run test:client` (or `npm test`) after touching module exports/imports or adding new circular references.
+
+### Responsive layout (desktop vs mobile)
+
+`board.css` has one hard breakpoint at **768px**, mirrored in JS by `isMobileLayout()` in `ui/panel-layout.js`. Below it the layout **changes kind**, it doesn't just shrink: the toolbar moves to the bottom (thumb zone), `#ctx` becomes a bottom-sheet (collapsed = only the icon action row; the grabber expands the properties), and `#layers-panel`/`#vp-panel` become sliding drawers over a `#drawer-backdrop`.
+
+Three rules that are easy to break:
+- **`layoutSidePanels()` must bail out on mobile.** The desktop layout positions panels by writing *inline* `top`/`max-height` (measured via `getBoundingClientRect`), and inline styles beat the `@media` CSS. `layoutSidePanels()` therefore calls `clearDesktopInlineLayout()` and returns early when `isMobileLayout()`.
+- **`body { touch-action: none }`** (needed so the canvas owns 1- and 2-finger gestures) also kills touch scrolling inside panels. Every scroll container re-enables its axis explicitly (`#layers-list`, `#ctx-props`, `#vp-content` → `pan-y`; `#toolbar`, `#opts` → `pan-x`).
+- **No CSS `transition` on position/size for the *inputs* of the layout cascade** (`#toolbar`, `#opts`, `#spawn-panel`, `#top-left-panel`, `#users`). `layoutSidePanels()` positions each panel by measuring the previous one's real edge; `getBoundingClientRect()` returns the *current* frame of a running transition, not its end state, so the next panel gets placed where the previous one *was*. Nothing triggers a re-layout when the transition ends, so the error is permanent (this is what put the view/pencil buttons on top of `#vp-panel`). The *outputs* (`#ctx`, `#layers-panel`, `#vp-panel`) may animate freely — nothing measures them.
+
+`updTopLeftPanelPos()` decides whether to drop the corner panel below the toolbar by **measuring the actual collision**, not by a width breakpoint: the width at which they touch depends on how many buttons the toolbar has and on the label text. Environment-driven triggers (`resize`, `ResizeObserver`, `document.fonts.ready`) are coalesced into one `requestAnimationFrame` (`scheduleLayout()`); intent-driven ones (`updCtx`, tool change, panel toggle) call `layoutSidePanels()` synchronously because they need the result in the same tick.
+
+Touch targets are enforced under `@media (pointer: coarse)` (not by width — a large touch tablet needs them too).
+
+On mobile the toast moves to the top (the footer became the toolbar), where `#spawn-panel` also lives centered — keep them from overlapping (`#toast { top: 118px }` clears the panel's `64px + 44px` under coarse pointer).
+
+### Multi-seleção (fabric.ActiveSelection) e updates vindos do servidor
+
+Children of a `fabric.ActiveSelection` store `left`/`top` **relative to its center**, and `canvas.remove(obj)` does **not** pull the object out of the selection's `_objects` (Fabric only discards the selection if the removed object *is* the whole `activeObject`). Since `applyFull()` removes and recreates the object, applying any update to an object inside the active selection strands the old one — still drawn by the selection, with relative coords read as absolute (a ghost rectangle off in a corner) — while the recreated one enters the canvas loose, and the selection's bounding box is never recalculated.
+
+So every socket handler that touches existing objects (`object:add`/`modify`/`remove`, `objects:batch`, `history:apply`) goes through **`withSelectionSafe(ids, fn)`** in `board-app.js`: discard the selection, run `fn`, rebuild it from the ids afterwards (waiting on `loadingNow` for images). `history:apply` is the critical one — it's the only event the server sends with `toRoom` (it comes back to the author of the Ctrl+Z, i.e. exactly the person holding the selection); the others use `bcast` and only reach *other* clients.
+
+Corollary: `applyTransformOnly()` returns early when `obj.group` exists. Writing absolute coords into a selection child teleports it; the live `object:transform` is volatile and the following commit fixes the position.
+
+Regression covered by `test/e2e/board.spec.js` ("undo com multi-seleção ativa não deixa objeto órfão").
+
+### Clipboard
+
+There is an **internal clipboard** (`features/clipboard/clipboard.js`): copying always stores the serialized objects in memory + `localStorage` (`lb_clipboard`), and `pasteFromClipboard()` reads from it. This is the only path that works on touch — `navigator.clipboard.write` with an image `ClipboardItem` is blocked on many mobile browsers, and the `paste` event needs Ctrl+V. The system clipboard is still written in parallel (best-effort, failure only logged) so you can paste into other apps on desktop. `copySel`/`pasteFromClipboard`/`dupSel` are all exposed as buttons (`#ctx-actions`, `#t-paste`), not just keyboard shortcuts.
 
 `board.html`/`view.html`/`index.html` are markup only; all logic lives in the corresponding `*-app.js`. Inline `onclick`/`onchange`/`oninput` attributes call functions exposed via an explicit `window.*` bridge at the bottom of `board-app.js`/`index-app.js` (ES modules don't leak top-level declarations globally like classic scripts do) — when adding a new inline-invoked function, remember to add it to that bridge.
 
