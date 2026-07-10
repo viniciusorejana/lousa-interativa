@@ -8,7 +8,9 @@
 <body>
 <canvas id="board"></canvas>
 <script src="/socket.io/socket.io.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.1/fabric.min.js"></script>
+<!-- Fabric.js vendorizado localmente (era cdnjs) — ver comentário em board.html.
+     Crítico aqui: esta é a página que roda dentro do OBS durante a live. -->
+<script src="/vendor/fabric.min.js"></script>
 <script src="/js/shared/fabric-image-patch.js"></script>
 <script src="/js/shared/fabric-erase-patch.js"></script>
 <script src="/js/shared/socket-client.js"></script>

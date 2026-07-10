@@ -231,7 +231,10 @@
 <canvas id="board"></canvas>
 
 <script src="/socket.io/socket.io.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.1/fabric.min.js"></script>
+<!-- Fabric.js vendorizado localmente (era cdnjs): se o CDN cair/atrasar no
+     início de uma live, a view do OBS não renderizava nada. Confiabilidade em
+     transmissão é a premissa do app — não pode depender de terceiros. -->
+<script src="/vendor/fabric.min.js"></script>
 <script src="/js/shared/fabric-image-patch.js"></script>
 <script src="/js/shared/fabric-erase-patch.js"></script>
 <script src="/js/shared/socket-client.js"></script>

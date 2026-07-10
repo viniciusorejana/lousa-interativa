@@ -320,7 +320,7 @@ liveboard/
 | `multer` | ^2.2.0 | Upload de imagens |
 | `uuid` | ^9.0.0 | IDs únicos |
 
-Frontend: **Fabric.js 5.3.1** e **Socket.IO client** via CDN, sem build step.
+Frontend: **Fabric.js 5.3.1** (vendorizado em `public/vendor/fabric.min.js` — servido pelo próprio app, não mais via CDN, pra não depender de terceiros no ar durante uma live) e **Socket.IO client** (servido pelo próprio Socket.IO), sem build step.
 
 ---
 
