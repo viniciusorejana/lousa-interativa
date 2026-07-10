@@ -516,8 +516,11 @@ socket.on('users:update', users => {
   el.title = 'Online: ' + names;
 });
 
-socket.on('object:add',       d       => applyFull(d));
-socket.on('object:modify',    d       => applyFull(d));
+// withSelectionSafe: ver comentário em cima da função. Sem ele, qualquer um
+// destes eventos que toque um objeto dentro da multi-seleção ativa deixa um
+// objeto-fantasma preso na seleção.
+socket.on('object:add',       d       => withSelectionSafe([d.id], () => applyFull(d)));
+socket.on('object:modify',    d       => withSelectionSafe([d.id], () => applyFull(d)));
 socket.on('object:transform', d       => { applyTransformOnly(d); canvas.renderAll(); });
 socket.on('objects:transform', updates => { updates.forEach(d => applyTransformOnly(d)); canvas.renderAll(); });
 // Preview ao vivo da borracha (durante o arraste, antes do commit final) —
@@ -532,10 +535,17 @@ socket.on('erase:live', updates => {
   canvas.requestRenderAll();
 });
 socket.on('object:remove', ids => {
-  ids.forEach(id => { const o = findById(id); if (o) canvas.remove(o); });
-  canvas.renderAll();
+  withSelectionSafe(ids, () => {
+    ids.forEach(id => { const o = findById(id); if (o) canvas.remove(o); });
+    canvas.renderAll();
+  });
 });
-socket.on('objects:batch', objs => { objs.forEach(d => applyFull(d, false)); canvas.renderAll(); });
+socket.on('objects:batch', objs => {
+  withSelectionSafe(objs.map(o => o.id), () => {
+    objs.forEach(d => applyFull(d, false));
+    canvas.renderAll();
+  });
+});
 
 // Registro de grupos (etiqueta groupId) — sincronizado como um todo, mesmo
 // padrão de 'layers:update' (sem tracking de undo). Os objetos em si (com seu
@@ -580,33 +590,39 @@ socket.on('board:sync', st => {
 // re-deserializar o board todo. Objetos _localPending (texto em edição, forma
 // sendo arrastada) não são tocados, já que não estão no diff. Ver
 // server/sockets/history.socket.js.
+// Ao contrário de object:add/modify/remove (que o servidor manda com `bcast`,
+// excluindo o remetente), history:apply volta pro PRÓPRIO autor do Ctrl+Z —
+// que é justamente quem provavelmente ainda tem os objetos desfeitos
+// selecionados. Daí withSelectionSafe ser obrigatório aqui.
 socket.on('history:apply', ({ objects, layers, zorder }) => {
   if (layers && layers.length) {
     boardLayers.length = 0; boardLayers.push(...layers); ensureActiveLayer();
   }
-  if (objects) {
-    Object.entries(objects).forEach(([id, val]) => {
-      if (val === null) {
-        const o = findById(id);
-        if (o) canvas.remove(o);
-        hiddenObjects.delete(id);
-      } else {
-        applyFull(val, false); // async p/ imagens/GIF; fast-path evita re-decode
-      }
-    });
-  }
-  // z-order resultante é a fonte de verdade precisa; objetos assíncronos
-  // (imagens) que ainda não entraram no canvas são reordenados pelo
-  // applyLayerZOrder dentro do próprio applyFull quando terminam de carregar.
-  if (Array.isArray(zorder) && zorder.length) {
-    const contentObjs = canvas.getObjects().filter(o => !o._isViewportRect);
-    zorder.forEach((id, idx) => {
-      const o = contentObjs.find(x => x.id === id);
-      if (o) canvas.moveTo(o, idx);
-    });
-  }
-  if (vpRect) canvas.bringToFront(vpRect);
-  canvas.renderAll();
+  withSelectionSafe(objects ? Object.keys(objects) : [], () => {
+    if (objects) {
+      Object.entries(objects).forEach(([id, val]) => {
+        if (val === null) {
+          const o = findById(id);
+          if (o) canvas.remove(o);
+          hiddenObjects.delete(id);
+        } else {
+          applyFull(val, false); // async p/ imagens/GIF; fast-path evita re-decode
+        }
+      });
+    }
+    // z-order resultante é a fonte de verdade precisa; objetos assíncronos
+    // (imagens) que ainda não entraram no canvas são reordenados pelo
+    // applyLayerZOrder dentro do próprio applyFull quando terminam de carregar.
+    if (Array.isArray(zorder) && zorder.length) {
+      const contentObjs = canvas.getObjects().filter(o => !o._isViewportRect);
+      zorder.forEach((id, idx) => {
+        const o = contentObjs.find(x => x.id === id);
+        if (o) canvas.moveTo(o, idx);
+      });
+    }
+    if (vpRect) canvas.bringToFront(vpRect);
+    canvas.renderAll();
+  });
   scheduleLayersUpdate();
 });
 
@@ -667,6 +683,45 @@ initRemoteUsersSocketListeners();
 // enquanto uma imagem ainda está carregando via fromURL.
 const loadingQueue = {};  // id → último data recebido enquanto carregando
 const loadingNow   = new Set();  // ids que estão no meio de um fromURL
+
+// ── Guarda de multi-seleção ───────────────────────────────────────────────────
+// Os filhos de uma fabric.ActiveSelection guardam left/top RELATIVOS ao centro
+// dela, e canvas.remove() NÃO os tira do _objects da seleção (só descarta a
+// seleção se o objeto removido FOR o activeObject inteiro). Então aplicar um
+// update num objeto que está dentro da seleção ativa — applyFull remove e
+// recria — deixa o objeto antigo órfão: ele continua sendo desenhado pela
+// seleção, com coordenadas relativas tratadas como absolutas (o retângulo
+// fantasma num canto da tela), enquanto o recriado entra solto no canvas e o
+// bounding box da seleção nunca é recalculado.
+// Solução: desfazer a seleção antes de mexer nos objetos e reconstruí-la depois
+// a partir dos ids, já com as coordenadas novas.
+function withSelectionSafe(affectedIds, fn) {
+  const act = canvas.getActiveObject();
+  const selIds = act
+    ? (act.type === 'activeSelection' ? act.getObjects() : [act]).map(o => o.id).filter(Boolean)
+    : [];
+  const hit = selIds.length && affectedIds.some(id => selIds.includes(id));
+  if (hit) canvas.discardActiveObject();
+  fn();
+  if (hit) restoreSelection(selIds);
+}
+
+// applyFull é assíncrono para imagens (e grupos que contêm imagens): o objeto
+// só existe no canvas quando o fromURL termina. Reselecionar antes disso faria
+// findById devolver undefined e o objeto cairia fora da seleção sozinho.
+function restoreSelection(ids, tries = 0) {
+  if (tries < 40 && ids.some(id => loadingNow.has(id))) {
+    setTimeout(() => restoreSelection(ids, tries + 1), 25);
+    return;
+  }
+  const objs = ids.map(findById).filter(o => o && o.selectable !== false);
+  if (objs.length) {
+    canvas.setActiveObject(objs.length === 1
+      ? objs[0]
+      : new fabric.ActiveSelection(objs, { canvas }));
+  }
+  canvas.requestRenderAll();
+}
 
 export function applyFull(data, render = true) {
   if (!data || !data.id) return;
@@ -771,6 +826,12 @@ export function applyFull(data, render = true) {
 
 function applyTransformOnly(data) {
   const obj = findById(data.id); if (!obj) return;
+  // Dentro de uma ActiveSelection, left/top do filho são relativos ao centro
+  // dela — escrever coordenadas absolutas aqui teleporta o objeto pra longe.
+  // Os callers que passam por applyFull já desfizeram a seleção
+  // (withSelectionSafe); sobra o object:transform ao vivo de outro usuário, que
+  // é volátil por natureza: o commit seguinte (object:modify) corrige a posição.
+  if (obj.group) return;
   obj.set({
     left:    data.left,  top:     data.top,
     scaleX:  Math.abs(data.scaleX || 1), scaleY:  Math.abs(data.scaleY || 1),

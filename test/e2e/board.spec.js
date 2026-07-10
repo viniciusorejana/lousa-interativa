@@ -127,6 +127,81 @@ test.describe('board: fluxo principal numa aba', () => {
     await expect(countBadge).toHaveText('1');
   });
 
+  // Regressão: undo/redo com uma multi-seleção AINDA ATIVA deixava objetos
+  // fantasma. Os filhos de uma fabric.ActiveSelection guardam left/top
+  // relativos ao centro dela, e canvas.remove() não os tira do _objects da
+  // seleção — então o applyFull do history:apply (que remove e recria cada
+  // objeto afetado) deixava o objeto ANTIGO órfão, ainda desenhado pela
+  // seleção em coordenadas relativas lidas como absolutas. Na tela: um
+  // retângulo solto num canto + um bounding box de seleção completamente
+  // errado. Ver withSelectionSafe() em board-app.js.
+  test('undo com multi-seleção ativa não deixa objeto órfão na seleção', async ({ page }) => {
+    await login(page);
+
+    await drawRect(page, { from: { x: 250, y: 200 }, to: { x: 320, y: 270 } });
+    await drawRect(page, { from: { x: 400, y: 200 }, to: { x: 470, y: 270 } });
+
+    // Lê o estado real do canvas. O import dinâmico devolve a MESMA instância
+    // do módulo que board-app.js já carregou (module registry do navegador),
+    // então `canvas` aqui é o fabric.Canvas de verdade — sem precisar expor
+    // nada em window só para o teste.
+    const readState = () => page.evaluate(async () => {
+      const { canvas } = await import('/js/core/canvas-manager.js');
+      const content = canvas.getObjects().filter(o => !o._isViewportRect);
+      const act = canvas.getActiveObject();
+      const members = act
+        ? (act.type === 'activeSelection' ? act.getObjects() : [act])
+        : [];
+      return {
+        count: content.length,
+        members: members.length,
+        // Membro da seleção que não está mais no canvas = fantasma.
+        orphans: members.filter(m => !content.includes(m)).length,
+        // calcTransformMatrix embute a transformação do grupo, então dá a
+        // posição absoluta esteja o objeto dentro da seleção ou não.
+        centers: content.map(o => {
+          const d = fabric.util.qrDecompose(o.calcTransformMatrix());
+          return { x: Math.round(d.translateX), y: Math.round(d.translateY) };
+        }).sort((a, b) => a.x - b.x),
+      };
+    });
+
+    const before = await readState();
+    expect(before.count).toBe(2);
+
+    // Marquee cobrindo as duas formas.
+    await page.mouse.move(200, 150);
+    await page.mouse.down();
+    await page.mouse.move(520, 320, { steps: 5 });
+    await page.mouse.up();
+
+    // Arrasta a seleção inteira. O ponto (360,235) é o vão ENTRE os dois
+    // retângulos: o hover imediatamente anterior desliga perPixelTargetFind
+    // (ver updatePerPixelForHover), então o arraste pega a seleção.
+    await page.mouse.move(360, 235);
+    await page.mouse.down();
+    await page.mouse.move(460, 315, { steps: 8 });
+    await page.mouse.up();
+
+    const moved = await readState();
+    expect(moved.members, 'os 2 objetos seguem selecionados após o arraste').toBe(2);
+    expect(moved.centers[0].x).toBeGreaterThan(before.centers[0].x);
+
+    // Ctrl+Z com a seleção ainda ativa — o bug.
+    await page.keyboard.press('Control+z');
+
+    await expect.poll(async () => (await readState()).centers[0].x)
+      .toBe(before.centers[0].x);
+
+    const after = await readState();
+    expect(after.count, 'nenhum objeto duplicado no canvas').toBe(2);
+    expect(after.orphans, 'nenhum objeto fantasma preso na seleção').toBe(0);
+    expect(after.members, 'a seleção foi reconstruída com os 2 objetos').toBe(2);
+    expect(after.centers, 'ambos voltaram à posição original').toEqual(before.centers);
+
+    expect(consoleErrors, `console errors: ${consoleErrors.join('\n')}`).toEqual([]);
+  });
+
   test('exportar PNG: dispara um download', async ({ page }) => {
     await login(page);
     await drawRect(page);
