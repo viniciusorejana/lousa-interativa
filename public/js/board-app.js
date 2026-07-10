@@ -449,13 +449,30 @@ export const socket = LB.createSocket({ type: 'editor', userName: myUserName, ro
 initStagingSocketListeners(); // precisa rodar só depois que `socket` acima existe (ver staging-area.js)
 initLiveBg(); // idem — depende de myRoomId acima (ver live-bg.js)
 
+// Banner de "sem conexão": só aparece depois de OFFLINE_BANNER_DELAY offline,
+// pra não piscar em quedas instantâneas de reconexão. É o aviso claro, durante
+// uma live, de que o desenho não está chegando na transmissão.
+const OFFLINE_BANNER_DELAY = 5000;
+let _offlineBannerTimer = null;
+function showOfflineBanner() {
+  const b = document.getElementById('offline-banner');
+  if (b) b.classList.add('show');
+}
+function hideOfflineBanner() {
+  clearTimeout(_offlineBannerTimer); _offlineBannerTimer = null;
+  const b = document.getElementById('offline-banner');
+  if (b) b.classList.remove('show');
+}
+
 socket.on('connect', () => {
   document.getElementById('sdot').className = 'sdot on';
   document.getElementById('stxt').textContent = 'Conectado';
+  hideOfflineBanner();
 });
 socket.on('disconnect', () => {
   document.getElementById('sdot').className = 'sdot blink';
   document.getElementById('stxt').textContent = 'Reconectando...';
+  if (!_offlineBannerTimer) _offlineBannerTimer = setTimeout(showOfflineBanner, OFFLINE_BANNER_DELAY);
 });
 socket.on('board:init', ({ state, roomId, userId, userName, userColor, canUndo, canRedo }) => {
   myId = userId;
@@ -489,10 +506,7 @@ socket.on('board:init', ({ state, roomId, userId, userName, userColor, canUndo, 
   // os outros de novo — senão a área só reaparecia pros outros depois da
   // próxima vez que ela fosse movida, mesmo já estando ativa.
   if (imageSpawnMode === 'staging') emitStagingSync(getStagingOrigin());
-  const btnU = document.querySelector('[onclick="undo()"]');
-  const btnR = document.querySelector('[onclick="redo()"]');
-  if (btnU) btnU.style.opacity = canUndo ? '1' : '0.35';
-  if (btnR) btnR.style.opacity = canRedo ? '1' : '0.35';
+  setUndoRedoEnabled(canUndo, canRedo);
 });
 socket.on('users:update', users => {
   const count = users.length;
@@ -1041,13 +1055,18 @@ function toggleLayersPanelBridge() {
   flushLayersPanelIfDirty();
 }
 
-// Atualiza botões de undo/redo baseado no estado do servidor (por usuário)
-socket.on('history:update', ({ canUndo, canRedo }) => {
+// Habilita/desabilita de verdade os botões de undo/redo (antes só mudava a
+// opacidade — o botão continuava clicável e com cursor normal quando não havia
+// nada pra desfazer). `disabled` bloqueia o clique e o CSS reflete o estado.
+function setUndoRedoEnabled(canUndo, canRedo) {
   const btnU = document.querySelector('[onclick="undo()"]');
   const btnR = document.querySelector('[onclick="redo()"]');
-  if (btnU) btnU.style.opacity = canUndo ? '1' : '0.35';
-  if (btnR) btnR.style.opacity = canRedo ? '1' : '0.35';
-});
+  if (btnU) { btnU.disabled = !canUndo; btnU.style.opacity = canUndo ? '1' : '0.35'; }
+  if (btnR) { btnR.disabled = !canRedo; btnR.style.opacity = canRedo ? '1' : '0.35'; }
+}
+
+// Atualiza botões de undo/redo baseado no estado do servidor (por usuário)
+socket.on('history:update', ({ canUndo, canRedo }) => setUndoRedoEnabled(canUndo, canRedo));
 
 // Avisa quando um undo/redo não pôde ser aplicado por completo porque outro
 // usuário alterou o(s) mesmo(s) objeto(s) depois da ação original.
@@ -1197,14 +1216,16 @@ window.addEventListener('keydown', e => {
   }
 
   if (e.ctrlKey || e.metaKey) {
-    if (e.key === 'z') { e.preventDefault(); undo(); }
-    else if (e.key === 'y') { e.preventDefault(); redo(); }
-    else if (e.key === 'd') { e.preventDefault(); dupSel(); }
-    else if (e.key === 'c') { e.preventDefault(); copySel(); }
+    const k = e.key.toLowerCase(); // Caps Lock não deve quebrar os atalhos
+    // Ctrl+Z desfaz; Ctrl+Shift+Z ou Ctrl+Y refaz (convenção Photoshop/Figma)
+    if (k === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
+    else if (k === 'y') { e.preventDefault(); redo(); }
+    else if (k === 'd') { e.preventDefault(); dupSel(); }
+    else if (k === 'c') { e.preventDefault(); copySel(); }
     // Ctrl+V não é interceptado aqui: sempre deixamos o evento 'paste' nativo do
     // navegador disparar, que lê diretamente do clipboard do sistema (ver listener
     // de 'paste' mais abaixo, que trata tanto objetos do board quanto imagens/URLs).
-    else if (e.key === 'a') {
+    else if (k === 'a') {
       e.preventDefault();
       canvas.discardActiveObject();
       const sel = canvas.getObjects().filter(o => !o._isViewportRect && o.selectable !== false);
@@ -1263,6 +1284,27 @@ window.addEventListener('keyup', e => {
 // exigindo scroll pra aparecer). Este vive em <body>, com position:fixed,
 // então nunca é cortado por overflow/transform de nenhum ancestral. A posição
 // é recalculada a cada hover via getBoundingClientRect do botão.
+
+// Indicador de overflow da toolbar — alterna as classes of-start/of-end/of-both
+// conforme a posição do scroll, pra o fade aparecer só no lado que tem botão
+// escondido. Recalcula ao rolar, ao redimensionar a janela e no load.
+function initToolbarOverflow() {
+  const tb = document.getElementById('toolbar');
+  if (!tb) return;
+  const update = () => {
+    const overflow = tb.scrollWidth - tb.clientWidth;
+    if (overflow <= 1) { tb.classList.remove('of-start', 'of-end', 'of-both'); return; }
+    const atStart = tb.scrollLeft <= 1;
+    const atEnd   = tb.scrollLeft >= overflow - 1;
+    tb.classList.toggle('of-both',  !atStart && !atEnd);
+    tb.classList.toggle('of-start',  atEnd && !atStart);
+    tb.classList.toggle('of-end',    atStart && !atEnd);
+  };
+  tb.addEventListener('scroll', update, { passive: true });
+  window.addEventListener('resize', update);
+  update();
+}
+initToolbarOverflow();
 
 // Init
 setTool('select');
