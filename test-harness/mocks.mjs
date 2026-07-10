@@ -121,6 +121,7 @@ class FakeElement {
 }
 globalThis.document = {
   createElement: () => new FakeElement(),
+  createDocumentFragment: () => new FakeElement(),
   getElementById: () => new FakeElement(),
   querySelector: () => new FakeElement(),
   querySelectorAll: () => [],

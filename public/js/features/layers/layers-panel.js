@@ -413,13 +413,29 @@ function updateLayersPanel() {
     assignDefaultName(o);
   });
 
+  // Não reconstrói o DOM quando o painel está recolhido (fora da tela): a
+  // reconstrução completa é a parte cara, e num painel invisível é puro
+  // desperdício — durante uma live, com o painel recolhido, cada traço
+  // disparava um rebuild de centenas de nós à toa. Marca como "sujo" e
+  // reconstrói ao reabrir (ver flushLayersPanelIfDirty). A escrituração barata
+  // acima (reatribuir camada/nomear objetos) já rodou e é o que importa manter.
+  const panel = document.getElementById('layers-panel');
+  if (panel && panel.classList.contains('collapsed')) {
+    _panelDirtyWhileCollapsed = true;
+    return;
+  }
+  _panelDirtyWhileCollapsed = false;
+
   if (!boardLayers.length) {
     list.innerHTML = '<div id="layers-empty">Nenhuma camada</div>';
     return;
   }
 
   const canvasSel = new Set(canvas.getActiveObjects().map(o => o.id));
-  list.innerHTML = '';
+  // Monta tudo num DocumentFragment e insere de uma vez só no fim: antes cada
+  // camada era anexada direto no #layers-list (DOM ao vivo), forçando um
+  // reflow por seção. Com o fragment, é um único reflow no final.
+  const frag = document.createDocumentFragment();
   clickableEntries = [];
 
   // Renderiza do topo para o fundo (boardLayers[0] = topo)
@@ -800,10 +816,21 @@ function updateLayersPanel() {
       section.appendChild(objsDiv);
     }
 
-    list.appendChild(section);
+    frag.appendChild(section);
   });
 
+  // Troca todo o conteúdo de uma vez (um reflow em vez de um por seção).
+  list.innerHTML = '';
+  list.appendChild(frag);
+
   updateLayerToolbar();
+}
+
+// Flag: houve um pedido de atualização enquanto o painel estava recolhido, então
+// o DOM não foi reconstruído. Ao reabrir, precisamos reconstruir uma vez.
+let _panelDirtyWhileCollapsed = false;
+export function flushLayersPanelIfDirty() {
+  if (_panelDirtyWhileCollapsed) { _panelDirtyWhileCollapsed = false; scheduleLayersUpdate(); }
 }
 
 function toggleObjVisibility(id) {

@@ -39,6 +39,7 @@ import {
   toggleObjVisibility, togglePathGroup, deletePathGroup, deleteObjById,
   toggleObjLock, toggleLayerLock, toggleGroupLock, isLayerLocked,
   toggleObjViewVisibility, toggleViewPathGroup, toggleLayerViewVisibility, toggleGroupViewVisibility,
+  flushLayersPanelIfDirty,
 } from './features/layers/layers-panel.js';
 import { initRemoteUsersSocketListeners } from './features/remote-users/remote-users.js';
 import { copySel } from './features/clipboard/clipboard.js';
@@ -1032,6 +1033,14 @@ export async function uploadFile(file) {
 function undo() { socket.emit('history:undo'); }
 function redo() { socket.emit('history:redo'); }
 
+// Wrapper do toggle do painel de Camadas: ao reabrir, reconstrói o painel se
+// ele ficou desatualizado enquanto estava recolhido (updateLayersPanel pula a
+// reconstrução do DOM quando o painel está fora da tela — ver layers-panel.js).
+function toggleLayersPanelBridge() {
+  toggleLayersPanel();
+  flushLayersPanelIfDirty();
+}
+
 // Atualiza botões de undo/redo baseado no estado do servidor (por usuário)
 socket.on('history:update', ({ canUndo, canRedo }) => {
   const btnU = document.querySelector('[onclick="undo()"]');
@@ -1282,7 +1291,7 @@ Object.assign(window, {
   setSelStroke, setSelStrokeLive, resizeSel, resizeSelLive, setSelOp, setSelOpLive,
   sendBackFront, delSel,
   toggleVpPanel, updateViewport,
-  toggleLayersPanel, addLayer, groupSelected, ungroupSelected, ungroupByIds,
+  toggleLayersPanel: toggleLayersPanelBridge, addLayer, groupSelected, ungroupSelected, ungroupByIds,
   scheduleLayersUpdate, toggleLayerVisibility, moveLayer, deleteLayer,
   toggleObjVisibility, deleteObjById, togglePathGroup, deletePathGroup,
   toggleObjLock, toggleLayerLock, toggleGroupLock,
