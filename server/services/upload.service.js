@@ -1,4 +1,5 @@
 const fs     = require('fs');
+const fsp    = require('fs/promises');
 const path   = require('path');
 const multer = require('multer');
 const sharp  = require('sharp');
@@ -27,19 +28,23 @@ const uploadMiddleware = multer({
   },
 });
 
-// Estatísticas de uso da pasta de uploads — usado no log periódico, no teto
-// de segurança do /upload e no endpoint /api/storage.
-function getUploadsStats() {
+// Estatísticas de uso da pasta de uploads. Assíncrono (fs/promises): a I/O de
+// disco roda no threadpool do libuv em vez de travar o event loop — importante
+// porque isto é consultado no caminho de cada /upload, e uma pasta com
+// centenas de arquivos fazia readdir/stat SÍNCRONO congelar TODAS as salas
+// (cursores, traços) durante a varredura. Usado no teto de segurança do
+// /upload, no endpoint /api/storage e no log periódico.
+async function getUploadsStats() {
   let totalBytes = 0, fileCount = 0;
-  try {
-    for (const f of fs.readdirSync(UPLOADS)) {
-      try {
-        const stat = fs.statSync(path.join(UPLOADS, f));
-        totalBytes += stat.size;
-        fileCount++;
-      } catch (_) {}
-    }
-  } catch (_) {}
+  let files;
+  try { files = await fsp.readdir(UPLOADS); } catch (_) { files = []; }
+  for (const f of files) {
+    try {
+      const stat = await fsp.stat(path.join(UPLOADS, f));
+      totalBytes += stat.size;
+      fileCount++;
+    } catch (_) {}
+  }
   return { fileCount, totalBytes, totalMB: +(totalBytes / 1024 / 1024).toFixed(1) };
 }
 
@@ -54,13 +59,13 @@ function getUploadsStats() {
 // só como uma folga de segurança pra uploads recém-chegados que ainda não
 // foram sincronizados no estado da sala (uma corrida de milissegundos, não
 // minutos) — nunca apagamos algo com menos de 10min de vida.
-function sweepOrphanedUploads() {
+async function sweepOrphanedUploads() {
   let referenced;
   try { referenced = collectReferencedFilenames(); }
   catch (err) { console.error('[uploads] Erro ao coletar referências:', err.message); return; }
 
   let files;
-  try { files = fs.readdirSync(UPLOADS); } catch (_) { return; }
+  try { files = await fsp.readdir(UPLOADS); } catch (_) { return; }
 
   const now = Date.now();
   let removed = 0, freedBytes = 0;
@@ -69,10 +74,10 @@ function sweepOrphanedUploads() {
     if (referenced.has(filename)) continue;
     const filePath = path.join(UPLOADS, filename);
     let stat;
-    try { stat = fs.statSync(filePath); } catch (_) { continue; }
+    try { stat = await fsp.stat(filePath); } catch (_) { continue; }
     if (now - stat.mtimeMs < UPLOAD_GRACE_MS) continue;
     try {
-      fs.unlinkSync(filePath);
+      await fsp.unlink(filePath);
       removed++;
       freedBytes += stat.size;
     } catch (_) {}
@@ -84,12 +89,12 @@ function sweepOrphanedUploads() {
 }
 
 function startUploadMaintenance() {
-  setInterval(sweepOrphanedUploads, UPLOAD_SWEEP_INTERVAL);
+  setInterval(() => { sweepOrphanedUploads().catch(() => {}); }, UPLOAD_SWEEP_INTERVAL);
 
   // Log periódico de uso de disco — visibilidade simples sem precisar de SSH
   // durante uma live pra saber se o armazenamento está sob controle.
-  setInterval(() => {
-    const stats = getUploadsStats();
+  setInterval(async () => {
+    const stats = await getUploadsStats();
     console.log(`[uploads] Uso atual: ${stats.fileCount} arquivo(s), ${stats.totalMB}MB / ${UPLOADS_MAX_MB}MB`);
   }, STORAGE_LOG_INTERVAL);
 }

@@ -12,10 +12,16 @@ router.post('/upload', uploadMiddleware.single('image'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo' });
 
   // Teto de segurança: nunca deixa a pasta de uploads crescer sem limite.
-  // Roda uma varredura de órfãos primeiro — se o "excesso" for só lixo
-  // acumulado, isso já libera espaço e evita recusar um upload legítimo.
-  sweepOrphanedUploads();
-  const stats = getUploadsStats();
+  // Caminho feliz (bem abaixo do teto) faz só UM readdir assíncrono — sem
+  // varredura de órfãos, sem unlink. A varredura completa (mais cara) só roda
+  // quando de fato batemos no teto: se o "excesso" for só lixo acumulado, isso
+  // libera espaço e evita recusar um upload legítimo. Tudo assíncrono (fs/
+  // promises) pra não travar o event loop e congelar as salas ativas.
+  let stats = await getUploadsStats();
+  if (stats.totalMB >= UPLOADS_MAX_MB) {
+    await sweepOrphanedUploads();
+    stats = await getUploadsStats();
+  }
   if (stats.totalMB >= UPLOADS_MAX_MB) {
     fs.unlink(req.file.path, () => {});
     return res.status(507).json({

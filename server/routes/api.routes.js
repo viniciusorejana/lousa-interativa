@@ -122,10 +122,10 @@ router.get('/api/rooms', (req, res) => {
 
 // API: visão geral de uso de armazenamento (uploads + salas) — pra
 // acompanhar sem precisar de SSH durante uma live.
-router.get('/api/storage', (req, res) => {
+router.get('/api/storage', async (req, res) => {
   if (!isAuth(req)) return res.status(401).json({ error: 'Não autenticado' });
 
-  const uploads = getUploadsStats();
+  const uploads = await getUploadsStats();
 
   const roomsInfo = Object.entries(rooms).map(([id, r]) => {
     let imgCount = 0;
