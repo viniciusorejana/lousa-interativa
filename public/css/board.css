@@ -2,6 +2,14 @@
 * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
 body { background:#1e1e2a; overflow:hidden; font-family:'Segoe UI',system-ui,sans-serif; color:var(--text); user-select:none; touch-action:none; }
 
+/* `touch-action:none` no body existe pro canvas receber pan/zoom próprios (1 e
+   2 dedos) sem o navegador roubar o gesto. Mas ele também mata o scroll por
+   TOQUE dentro dos painéis roláveis — cada container de scroll precisa
+   reabilitar explicitamente o eixo que usa, senão no celular o painel de
+   camadas e o bottom-sheet simplesmente não rolam com o dedo. */
+#toolbar, #opts { touch-action:pan-x; }
+#layers-list, #ctx, #ctx-props, #vp-content, #board-tutorial-overlay { touch-action:pan-y; -webkit-overflow-scrolling:touch; }
+
 /* ── Toolbar principal ── */
 #toolbar { position:fixed; top:12px; left:50%; transform:translateX(-50%); z-index:1000; display:flex; align-items:center; gap:4px; background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:6px 10px; box-shadow:0 8px 32px rgba(0,0,0,.5); max-width:calc(100vw - 24px); overflow-x:auto; scrollbar-width:none; }
 #toolbar::-webkit-scrollbar { display:none; }
@@ -60,11 +68,32 @@ input[type="color"] { width:28px; height:28px; border:1px solid var(--border); b
 #ctx::-webkit-scrollbar { width:4px; }
 #ctx::-webkit-scrollbar-track { background:transparent; }
 #ctx::-webkit-scrollbar-thumb { background:var(--border); border-radius:2px; }
-#ctx h4 { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.7px; margin-bottom:10px; }
+#ctx h4 { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.7px; }
+#ctx-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
+/* Grabber e botão "mais" só existem no bottom-sheet (mobile) — ver @media. */
+#ctx-grabber, #ctx-more { display:none; }
+
+/* Linha de ações em ícones. Substitui os antigos botões de texto e adiciona
+   Duplicar e Copiar, que antes só existiam como atalho de teclado (Ctrl+D /
+   Ctrl+C) e portanto eram inalcançáveis no toque. */
+#ctx-actions { display:grid; grid-template-columns:repeat(3,1fr); gap:5px; margin-bottom:12px; }
+.ca-btn {
+  height:34px; display:flex; align-items:center; justify-content:center;
+  border:1px solid var(--border); border-radius:7px;
+  background:var(--surface2); color:var(--text); cursor:pointer;
+  transition:background .12s, color .12s, border-color .12s;
+}
+.ca-btn:hover { background:var(--border); }
+.ca-btn.danger { color:#ff6060; }
+.ca-btn.danger:hover { background:rgba(255,80,80,.15); border-color:rgba(255,80,80,.35); }
+.ca-btn:disabled { opacity:.35; cursor:not-allowed; }
 .cr { display:flex; align-items:center; justify-content:space-between; gap:6px; margin-bottom:7px; }
 .cl { font-size:12px; color:var(--muted); white-space:nowrap; }
 .ci { background:var(--surface2); border:1px solid var(--border); border-radius:6px; padding:4px 8px; font-size:12px; color:var(--text); width:68px; outline:none; }
 .ci:focus { border-color:var(--accent); }
+/* Seletores de cor do painel de seleção. Antes tinham tamanho em `style`
+   inline, o que impedia o CSS de ampliá-los como alvo de toque no mobile. */
+.ci-color { width:32px; height:24px; padding:1px; border-radius:5px; cursor:pointer; }
 .cb { width:100%; padding:8px; border-radius:7px; border:1px solid var(--border); background:var(--surface2); color:var(--text); font-size:12px; cursor:pointer; margin-top:4px; }
 .cb:hover, .cb:active { background:var(--border); }
 .cb.d:hover, .cb.d:active { background:rgba(255,80,80,.15); color:#ff6060; border-color:rgba(255,80,80,.3); }
@@ -378,3 +407,168 @@ input[type="color"] { width:28px; height:28px; border:1px solid var(--border); b
 body.panning { cursor:grabbing !important; }
 body.pan-mode canvas { cursor:grab !important; }
 body.pan-mode.panning canvas { cursor:grabbing !important; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   BACKDROP DOS DRAWERS (mobile)
+   Só aparece quando um painel lateral está aberto no mobile — tocar fecha.
+══════════════════════════════════════════════════════════════════════════ */
+#drawer-backdrop {
+  position:fixed; inset:0; z-index:2400; display:none;
+  background:rgba(0,0,0,.55); backdrop-filter:blur(2px);
+}
+#drawer-backdrop.show { display:block; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ALVOS DE TOQUE (qualquer aparelho de ponteiro "grosso" — dedo/caneta)
+   Independente da largura: um tablet largo com toque também precisa disso.
+   Antes: swatch 28px, layer-action-btn 20px, lsa-btn 18px — muito abaixo do
+   mínimo recomendado (44px WCAG 2.5.5 / Apple HIG).
+══════════════════════════════════════════════════════════════════════════ */
+@media (pointer: coarse) {
+  .tb-btn { width:48px; height:48px; }
+  .trp-btn { width:44px; height:44px; }
+  .swatch { width:38px; height:38px; }
+  input[type="color"] { width:38px; height:38px; }
+  .ci-color { width:44px; height:38px; }
+  input[type="range"] { height:26px; }
+  .layer-item { min-height:48px; }
+  .layer-section-header { padding:10px 8px; }
+  .layer-action-btn { width:36px; height:36px; opacity:.85; }
+  .lsa-btn { width:34px; height:34px; }
+  .layer-check { width:20px; height:20px; }
+  .layer-drag-handle { font-size:16px; padding:0 6px; opacity:.6; }
+  .lt-btn { padding:9px 11px; font-size:11px; }
+  .ca-btn { height:48px; }
+  .vp-btn { padding:12px; }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   LAYOUT MOBILE  (≤768px — mesmo breakpoint de isMobileLayout() em
+   ui/panel-layout.js, que desliga o posicionamento por JS nesta faixa)
+
+   Reorganização, não só encolhimento:
+     • toolbar        → barra fixa no RODAPÉ (zona do polegar), rolável
+     • #opts          → logo acima da toolbar
+     • #ctx           → bottom-sheet acima da toolbar (recolhido = só ações)
+     • camadas/vp     → drawers deslizantes em tela cheia, com backdrop
+     • rodapé antigo  → zoom/status escondidos; #users vai pro topo direito
+══════════════════════════════════════════════════════════════════════════ */
+@media (max-width: 768px) {
+  /* Altura real ocupada pela toolbar do rodapé (botão 48 + padding 12) mais a
+     safe-area do aparelho (notch/barra de gestos). Tudo que fica "acima da
+     toolbar" ancora nesta variável. */
+  :root { --mtb: calc(60px + env(safe-area-inset-bottom, 0px)); }
+
+  /* ── Toolbar no rodapé ── */
+  #toolbar {
+    top:auto; bottom:0; left:0; right:0; transform:none;
+    width:100%; max-width:none;
+    border-radius:0; border-left:none; border-right:none; border-bottom:none;
+    padding:6px 8px calc(6px + env(safe-area-inset-bottom, 0px));
+    justify-content:flex-start; gap:2px;
+    box-shadow:0 -6px 24px rgba(0,0,0,.5);
+  }
+
+  /* ── Opções da ferramenta: logo acima da toolbar ── */
+  #opts {
+    top:auto; bottom:var(--mtb); left:0; right:0; transform:none;
+    width:100%; max-width:none;
+    border-radius:14px 14px 0 0; border-bottom:none;
+    padding:10px 12px;
+  }
+
+  /* ── #ctx vira bottom-sheet ──
+     Recolhido mostra só grabber + título + linha de ações (o que se usa quase
+     sempre). Expandido revela as propriedades, com scroll interno. */
+  #ctx {
+    top:auto; bottom:var(--mtb); left:0; right:0;
+    width:auto; max-width:none;
+    max-height:60vh;
+    border-radius:16px 16px 0 0; border-bottom:none;
+    padding:8px 14px 14px;
+    overflow:hidden; /* quem rola é #ctx-props */
+    box-shadow:0 -8px 28px rgba(0,0,0,.5);
+  }
+  #ctx-grabber {
+    display:block; width:40px; height:4px; margin:2px auto 10px;
+    background:var(--border); border-radius:2px; cursor:pointer;
+  }
+  #ctx-head { margin-bottom:8px; }
+  #ctx-more { display:flex; align-items:center; justify-content:center;
+    width:36px; height:36px; padding:0; border:none; border-radius:8px;
+    background:transparent; color:var(--muted); cursor:pointer; }
+  #ctx-more svg { transition:transform .18s; }
+  #ctx.expanded #ctx-more svg { transform:rotate(180deg); }
+
+  /* 6 ações lado a lado, cada uma com alvo confortável */
+  #ctx-actions { grid-template-columns:repeat(6,1fr); gap:6px; margin-bottom:4px; }
+
+  /* Propriedades: escondidas até expandir */
+  #ctx-props { display:none; }
+  #ctx.expanded #ctx-props {
+    display:block; margin-top:12px;
+    max-height:38vh; overflow-y:auto; overflow-x:hidden;
+    scrollbar-width:thin; scrollbar-color:var(--border) transparent;
+  }
+  /* Campos de propriedade mais largos no sheet (sobra largura de tela). O
+     :not(.ci-color) é essencial: sem ele, esta regra (id+classe) vence
+     .ci-color por especificidade e os seletores de cor viram barras de 96px. */
+  #ctx .ci:not(.ci-color) { width:96px; }
+  #ctx .ci-color { width:56px; height:40px; }
+  #ctx input[type="range"] { width:120px; }
+
+  /* ── Painéis laterais viram drawers de tela cheia ── */
+  #layers-panel {
+    top:0; bottom:0; right:0; left:auto;
+    width:min(86vw, 330px);
+    min-height:0; max-height:none;
+    border-radius:0; border-right:none; border-top:none; border-bottom:none;
+    z-index:2500;
+    padding-bottom:env(safe-area-inset-bottom, 0px);
+    transform:translateX(0);
+  }
+  #layers-panel.collapsed { transform:translateX(100%); }
+
+  #vp-panel {
+    top:0; bottom:0; left:0; right:auto;
+    width:min(86vw, 300px);
+    max-height:none;
+    border-radius:0; border-left:none; border-top:none; border-bottom:none;
+    z-index:2500;
+    padding-bottom:env(safe-area-inset-bottom, 0px);
+    transform:translateX(0);
+  }
+  #vp-panel.collapsed { transform:translateX(-100%); }
+  .vp-input { width:100%; }
+  .vp-row .vp-input { width:110px; }
+
+  /* ── Rodapé antigo dá lugar à toolbar ── */
+  #zoom-info, #status { display:none; }
+  #users {
+    top:14px; right:14px; bottom:auto; left:auto;
+    max-width:52vw; overflow:hidden; white-space:nowrap;
+  }
+
+  /* Painel de spawn logo abaixo do painel view/ajuda (topo esquerdo) */
+  #spawn-panel { top:64px; }
+
+  /* Toast sai do rodapé (onde agora mora a toolbar) e vai pro topo — mas
+     ABAIXO do #spawn-panel, que também é centralizado e ocupa 64px..108px
+     (top + .trp-btn de 44px no @media pointer:coarse). Os dois toasts que mais
+     aparecem ("Novas imagens vão para a área reservada", "Copiado") são
+     disparados justamente com o painel de spawn na tela. */
+  #toast {
+    top:118px; bottom:auto;
+    max-width:calc(100vw - 32px); text-align:center;
+  }
+
+  /* Tutorial: usa a tela toda em vez de um cartão estreito */
+  #board-tutorial-overlay { padding:10px; }
+}
+
+/* Telas bem estreitas (≈iPhone SE): aperta o que ainda sobra */
+@media (max-width: 380px) {
+  #ctx-actions { gap:4px; }
+  .ca-btn { height:44px; }
+  #users { font-size:11px; padding:5px 8px; }
+}

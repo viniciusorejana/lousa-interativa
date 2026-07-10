@@ -42,13 +42,13 @@ import {
   flushLayersPanelIfDirty,
 } from './features/layers/layers-panel.js';
 import { initRemoteUsersSocketListeners } from './features/remote-users/remote-users.js';
-import { copySel } from './features/clipboard/clipboard.js';
+import { copySel, pasteFromClipboard } from './features/clipboard/clipboard.js';
 import {
   tool, color, sz, op, fillShape, isDrawing, drawStart, penActive, eraserActive,
   getCanvasPoint, handlePointerDown, updateTmpShape, updateEraserDrag, handlePointerUp,
   setTool, setColor, setSz, setOp, setFillShape, setPenActive,
 } from './features/drawing-tools/drawing-tools.js';
-import { layoutSidePanels, toggleVpPanel, toggleLayersPanel, updCtx } from './ui/panel-layout.js';
+import { layoutSidePanels, toggleVpPanel, toggleLayersPanel, updCtx, toggleCtxSheet } from './ui/panel-layout.js';
 import {
   setSelColor, setSelColorLive, setSelFill, setSelFillLive, toggleSelFill,
   setSelStroke, setSelStrokeLive, resizeSel, resizeSelLive, setSelOp, setSelOpLive,
@@ -1332,6 +1332,10 @@ Object.assign(window, {
   setSelColor, setSelColorLive, setSelFill, setSelFillLive, toggleSelFill,
   setSelStroke, setSelStrokeLive, resizeSel, resizeSelLive, setSelOp, setSelOpLive,
   sendBackFront, delSel,
+  // Ações de seleção acessíveis por BOTÃO (indispensável no mobile, onde não
+  // existem os atalhos Ctrl+C / Ctrl+V / Ctrl+D).
+  copySel, pasteFromClipboard, dupSel,
+  toggleCtxSheet,
   toggleVpPanel, updateViewport,
   toggleLayersPanel: toggleLayersPanelBridge, addLayer, groupSelected, ungroupSelected, ungroupByIds,
   scheduleLayersUpdate, toggleLayerVisibility, moveLayer, deleteLayer,

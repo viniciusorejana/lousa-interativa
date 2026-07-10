@@ -37,7 +37,7 @@
 
   function hideTip() { tip.classList.remove('show'); }
 
-  document.querySelectorAll('#toolbar .tb-btn, #top-left-panel .trp-btn, #spawn-panel .trp-btn').forEach(btn => {
+  document.querySelectorAll('#toolbar .tb-btn, #top-left-panel .trp-btn, #spawn-panel .trp-btn, #ctx-actions .ca-btn').forEach(btn => {
     btn.addEventListener('mouseenter', () => showTip(btn));
     btn.addEventListener('mouseleave', hideTip);
     btn.addEventListener('click', hideTip);

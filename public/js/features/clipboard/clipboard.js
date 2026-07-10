@@ -195,6 +195,66 @@ const BOARD_CLIPBOARD_RE = new RegExp(`<!--${BOARD_CLIPBOARD_MARKER}:([A-Za-z0-9
 
 let _pasteCount = 0; // incrementa a cada colagem para o offset não empilhar no mesmo lugar
 
+// ── Clipboard INTERNO do app ─────────────────────────────────────────────────
+// O clipboard do sistema não serve no mobile: `navigator.clipboard.write` com
+// ClipboardItem de imagem falha/é bloqueado em boa parte dos navegadores de
+// celular, e o evento 'paste' (que é o único caminho de colagem aqui) depende
+// de Ctrl+V — que não existe no toque. Sem isto, copiar/colar simplesmente não
+// existia no celular.
+//
+// Então guardamos SEMPRE uma cópia interna dos objetos serializados: em memória
+// (rápido) e espelhada em localStorage (sobrevive a reload e funciona entre
+// abas/salas). O clipboard do sistema continua sendo alimentado em paralelo,
+// best-effort, pra manter a interoperabilidade com outros apps no desktop.
+const CLIPBOARD_KEY = 'lb_clipboard';
+const CLIPBOARD_MAX_PERSIST = 2 * 1024 * 1024; // acima disso só em memória (cota do localStorage)
+let _memClipboard = null;
+
+function setInternalClipboard(serialized) {
+  _memClipboard = serialized;
+  try {
+    const json = JSON.stringify(serialized);
+    if (json.length <= CLIPBOARD_MAX_PERSIST) localStorage.setItem(CLIPBOARD_KEY, json);
+    else localStorage.removeItem(CLIPBOARD_KEY); // não deixa um recorte antigo/menor mascarar este
+  } catch (_) { /* cota estourada ou modo privado — segue só em memória */ }
+  updatePasteButton();
+}
+
+// Memória tem prioridade; o localStorage é o fallback (outra aba / após reload).
+export function getInternalClipboard() {
+  if (_memClipboard && _memClipboard.length) return _memClipboard;
+  try {
+    const raw = localStorage.getItem(CLIPBOARD_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length) return parsed;
+    }
+  } catch (_) {}
+  return null;
+}
+
+export function hasClipboardContent() { return !!getInternalClipboard(); }
+
+// Habilita/desabilita o botão "Colar" da toolbar conforme há ou não conteúdo.
+// Só mexe no DOM — nenhum binding circular é lido aqui, então pode rodar no
+// nível superior do módulo (ver regra em CLAUDE.md).
+function updatePasteButton() {
+  const btn = document.getElementById('t-paste');
+  if (!btn) return;
+  const has = hasClipboardContent();
+  btn.disabled = !has;
+  btn.style.opacity = has ? '1' : '0.35';
+}
+updatePasteButton();
+
+// Colar acionado por BOTÃO (toque ou clique) — lê do clipboard interno, não do
+// sistema. É o caminho de colagem do mobile, e um atalho conveniente no desktop.
+export async function pasteFromClipboard() {
+  const data = getInternalClipboard();
+  if (!data) { showToast('Nada para colar.', 2000); return; }
+  await pasteBoardObjects(data);
+}
+
 // Codifica/decodifica JSON (com acentos etc.) em base64 com segurança de UTF-8.
 function b64EncodeUtf8(str) { return btoa(unescape(encodeURIComponent(str))); }
 function b64DecodeUtf8(str) { return decodeURIComponent(escape(atob(str))); }
@@ -219,19 +279,24 @@ export async function copySel() {
 
   _pasteCount = 0;
 
-  // Mesma renderização usada pelo "Exportar como PNG" (bounding box exata da seleção).
-  const dataUrl = renderObjectsAsDataURL(objs);
-  const html = `<!--${BOARD_CLIPBOARD_MARKER}:${b64EncodeUtf8(JSON.stringify(serialized))}-->`;
+  // 1. Clipboard INTERNO — sempre. É o que garante que colar funcione em
+  //    qualquer dispositivo (ver comentário em setInternalClipboard).
+  setInternalClipboard(serialized);
+  showToast(`${serialized.length} objeto(s) copiado(s)`, 2000);
 
+  // 2. Clipboard do SISTEMA — best-effort, pra poder colar em outros apps
+  //    (Word, WhatsApp...) e em outra aba do board via Ctrl+V. Falha esperada
+  //    em vários navegadores mobile: não é erro do ponto de vista do usuário,
+  //    porque o passo 1 já garantiu a cópia. Por isso só logamos.
   try {
+    // Mesma renderização usada pelo "Exportar como PNG" (bounding box exata da seleção).
+    const dataUrl = renderObjectsAsDataURL(objs);
+    const html = `<!--${BOARD_CLIPBOARD_MARKER}:${b64EncodeUtf8(JSON.stringify(serialized))}-->`;
     const clipboardData = { 'text/html': new Blob([html], { type: 'text/html' }) };
     if (dataUrl) clipboardData['image/png'] = dataURLToBlob(dataUrl);
-
     await navigator.clipboard.write([new ClipboardItem(clipboardData)]);
-    showToast(`${serialized.length} objeto(s) copiado(s)`, 2000);
   } catch (err) {
-    console.error('Falha ao copiar para a área de transferência do sistema:', err);
-    showToast('Não foi possível copiar para a área de transferência.', 3000);
+    console.warn('Clipboard do sistema indisponível (a cópia interna do board funcionou):', err);
   }
 }
 

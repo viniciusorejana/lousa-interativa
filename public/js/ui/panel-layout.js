@@ -17,6 +17,31 @@ import { canvas } from '../core/canvas-manager.js';
 
 const LAYERS_PANEL_MIN_RESERVE = 190; // min-height do #layers-panel (180px) + folga
 
+// ─── Modo mobile ─────────────────────────────────────────────────────────────
+// Abaixo deste ponto o layout muda de natureza (não é só "encolher"): a toolbar
+// vai pro rodapé, o #ctx vira bottom-sheet e os painéis laterais viram drawers
+// deslizantes. Todo o posicionamento é feito por CSS (@media em board.css) —
+// as funções de medição deste arquivo NÃO devem rodar, senão os estilos inline
+// que elas escrevem (top/maxHeight) venceriam o CSS por especificidade.
+// Mantém o mesmo breakpoint do @media.
+const MOBILE_MAX_WIDTH = 768;
+export function isMobileLayout() {
+  return window.matchMedia(`(max-width: ${MOBILE_MAX_WIDTH}px)`).matches;
+}
+
+// Remove todos os estilos inline que o layout de desktop escreve. Chamado ao
+// entrar em modo mobile (inclusive ao girar o aparelho / redimensionar a
+// janela cruzando o breakpoint), senão sobrariam valores de `top`/`max-height`
+// calculados pra tela grande grudados nos painéis.
+function clearDesktopInlineLayout() {
+  ['ctx', 'layers-panel', 'vp-panel', 'spawn-panel', 'top-left-panel'].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.style.top = '';
+    el.style.maxHeight = '';
+  });
+}
+
 // Borda inferior da "área ocupada" no topo-centro: toolbar + painel de opções
 // da ferramenta ativa (se visível) + painel de spawn (que fica sempre
 // centralizado logo abaixo). Usado por quem precisa saber onde essa área
@@ -148,6 +173,8 @@ function repositionLayersPanel() {
 // borda dele; top-left-panel depende da mesma área acomodada também; e o
 // vp-panel depende do top-left-panel já estar no lugar certo).
 export function layoutSidePanels() {
+  // No mobile o posicionamento é 100% CSS (ver isMobileLayout acima).
+  if (isMobileLayout()) { clearDesktopInlineLayout(); return; }
   updSpawnPanelPos();
   updTopLeftPanelPos();
   updVpPanelPos();
@@ -183,15 +210,80 @@ if (window.ResizeObserver) {
   });
 }
 
+// ─── Drawers (mobile) ────────────────────────────────────────────────────────
+// No mobile os painéis laterais saem inteiros da tela quando fechados, então
+// ganham um fundo escurecido: tocar nele fecha o drawer aberto. Só um drawer
+// fica aberto por vez — abrir um fecha o outro (a tela não comporta os dois).
+function syncDrawerBackdrop() {
+  const backdrop = document.getElementById('drawer-backdrop');
+  if (!backdrop) return;
+  const anyOpen = isMobileLayout() && ['layers-panel', 'vp-panel'].some(id => {
+    const el = document.getElementById(id);
+    return el && !el.classList.contains('collapsed');
+  });
+  backdrop.classList.toggle('show', anyOpen);
+}
+
+function closeOtherDrawer(keepId) {
+  if (!isMobileLayout()) return;
+  ['layers-panel', 'vp-panel'].forEach(id => {
+    if (id === keepId) return;
+    const el = document.getElementById(id);
+    if (el) el.classList.add('collapsed');
+  });
+}
+
+export function closeAllDrawers() {
+  ['layers-panel', 'vp-panel'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.classList.add('collapsed');
+  });
+  syncDrawerBackdrop();
+}
+
 export function toggleVpPanel() {
-  document.getElementById('vp-panel').classList.toggle('collapsed');
+  const el = document.getElementById('vp-panel');
+  el.classList.toggle('collapsed');
+  if (!el.classList.contains('collapsed')) closeOtherDrawer('vp-panel');
+  syncDrawerBackdrop();
 }
 export function toggleLayersPanel() {
-  document.getElementById('layers-panel').classList.toggle('collapsed');
+  const el = document.getElementById('layers-panel');
+  el.classList.toggle('collapsed');
+  if (!el.classList.contains('collapsed')) closeOtherDrawer('layers-panel');
+  syncDrawerBackdrop();
   // Recolher/expandir muda quanto espaço o painel de Camadas precisa — o
   // painel de seleção (#ctx) reserva menos altura quando ele está recolhido.
   layoutSidePanels();
 }
+
+// ─── Bottom-sheet do painel de seleção (mobile) ──────────────────────────────
+// Recolhido: só a linha de ações (duplicar/copiar/ordem/excluir), que é o que
+// se usa em 90% das vezes. Expandido: as propriedades (cor, espessura,
+// opacidade, tamanho) com scroll interno. No desktop a classe não faz nada —
+// o painel lateral mostra tudo sempre.
+export function toggleCtxSheet() {
+  const ctx = document.getElementById('ctx');
+  if (ctx) ctx.classList.toggle('expanded');
+}
+
+// Estado inicial no mobile: os dois drawers fechados (no desktop o CSS manda).
+// Também refaz o estado ao cruzar o breakpoint (girar o aparelho, redimensionar).
+function applyInitialMobileState() {
+  if (!isMobileLayout()) return;
+  closeAllDrawers();
+}
+applyInitialMobileState();
+
+const _mq = window.matchMedia(`(max-width: ${MOBILE_MAX_WIDTH}px)`);
+const _onBreakpointChange = () => { applyInitialMobileState(); syncDrawerBackdrop(); layoutSidePanels(); };
+// addEventListener em MediaQueryList é o caminho moderno; addListener é o
+// fallback pra WebViews antigas (algumas versões de OBS/Android).
+if (_mq.addEventListener) _mq.addEventListener('change', _onBreakpointChange);
+else if (_mq.addListener) _mq.addListener(_onBreakpointChange);
+
+const _backdrop = document.getElementById('drawer-backdrop');
+if (_backdrop) _backdrop.addEventListener('click', closeAllDrawers);
 
 // Painel de propriedades do objeto selecionado (#ctx) — preenche os campos
 // (dimensões, cor, preenchimento, espessura, opacidade) conforme a seleção
