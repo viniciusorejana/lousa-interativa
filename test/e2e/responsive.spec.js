@@ -147,6 +147,56 @@ test.describe('verificação de layout responsivo', () => {
   });
 });
 
+// ─── Cascata de posicionamento dos painéis (desktop) ─────────────────────────
+// layoutSidePanels() posiciona cada painel medindo a borda REAL do anterior.
+// Isso só funciona se nenhuma dessas bordas estiver no meio de uma transição
+// CSS de posição — senão getBoundingClientRect() devolve o valor ANTIGO e o
+// painel seguinte é colocado onde o anterior *estava*, não onde ele vai parar.
+// Era o caso de #top-left-panel e #spawn-panel (transition: top .15s), e o
+// resultado eram os botões view/pincel por cima do painel de Viewport.
+test.describe('cascata de painéis no desktop', () => {
+  const overlap = (a, b) => !(
+    a.x + a.width <= b.x || b.x + b.width <= a.x ||
+    a.y + a.height <= b.y || b.y + b.height <= a.y
+  );
+
+  // Espera bem além das transições mais longas (top .2s) — o bug é justamente
+  // um estado final errado, que não se conserta sozinho depois da animação.
+  const settle = page => page.waitForTimeout(450);
+
+  async function assertNoOverlap(page, label) {
+    const tlp = await page.locator('#top-left-panel').boundingBox();
+    const vp = await page.locator('#vp-panel').boundingBox();
+    expect(overlap(tlp, vp), `${label}: botões view/pincel cobrindo o painel de Viewport`)
+      .toBe(false);
+  }
+
+  test('painel view/ajuda nunca cobre o de Viewport ao redimensionar ou abrir opções', async ({ page }) => {
+    await page.setViewportSize({ width: 1400, height: 900 });
+    await login(page);
+    await settle(page);
+    await assertNoOverlap(page, 'largo, sem opções');
+
+    // Encolhe cruzando o breakpoint de 1200px: o #top-left-panel desce pra não
+    // encostar na toolbar central, e o #vp-panel precisa descer junto.
+    await page.setViewportSize({ width: 1000, height: 900 });
+    await settle(page);
+    await assertNoOverlap(page, 'estreito');
+
+    // Trocar pra uma ferramenta com painel de opções (#opts) aumenta a área
+    // ocupada no topo, empurrando tudo mais pra baixo de novo.
+    await page.keyboard.press('c'); // elipse -> mostra #opts
+    await expect(page.locator('#opts')).toBeVisible();
+    await settle(page);
+    await assertNoOverlap(page, 'estreito + opções abertas');
+
+    // E de volta pro largo, garantindo que o retorno ao canto também acomoda.
+    await page.setViewportSize({ width: 1400, height: 900 });
+    await settle(page);
+    await assertNoOverlap(page, 'largo de novo');
+  });
+});
+
 // hasTouch liga a media query (pointer: coarse), onde os alvos de toque crescem
 // (.trp-btn vai de 34px pra 44px). Sem isso o teste mediria o painel de spawn
 // menor do que ele realmente é num celular, e passaria por sorte.

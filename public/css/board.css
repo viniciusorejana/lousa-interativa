@@ -122,21 +122,28 @@ input[type="color"] { width:28px; height:28px; border:1px solid var(--border); b
    abaixo). Fica sempre no canto oposto à toolbar central, então quase
    nunca precisa se mover — só desce um pouco em telas bem estreitas,
    onde a toolbar pode chegar perto o suficiente da borda pra colidir. */
+/* NÃO animar "top" aqui: updVpPanelPos() mede a borda inferior REAL deste
+   painel pra posicionar o #vp-panel logo abaixo. Com uma transition no top, o
+   getBoundingClientRect() logo após a escrita devolve a posição ANTIGA (a
+   animação ainda está no frame 0), e o #vp-panel acaba colocado onde este
+   painel *estava* — daí os botões ficarem por cima dele. Mesma regra pro
+   #spawn-panel abaixo. Ver o comentário "entradas da cascata" em
+   ui/panel-layout.js. */
 #top-left-panel {
   position:fixed; top:14px; left:14px; z-index:1000;
   display:flex; align-items:center; gap:6px;
-  transition: top .15s;
 }
 /* ── Painel de spawn (centralizado, embaixo da toolbar/opções) ───────────
    Fica sempre no centro, logo abaixo de toda a área ocupada no topo —
    junto da toolbar e do painel de opções, que é justamente onde a pessoa
    já está olhando quando cola ou insere algo novo. O "top" é recalculado
    via JS (updSpawnPanelPos, chamada por layoutSidePanels()) medindo a
-   borda inferior REAL da toolbar + opções, nunca um valor fixo. */
+   borda inferior REAL da toolbar + opções, nunca um valor fixo.
+   Sem transition no "top" pelo mesmo motivo do #top-left-panel: getTopClearArea()
+   mede a borda inferior deste painel pra posicionar #ctx e #layers-panel. */
 #spawn-panel {
   position:fixed; top:70px; left:50%; transform:translateX(-50%); z-index:999;
   display:flex; align-items:center; gap:6px;
-  transition: top .15s;
 }
 .trp-btn {
   display:flex; align-items:center; justify-content:center;

@@ -13,6 +13,15 @@ import { canvas } from '../core/canvas-manager.js';
 // da tela, zoom, idioma dos textos, etc. Sempre chamar layoutSidePanels() (nunca
 // as funções individuais soltas), pra garantir que rodem na ordem certa: cada
 // painel só sabe se posicionar depois que o anterior já se acomodou.
+//
+// REGRA: as ENTRADAS da cascata (#toolbar, #opts, #spawn-panel, #top-left-panel,
+// #users) NÃO podem ter `transition` numa propriedade de posição/tamanho.
+// getBoundingClientRect() devolve o estado ATUAL da animação, não o final —
+// então logo após escrever `el.style.top`, quem medir esse elemento lê a posição
+// ANTIGA e se posiciona no lugar errado. Como nada dispara um novo layout no fim
+// da transição, o erro fica permanente (era o bug dos botões view/pincel por
+// cima do #vp-panel). As SAÍDAS (#ctx, #layers-panel, #vp-panel) podem animar à
+// vontade — ninguém as mede.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const LAYERS_PANEL_MIN_RESERVE = 190; // min-height do #layers-panel (180px) + folga
@@ -73,20 +82,33 @@ function updSpawnPanelPos() {
   sp.style.top = (bottom + 8) + 'px';
 }
 
-// Posiciona o painel "view do OBS / como usar" (canto superior esquerdo). Em
-// telas largas ele mora fixo no canto (CSS cuida disso — só limpamos qualquer
-// inline style residual). Em telas estreitas, a toolbar central (que pode
-// esticar bem perto das bordas) arrisca encostar nele, então empurramos pra
-// baixo da área ocupada no topo (toolbar/opções/spawn) só nesse caso.
+// Posiciona o painel "view do OBS / como usar" (canto superior esquerdo). Ele
+// mora fixo no canto (CSS) enquanto couber; se a toolbar central — que cresce
+// com a quantidade de botões e pode esticar bem perto das bordas — chegar perto
+// demais, ele desce pra baixo da área ocupada no topo (toolbar/opções/spawn).
+//
+// A decisão é por COLISÃO MEDIDA, não por um breakpoint de largura fixo: a
+// largura em que os dois se encostam depende de quantos botões a toolbar tem,
+// do tamanho da fonte e do idioma dos rótulos. Um `innerWidth >= 1200` chutado
+// erra nos dois sentidos (desce cedo demais numa toolbar curta, tarde demais
+// numa longa).
+const TOP_LEFT_GAP = 12; // folga mínima entre o painel do canto e a toolbar
+
 function updTopLeftPanelPos() {
   const tlp = document.getElementById('top-left-panel');
-  if (!tlp) return;
+  const toolbar = document.getElementById('toolbar');
+  if (!tlp || !toolbar) return;
 
-  if (window.innerWidth >= 1200) {
-    tlp.style.top = '';
-    return;
-  }
-  tlp.style.top = (getTopClearArea() + 8) + 'px';
+  // Mede o painel na posição de canto (sem o inline top de uma passada
+  // anterior), senão a colisão seria testada contra a posição já empurrada e
+  // ele nunca voltaria pro canto ao alargar a janela.
+  tlp.style.top = '';
+  const tlpRect = tlp.getBoundingClientRect();
+  const tbRect = toolbar.getBoundingClientRect();
+
+  const collides = tbRect.left < tlpRect.right + TOP_LEFT_GAP &&
+                   tbRect.top  < tlpRect.bottom;
+  if (collides) tlp.style.top = (getTopClearArea() + 8) + 'px';
 }
 
 // Posiciona o painel de Viewport (canto superior esquerdo, abaixo do painel
@@ -181,7 +203,22 @@ export function layoutSidePanels() {
   positionCtxPanel();
   repositionLayersPanel();
 }
-window.addEventListener('resize', layoutSidePanels);
+// Gatilhos "de ambiente" (resize, ResizeObserver) chegam em rajada: arrastar a
+// borda da janela dispara dezenas de resizes por segundo, e cada um deles faz o
+// ResizeObserver da toolbar disparar de novo. Como layoutSidePanels() lê e
+// escreve geometria alternadamente, rodar N vezes no mesmo frame é layout
+// thrashing puro. Coalescemos num único rAF — o resultado visual é idêntico
+// (nada é pintado antes do frame), só o custo cai.
+// Os gatilhos "de intenção" (updCtx, troca de ferramenta, toggle de painel)
+// continuam chamando layoutSidePanels() direto: são pontuais e precisam do
+// resultado no mesmo tick, senão o painel pisca um frame na posição antiga.
+let _layoutRaf = 0;
+function scheduleLayout() {
+  if (_layoutRaf) return;
+  _layoutRaf = requestAnimationFrame(() => { _layoutRaf = 0; layoutSidePanels(); });
+}
+
+window.addEventListener('resize', scheduleLayout);
 // A chamada inicial (via setTool('select') no início do board-app.js) roda
 // antes da rede/fontes terminarem de carregar — nesse instante o toolbar/
 // opts/spawn-panel podem ainda não ter o tamanho final, então o cálculo do
@@ -189,6 +226,9 @@ window.addEventListener('resize', layoutSidePanels);
 // do top-left-panel). 'load' garante mais um recálculo depois que tudo
 // (imagens, fontes) já assentou.
 window.addEventListener('load', layoutSidePanels);
+// 'load' não espera webfonts: elas podem chegar depois e mudar a altura da
+// toolbar/painéis (a cascata inteira é medida em px de texto renderizado).
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(scheduleLayout);
 
 // Além dos gatilhos manuais espalhados pelo código (troca de ferramenta,
 // seleção, resize), qualquer um dos painéis "de entrada" do cálculo acima
@@ -203,7 +243,7 @@ window.addEventListener('load', layoutSidePanels);
 // resize.
 if (window.ResizeObserver) {
   const layoutInputIds = ['toolbar', 'opts', 'spawn-panel', 'top-left-panel', 'users'];
-  const ro = new ResizeObserver(() => layoutSidePanels());
+  const ro = new ResizeObserver(scheduleLayout);
   layoutInputIds.forEach(id => {
     const el = document.getElementById(id);
     if (el) ro.observe(el);
