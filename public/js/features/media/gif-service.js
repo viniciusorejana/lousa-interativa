@@ -53,8 +53,35 @@ function decodeGifInWorker(url) {
 // gifId → { fabricImg, frames:[{bitmap,delay}], frameIdx, lastTime }
 const _gifRegistry = new Map();
 
-// Conjunto legado para compatibilidade com o código de remoção
-const activeGifs = { add: id => {}, delete: id => { _gifRegistry.delete(id); }, size: 0 };
+// Remoção de um GIF do registro de animação. Além de tirar do Map (o que já
+// para de animá-lo no próximo tick), fecha explicitamente cada ImageBitmap dos
+// frames — cada um segura memória de GPU/decodificada (dezenas de MB por GIF),
+// que o GC sozinho demora a liberar. Sem chamar isto nos caminhos de remoção
+// (Delete, object:remove remoto, board:clear, todo loadState de undo/redo), o
+// loop rAF seguia animando objetos órfãos e a memória só crescia — pior no
+// cliente da view, que fica horas ligado dentro do OBS.
+function _releaseGif(id) {
+  const state = _gifRegistry.get(id);
+  if (!state) return;
+  if (Array.isArray(state.frames)) {
+    for (const f of state.frames) {
+      if (f && f.bitmap && typeof f.bitmap.close === 'function') {
+        try { f.bitmap.close(); } catch (_) {}
+      }
+    }
+  }
+  _gifRegistry.delete(id);
+}
+
+// `activeGifs` mantém a mesma interface usada em vários pontos (.delete(id)).
+const activeGifs = { add: id => {}, delete: id => { _releaseGif(id); }, size: 0 };
+
+// Libera TODOS os GIFs de uma vez. Necessário nos caminhos que limpam o canvas
+// via canvas.clear() (board:clear), que — diferente de canvas.remove() por
+// objeto — NÃO dispara 'object:removed', então o cleanup por-objeto não roda.
+function releaseAllGifs() {
+  for (const id of [..._gifRegistry.keys()]) _releaseGif(id);
+}
 
 // Loop único global — um único rAF para TODOS os GIFs
 let _rafId = null;
@@ -231,4 +258,4 @@ async function insertImg(inp) {
   } catch (e) { hideToast(); alert('Erro: ' + e.message); }
 }
 
-export { isGifUrl, placeGif, placeImageFromUrl, insertImg, activeGifs };
+export { isGifUrl, placeGif, placeImageFromUrl, insertImg, activeGifs, releaseAllGifs };

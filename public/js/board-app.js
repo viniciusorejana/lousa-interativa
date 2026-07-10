@@ -19,7 +19,7 @@
 import { canvas, setResizeHook } from './core/canvas-manager.js';
 import { eventBus } from './core/event-bus.js';
 import { absoluteImgUrl, ser, serTransform, serTransformAbsolute } from './core/serialization.js';
-import { isGifUrl, placeGif, placeImageFromUrl, insertImg, activeGifs } from './features/media/gif-service.js';
+import { isGifUrl, placeGif, placeImageFromUrl, insertImg, activeGifs, releaseAllGifs } from './features/media/gif-service.js';
 import { renderObjectsAsDataURL, exportSelectionOrBoardAsPNG } from './features/export/png-exporter.js';
 import { updateLayerToolbar, groupSelected, ungroupSelected, ungroupByIds } from './features/groups/group-service.js';
 import { closeBoardTutorial, btutNav } from './features/onboarding/tutorial.js';
@@ -532,6 +532,7 @@ socket.on('groups:update', groups => {
 });
 
 socket.on('board:clear', () => {
+  releaseAllGifs(); // canvas.clear() não dispara object:removed por objeto
   canvas.clear(); canvas.backgroundColor = isLiveBgEnabled() ? 'transparent' : '#1e1e2a'; canvas.renderAll();
   createViewportRect();
   hiddenObjects.clear();
@@ -626,6 +627,40 @@ export function applyFull(data, render = true) {
   }
 
   const ex = findById(data.id);
+
+  // ── Fast-path de GIF ──────────────────────────────────────────────────────
+  // Um object:modify de um GIF já existente cuja imagem-fonte não mudou (só
+  // moveram/redimensionaram/rotacionaram) NÃO deve recriar o objeto: recriar
+  // dispara placeGif → decode completo no worker de novo, causando flicker e
+  // saturando o worker quando alguém arrasta um GIF. Aqui só atualizamos a
+  // transformação in-place, preservando a animação em andamento.
+  if (ex && ex._isGif && data.type === 'image' && data._isGif &&
+      (data._gifUrl || data.src) === ex._gifUrl) {
+    applyTransformOnly(data); // left/top/scale/angle/flip/opacity in-place
+    if (data.layerId) ex.layerId = data.layerId;
+    if (data.groupId !== undefined) ex.groupId = data.groupId;
+    ex.locked = !!data.locked;
+    if (data.viewHidden !== undefined) ex.viewHidden = data.viewHidden;
+
+    // Visibilidade de camada — mesma regra do caminho normal abaixo.
+    const isHiddenNow = data._layerHidden === true || (data.opacity === 0 && data.visible === false);
+    if (isHiddenNow) {
+      hiddenObjects.add(ex.id);
+      ex._savedOpacity = (data._prevOpacity !== undefined) ? data._prevOpacity : (ex._savedOpacity ?? 1);
+      ex.set({ opacity: 0, visible: false });
+    } else {
+      hiddenObjects.delete(ex.id);
+      delete ex._savedOpacity;
+      ex.set({ visible: true });
+    }
+    ex.setCoords();
+    applyLayerZOrder();
+    if (vpRect) canvas.bringToFront(vpRect);
+    if (render) canvas.renderAll();
+    scheduleLayersUpdate();
+    return;
+  }
+
   if (ex) canvas.remove(ex);
 
   // Trata como async se for imagem OU grupo que contém imagens/gifs (deser é assíncrono)

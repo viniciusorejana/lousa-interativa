@@ -867,8 +867,15 @@ function deleteObjById(id) {
 }
 
 canvas.on('object:added',      scheduleLayersUpdate);
-canvas.on('object:removed',    obj => {
-  // Para o loop de animação se o objeto removido era um GIF
+canvas.on('object:removed',    e => {
+  // Para o loop de animação e libera os frames se o objeto removido era um GIF.
+  // O Fabric emite este evento com { target } (não o objeto direto) — a versão
+  // anterior lia `obj._isGif` do wrapper do evento, que é sempre undefined, e
+  // por isso o cleanup NUNCA rodava (GIFs deletados seguiam animando e seus
+  // ImageBitmaps vazavam). Como todo caminho de remoção passa por canvas.remove
+  // (Delete, object:remove remoto, deletePathGroup, loadState), consertar aqui
+  // cobre todos eles de uma vez.
+  const obj = e && e.target;
   if (obj && obj._isGif && obj.id) {
     activeGifs.delete(obj.id);
   }

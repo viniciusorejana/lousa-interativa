@@ -135,10 +135,10 @@ socket.on('erase:live', updates => {
   });
   canvas.requestRenderAll();
 });
-socket.on('object:remove',    ids         => { ids.forEach(id => { const o = findById(id); if (o) canvas.remove(o); }); canvas.renderAll(); });
+socket.on('object:remove',    ids         => { ids.forEach(id => { const o = findById(id); if (o) canvas.remove(o); _releaseViewGif(id); }); canvas.renderAll(); });
 socket.on('objects:batch',    objs        => { objs.forEach(d => applyFull(d, false)); canvas.renderAll(); });
 
-socket.on('board:clear',      ()    => { canvas.clear(); mkTransp(); canvas.renderAll(); });
+socket.on('board:clear',      ()    => { releaseAllViewGifs(); canvas.clear(); mkTransp(); canvas.renderAll(); });
 socket.on('board:sync',       state => {
   canvas.clear(); mkTransp();
   viewLayers = (state && state.layers) || [];
@@ -286,6 +286,17 @@ function applyFull(data, render = true) {
     return;
   }
 
+  // Fast-path de GIF: modify de um GIF já existente cuja fonte não mudou — só
+  // atualiza a transformação in-place, sem re-decodificar no worker (o que
+  // recriaria o objeto e reiniciaria a animação). Ver board-app.js.
+  if (ex && ex._isGif && data.type === 'image' && data._isGif &&
+      (data._gifUrl || data.src) === ex._gifUrl) {
+    if (data.layerId) ex.layerId = data.layerId;
+    applyTransformOnly(data);
+    if (render) canvas.renderAll();
+    return;
+  }
+
   if (ex) canvas.remove(ex);
 
   // Para GIFs: incrementa generation e cancela qualquer apply anterior pendente
@@ -420,6 +431,7 @@ let _loadGen = 0;
 
 function loadState(state) {
   const gen = ++_loadGen;
+  releaseAllViewGifs(); // canvas.clear() abaixo não dispara cleanup por objeto
   canvas.clear(); mkTransp();
   if (!state || !state.objects) { canvas.renderAll(); return; }
   const objs = Object.values(state.objects);
@@ -471,8 +483,25 @@ function _viewDecodeGif(url) {
 }
 
 const _viewGifRegistry = new Map();
-// Mantido para compatibilidade
-const activeGifs = { add: id => {}, delete: id => { _viewGifRegistry.delete(id); }, size: 0 };
+// Libera um GIF do registro e fecha seus ImageBitmaps (memória de GPU). A view
+// fica horas ligada no OBS — sem isto, cada board:sync (undo/redo remoto) e
+// cada board:clear deixava os frames dos GIFs antigos vazando pra sempre.
+function _releaseViewGif(id) {
+  const state = _viewGifRegistry.get(id);
+  if (!state) return;
+  if (Array.isArray(state.frames)) {
+    for (const f of state.frames) {
+      if (f && f.bitmap && typeof f.bitmap.close === 'function') {
+        try { f.bitmap.close(); } catch (_) {}
+      }
+    }
+  }
+  _viewGifRegistry.delete(id);
+}
+function releaseAllViewGifs() {
+  for (const id of [..._viewGifRegistry.keys()]) _releaseViewGif(id);
+}
+const activeGifs = { add: id => {}, delete: id => { _releaseViewGif(id); }, size: 0 };
 
 let _viewRafId = null;
 function _viewGifTick(now) {
